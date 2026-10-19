@@ -253,7 +253,7 @@ func TestForeignKeysBetweenUserTablesIncludeUserID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 11 references to user_state and 14 between user tables at the time of writing; a much
+	// 12 references to user_state and 16 between user tables at the time of writing; a much
 	// smaller number means the query lost them.
 	if len(keys) < 20 {
 		t.Fatalf("foreign keys between user tables: %d, the query is wrong", len(keys))
