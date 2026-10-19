@@ -1,0 +1,508 @@
+-- Schema of bank-statement-data (FIN-111). Rationale, alternatives and open questions are in
+-- the PR; the meaning of every field is in fin-assist/contracts (docs/api.md 3-6,
+-- docs/grpc-api.md 7.2-7.3, docs/calc.md).
+--
+-- Conventions:
+-- * user_id is the first column of every primary and unique key of user data (sharding by
+--   user later, Citus or hash sub-partitions). Every user table references user_state with
+--   ON DELETE CASCADE, directly or through its parent: PurgeUserData is one
+--   DELETE FROM user_state (plus the files in Object Storage).
+-- * Foreign keys between user tables include user_id, so a row can never point at another
+--   user's account, upload or operation.
+-- * Rows of user tables are deleted physically only by the purge; an upload is deleted
+--   logically (status deleted), so foreign keys between user tables cascade: with NO ACTION
+--   the cascade from user_state would fail on whichever table it reaches first.
+-- * IDs that leave the database (API, other services, support) are UUIDv7 (uuidv7() of
+--   PostgreSQL 18 as the default; the service may pass its own). Internal IDs are bigint
+--   identities.
+-- * Codes are text with a CHECK of the allowed set: readable in psql, a new value is a new
+--   migration that replaces the constraint.
+-- * Money is bigint minor units; operation amounts are unsigned, the direction is a column.
+-- * Instants are timestamptz. Calendar months are date (the 1st) in the user's time zone at
+--   calculation time; the zone they were computed in is stored next to them.
+
+-- ---------------------------------------------------------------- user
+
+CREATE TABLE user_state (
+    user_id               uuid        PRIMARY KEY,
+    timezone              text        NOT NULL DEFAULT 'Europe/Moscow'
+        CHECK (char_length(timezone) BETWEEN 1 AND 64),
+    settings_version      bigint      NOT NULL DEFAULT 0 CHECK (settings_version >= 0),
+    calc_version          bigint      NOT NULL DEFAULT 0 CHECK (calc_version >= 0),
+    categories_changed_at timestamptz,
+    uploads_changed_at    timestamptz,
+    daily_recalc_due_at   timestamptz,
+    created_at            timestamptz NOT NULL DEFAULT now()
+);
+
+COMMENT ON TABLE user_state IS
+    'One row per user: settings from user (SetUserTimezone), counters, and the row every user '
+    'table references (ON DELETE CASCADE). Lock it with SELECT ... FOR NO KEY UPDATE to '
+    'serialise per-user steps (closing unread lines, calc_version): FOR UPDATE would also wait '
+    'for every open transaction that inserted rows referencing the user (their FK takes FOR KEY '
+    'SHARE) and two imports would deadlock.';
+COMMENT ON COLUMN user_state.timezone IS
+    'IANA zone of the profile; Europe/Moscow until the first SetUserTimezone arrives.';
+COMMENT ON COLUMN user_state.settings_version IS
+    'Version of the applied SetUserTimezone; a smaller or equal one is acknowledged and ignored.';
+COMMENT ON COLUMN user_state.calc_version IS
+    'Monotonic per user: incremented in the transaction that writes an UpsertUserMetrics outbox row.';
+COMMENT ON COLUMN user_state.categories_changed_at IS
+    'DataVersion.categories_changed_at: last manual category change, re-categorisation or dismissal.';
+COMMENT ON COLUMN user_state.uploads_changed_at IS
+    'DataVersion.uploads_changed_at: last upload finished or deleted.';
+COMMENT ON COLUMN user_state.daily_recalc_due_at IS
+    'Next 00:05 in the user''s zone when the current periods are recalculated; NULL - no data yet.';
+
+CREATE INDEX user_state_daily_recalc_due_at_idx ON user_state (daily_recalc_due_at)
+    WHERE daily_recalc_due_at IS NOT NULL;
+
+-- ---------------------------------------------------------------- reference data
+
+CREATE TABLE source (
+    id   text PRIMARY KEY CHECK (id ~ '^[a-z][a-z0-9_]{0,31}$'),
+    name text NOT NULL CHECK (char_length(name) BETWEEN 1 AND 64)
+);
+
+COMMENT ON TABLE source IS 'Data sources (statement formats, bank APIs); name is source_name of the API.';
+
+INSERT INTO source (id, name) VALUES ('tbank_ofx', 'Выписка Т-Банка');
+
+CREATE TABLE category (
+    id          text        PRIMARY KEY CHECK (id ~ '^cat_[a-z0-9_]{1,250}$'),
+    name        text        NOT NULL CHECK (char_length(name) BETWEEN 1 AND 64),
+    bank_name   text        UNIQUE CHECK (char_length(bank_name) BETWEEN 1 AND 64),
+    icon        text        NOT NULL CHECK (char_length(icon) BETWEEN 1 AND 32),
+    is_system   boolean     NOT NULL DEFAULT false,
+    is_known    boolean     NOT NULL DEFAULT false,
+    for_expense boolean     NOT NULL,
+    for_income  boolean     NOT NULL,
+    assignable  boolean     NOT NULL,
+    sort_order  bigint      UNIQUE,
+    note        text        CHECK (char_length(note) BETWEEN 1 AND 64),
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    updated_at  timestamptz NOT NULL DEFAULT now(),
+    CHECK (for_expense OR for_income),
+    -- a bank category outside the registry list applies to both directions (docs/calc.md 3.1)
+    CHECK (is_known OR (for_expense AND for_income)),
+    -- every non-system category comes from a statement
+    CHECK (is_system OR bank_name IS NOT NULL),
+    CHECK (note IS NULL OR is_system)
+);
+
+COMMENT ON TABLE category IS
+    'Category dictionary shared by all users (5.1): system categories, the registry of known bank '
+    'categories (FIN-6) and bank categories met for the first time (is_known = false). Not user '
+    'data: names come from MEMO, which is the bank''s category.';
+COMMENT ON COLUMN category.bank_name IS
+    'MEMO after trimming, cut to 64 characters: the bank category this row stands for.';
+COMMENT ON COLUMN category.sort_order IS
+    'Display order of system and registry categories; NULL - after them, by first appearance for '
+    'the user (user_bank_category).';
+
+INSERT INTO category (id, name, bank_name, icon, is_system, is_known, for_expense, for_income, assignable, sort_order, note) VALUES
+    ('cat_own_transfer',  'Между своими счетами', NULL,            'transfer', true, true, true,  true, true,  10, 'не в тратах'),
+    ('cat_refund',        'Возврат',              NULL,            'repeat',   true, true, false, true, true,  20, 'уменьшает расходы на покупку'),
+    ('cat_uncategorized', 'Без категории',        'Без категории', 'tag',      true, true, true,  true, false, 30, 'в выписке нет категории');
+
+-- ---------------------------------------------------------------- accounts
+
+CREATE TABLE account (
+    user_id            uuid        NOT NULL REFERENCES user_state ON DELETE CASCADE,
+    id                 bigint      GENERATED ALWAYS AS IDENTITY,
+    source_id          text        NOT NULL REFERENCES source,
+    ext_id_hmac        bytea       NOT NULL CHECK (octet_length(ext_id_hmac) = 32),
+    ext_id_key_version bigint      NOT NULL CHECK (ext_id_key_version > 0),
+    type               text        NOT NULL CHECK (type ~ '^[a-z][a-z0-9_]{0,31}$'),
+    mask               text        CHECK (char_length(mask) = 4),
+    is_other_bank      boolean     NOT NULL,
+    currency           text        CHECK (currency ~ '^[A-Z]{3}$'),
+    created_at         timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, id),
+    UNIQUE (user_id, source_id, ext_id_hmac),
+    CHECK (NOT is_other_bank OR mask IS NULL)
+);
+
+COMMENT ON TABLE account IS
+    'Accounts met in statements. The full number (ACCTID) is never stored: only its HMAC with the '
+    'service key, the type and the last 4 characters.';
+COMMENT ON COLUMN account.ext_id_hmac IS
+    'HMAC-SHA-256 with the service key over user_id and ACCTID (or the source''s account ID): the '
+    'same account of two users gives different values, so rows cannot be linked across users.';
+COMMENT ON COLUMN account.ext_id_key_version IS
+    'Version of the HMAC key the value was computed with; rotation rewrites the rows to the new key.';
+COMMENT ON COLUMN account.type IS 'Account type code from the source (checking, savings, ...); type_name is built by the service.';
+COMMENT ON COLUMN account.mask IS 'Last 4 characters of the number; NULL for an account of another bank (OB$...).';
+
+-- ---------------------------------------------------------------- uploads
+
+CREATE TABLE upload (
+    user_id            uuid        NOT NULL REFERENCES user_state ON DELETE CASCADE,
+    id                 uuid        NOT NULL DEFAULT uuidv7(),
+    source_id          text        NOT NULL REFERENCES source,
+    file_name          text        NOT NULL CHECK (char_length(file_name) <= 255),
+    size_bytes         bigint      NOT NULL CHECK (size_bytes > 0),
+    content_sha256     bytea       NOT NULL CHECK (octet_length(content_sha256) = 32),
+    object_key         text        NOT NULL CHECK (char_length(object_key) BETWEEN 1 AND 1024),
+    file_deleted_at    timestamptz,
+    status             text        NOT NULL DEFAULT 'processing'
+        CHECK (status IN ('processing', 'done', 'failed', 'deleted')),
+    error_code         text        CHECK (error_code IN ('processing_failed', 'cancelled')),
+    stage              text        CHECK (stage IN ('parsing', 'dedup', 'rules')),
+    percent            smallint    NOT NULL DEFAULT 0 CHECK (percent BETWEEN 0 AND 100),
+    uploaded_at        timestamptz NOT NULL DEFAULT now(),
+    finished_at        timestamptz,
+    deleted_at         timestamptz,
+    operation_count    bigint      CHECK (operation_count >= 0),
+    first_operation_at timestamptz,
+    last_operation_at  timestamptz,
+    result             jsonb       CHECK (jsonb_typeof(result) = 'object'),
+    PRIMARY KEY (user_id, id),
+    CHECK ((status = 'processing') = (finished_at IS NULL)),
+    CHECK ((status = 'failed') = (error_code IS NOT NULL)),
+    CHECK ((status = 'deleted') = (deleted_at IS NOT NULL)),
+    CHECK ((status = 'done') = (result IS NOT NULL)),
+    CHECK (status NOT IN ('done', 'deleted') OR operation_count IS NOT NULL),
+    CHECK (status = 'processing' OR stage IS NULL),
+    CHECK (status <> 'processing' OR file_deleted_at IS NULL),
+    CHECK ((first_operation_at IS NULL) = (last_operation_at IS NULL)),
+    CHECK (first_operation_at <= last_operation_at)
+);
+
+COMMENT ON TABLE upload IS
+    'Statement uploads (3.2-3.5). A deleted or failed upload keeps its row: DELETE of an upload '
+    'that existed answers OK, NOT_FOUND only for an ID the user never had; WatchUpload replays the '
+    'outcome of a failed one.';
+COMMENT ON COLUMN upload.content_sha256 IS
+    'SHA-256 of the file: the request hash of the idempotency key (with file_name) and a hint for '
+    'support. Not unique: the same file may be uploaded again (FIN-79).';
+COMMENT ON COLUMN upload.object_key IS 'Object Storage key of the file; the key starts with the user ID so a purge can delete by prefix.';
+COMMENT ON COLUMN upload.file_deleted_at IS
+    'When the file was removed from Object Storage. failed/deleted with NULL here - a job still has to remove it.';
+COMMENT ON COLUMN upload.status IS
+    'processing -> done | failed (error_code); done -> deleted. 3.4 shows processing and done.';
+COMMENT ON COLUMN upload.stage IS 'Current stage while processing, for the first WatchUpload event.';
+COMMENT ON COLUMN upload.uploaded_at IS
+    'Creation of the upload; orders uploads for closing unread lines (ties - by id) and for 3.4.';
+COMMENT ON COLUMN upload.operation_count IS 'Operations read from the file, including ones already loaded.';
+COMMENT ON COLUMN upload.result IS
+    'ImportResult of the complete event (protojson), replayed by WatchUpload; only while done.';
+
+-- Timeout sweep: uploads processing for more than 3 minutes, across users.
+CREATE INDEX upload_processing_idx ON upload (uploaded_at) WHERE status = 'processing';
+-- Files still to remove from Object Storage.
+CREATE INDEX upload_file_pending_idx ON upload (finished_at)
+    WHERE status IN ('failed', 'deleted') AND file_deleted_at IS NULL;
+
+CREATE TABLE upload_account (
+    user_id         uuid        NOT NULL,
+    upload_id       uuid        NOT NULL,
+    account_id      bigint      NOT NULL,
+    statement_start timestamptz,
+    statement_end   timestamptz,
+    PRIMARY KEY (user_id, upload_id, account_id),
+    FOREIGN KEY (user_id, upload_id) REFERENCES upload ON DELETE CASCADE,
+    FOREIGN KEY (user_id, account_id) REFERENCES account ON DELETE CASCADE,
+    CHECK (statement_start <= statement_end)
+);
+
+COMMENT ON TABLE upload_account IS
+    'Accounts of an upload with the statement period DTSTART..DTEND as given: covered days, gaps and '
+    'closing of unread lines are computed from it in the profile zone at check time.';
+
+-- ---------------------------------------------------------------- operations
+
+CREATE TABLE operation (
+    user_id                   uuid        NOT NULL REFERENCES user_state ON DELETE CASCADE,
+    occurred_at               timestamptz NOT NULL,
+    id                        uuid        NOT NULL DEFAULT uuidv7(),
+    account_id                bigint      NOT NULL,
+    direction                 text        NOT NULL CHECK (direction IN ('expense', 'income')),
+    amount_minor              bigint      NOT NULL CHECK (amount_minor >= 0),
+    currency                  text        NOT NULL CHECK (currency ~ '^[A-Z]{3}$'),
+    status                    text        NOT NULL CHECK (status IN ('posted', 'pending')),
+    description               text        NOT NULL DEFAULT '' CHECK (char_length(description) <= 1000),
+    bank_category_id          text        NOT NULL REFERENCES category,
+    posted_at                 timestamptz,
+    mcc                       text        CHECK (mcc ~ '^[0-9]{4}$'),
+    extensions                jsonb       CHECK (jsonb_typeof(extensions) = 'object'),
+    category_id               text        NOT NULL REFERENCES category,
+    manual_category_id        text        REFERENCES category,
+    refund_target_category_id text        REFERENCES category,
+    is_split                  boolean     NOT NULL DEFAULT false,
+    created_at                timestamptz NOT NULL DEFAULT now(),
+    updated_at                timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, occurred_at, id),
+    FOREIGN KEY (user_id, account_id) REFERENCES account ON DELETE CASCADE,
+    -- docs/calc.md 3.5: a manual category wins over every rule
+    CHECK (manual_category_id IS NULL OR category_id = manual_category_id),
+    CHECK (manual_category_id <> 'cat_uncategorized'),
+    -- a refund always has a target: the chain of 3.3 ends with cat_uncategorized
+    CHECK ((category_id = 'cat_refund') = (refund_target_category_id IS NOT NULL)),
+    CHECK (refund_target_category_id NOT IN ('cat_refund', 'cat_own_transfer')),
+    CHECK (category_id <> 'cat_refund' OR direction = 'income')
+) PARTITION BY RANGE (occurred_at);
+
+COMMENT ON TABLE operation IS
+    'Canonical operations, yearly partitions by occurred_at (UTC bounds). Rule columns (category_id, '
+    'refund_target_category_id, is_split) are recomputed after every import, deletion and manual change.';
+COMMENT ON COLUMN operation.occurred_at IS 'Time of the operation (OFX DTPOSTED); partition, sort and month key.';
+COMMENT ON COLUMN operation.description IS 'Description from the source as is; may be empty (FIN-67).';
+COMMENT ON COLUMN operation.bank_category_id IS 'Category from the source (MEMO) as a dictionary ID; empty MEMO - cat_uncategorized.';
+COMMENT ON COLUMN operation.extensions IS 'Fields only one source has (extensions.<source>), schema per adapter version.';
+COMMENT ON COLUMN operation.category_id IS 'Final category (docs/calc.md 3.5).';
+COMMENT ON COLUMN operation.manual_category_id IS 'Category chosen by the user (4.3); survives re-import and recalculation.';
+COMMENT ON COLUMN operation.refund_target_category_id IS 'For a refund (category cat_refund): the category whose expenses it reduces.';
+COMMENT ON COLUMN operation.is_split IS 'The user split the transfer pair this operation was in (docs/calc.md 3.2, 3.4).';
+
+-- GetOperation and ChangeCategory by ID: one probe per yearly partition.
+CREATE INDEX operation_user_id_id_idx ON operation (user_id, id);
+
+-- Yearly partitions with UTC bounds, 2010-2027: statements reach years back, and a partition
+-- must exist before an import writes into it. Later years: the partition job
+-- (docs/migrations.md, «Партиции»). An operation outside every partition fails the import.
+DO $$
+BEGIN
+    FOR y IN 2010..2027 LOOP
+        EXECUTE format(
+            'CREATE TABLE operation_y%s PARTITION OF operation FOR VALUES FROM (%L) TO (%L)',
+            y, make_timestamptz(y, 1, 1, 0, 0, 0, 'UTC'), make_timestamptz(y + 1, 1, 1, 0, 0, 0, 'UTC'));
+    END LOOP;
+END $$;
+
+CREATE TABLE source_record (
+    user_id               uuid        NOT NULL REFERENCES user_state ON DELETE CASCADE,
+    id                    bigint      GENERATED ALWAYS AS IDENTITY,
+    account_id            bigint      NOT NULL,
+    external_id           text        NOT NULL CHECK (char_length(external_id) BETWEEN 1 AND 255),
+    operation_occurred_at timestamptz NOT NULL,
+    operation_id          uuid        NOT NULL,
+    created_at            timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, id),
+    UNIQUE (user_id, account_id, external_id),
+    FOREIGN KEY (user_id, account_id) REFERENCES account ON DELETE CASCADE,
+    FOREIGN KEY (user_id, operation_occurred_at, operation_id) REFERENCES operation
+        ON DELETE CASCADE ON UPDATE CASCADE
+);
+
+COMMENT ON TABLE source_record IS
+    'Deduplication registry, not partitioned: one row per (account, external ID) of a source, '
+    'linked to its canonical operation. Several records may point to one operation (several sources).';
+COMMENT ON COLUMN source_record.external_id IS 'ID of the operation in the source (OFX FITID), opaque.';
+
+-- Cascade from operation and the lookup of an operation's records.
+CREATE INDEX source_record_operation_idx ON source_record (user_id, operation_id);
+
+CREATE TABLE upload_record (
+    user_id          uuid   NOT NULL,
+    upload_id        uuid   NOT NULL,
+    source_record_id bigint NOT NULL,
+    PRIMARY KEY (user_id, upload_id, source_record_id),
+    FOREIGN KEY (user_id, upload_id) REFERENCES upload ON DELETE CASCADE,
+    FOREIGN KEY (user_id, source_record_id) REFERENCES source_record ON DELETE CASCADE
+);
+
+COMMENT ON TABLE upload_record IS
+    'Which uploads contain a source record. An operation lives while some upload has its record '
+    '(docs/calc.md 2); FIN-79 closes a line by FITID only through an upload that contains it.';
+
+-- "Is the record in another upload?" when an upload is deleted; cascade from source_record.
+CREATE INDEX upload_record_source_record_idx ON upload_record (user_id, source_record_id);
+
+CREATE TABLE transfer_pair (
+    user_id             uuid        NOT NULL REFERENCES user_state ON DELETE CASCADE,
+    id                  uuid        NOT NULL DEFAULT uuidv7(),
+    debit_occurred_at   timestamptz NOT NULL,
+    debit_operation_id  uuid        NOT NULL,
+    credit_occurred_at  timestamptz NOT NULL,
+    credit_operation_id uuid        NOT NULL,
+    created_at          timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, id),
+    UNIQUE (user_id, debit_operation_id),
+    UNIQUE (user_id, credit_operation_id),
+    CHECK (debit_operation_id <> credit_operation_id),
+    FOREIGN KEY (user_id, debit_occurred_at, debit_operation_id) REFERENCES operation
+        ON DELETE CASCADE ON UPDATE CASCADE,
+    FOREIGN KEY (user_id, credit_occurred_at, credit_operation_id) REFERENCES operation
+        ON DELETE CASCADE ON UPDATE CASCADE
+);
+
+COMMENT ON TABLE transfer_pair IS
+    'Pairs of transfers between the user''s own accounts, shown as one own_transfer record whose ID '
+    'is id. A pair survives later imports while both sides exist (docs/calc.md 3.2); losing a side '
+    'deletes the pair.';
+
+CREATE TABLE unread_line (
+    user_id               uuid        NOT NULL,
+    upload_id             uuid        NOT NULL,
+    line_number           bigint      NOT NULL CHECK (line_number > 0),
+    reason                text        NOT NULL CHECK (reason IN ('bad_amount', 'bad_date', 'no_date', 'truncated')),
+    occurred_at           timestamptz,
+    account_id            bigint,
+    external_id           text        CHECK (char_length(external_id) BETWEEN 1 AND 255),
+    resolved_by_upload_id uuid,
+    resolution            text        CHECK (resolution IN ('read', 'replaced')),
+    PRIMARY KEY (user_id, upload_id, line_number),
+    FOREIGN KEY (user_id, upload_id) REFERENCES upload ON DELETE CASCADE,
+    FOREIGN KEY (user_id, resolved_by_upload_id) REFERENCES upload ON DELETE CASCADE,
+    FOREIGN KEY (user_id, account_id) REFERENCES account ON DELETE CASCADE,
+    CHECK ((resolved_by_upload_id IS NULL) = (resolution IS NULL)),
+    CHECK (resolved_by_upload_id <> upload_id),
+    CHECK (external_id IS NULL OR account_id IS NOT NULL),
+    CHECK (reason NOT IN ('no_date', 'bad_date') OR occurred_at IS NULL)
+);
+
+COMMENT ON TABLE unread_line IS
+    'Lines of a file that could not be counted (3.6). The content is not stored: only the line '
+    'number, the date, the reason and, when read, the account and FITID used to close the line.';
+COMMENT ON COLUMN unread_line.occurred_at IS 'Date of the operation, when it was read.';
+COMMENT ON COLUMN unread_line.resolved_by_upload_id IS
+    'The later upload that closed the line (FIN-79); NULL - open. Cleared and rechecked when that upload is deleted.';
+COMMENT ON COLUMN unread_line.resolution IS 'read - the later upload read it; replaced - it failed there again.';
+
+-- 3.6 by period and unread_lines_count of a month: open lines with a date.
+CREATE INDEX unread_line_open_date_idx ON unread_line (user_id, occurred_at)
+    WHERE resolved_by_upload_id IS NULL AND occurred_at IS NOT NULL;
+-- Closing by (account, FITID) on import.
+CREATE INDEX unread_line_external_id_idx ON unread_line (user_id, account_id, external_id)
+    WHERE external_id IS NOT NULL;
+-- Lines closed by an upload: recheck when it is deleted, resolved_unread_count of 3.4.
+CREATE INDEX unread_line_resolved_by_idx ON unread_line (user_id, resolved_by_upload_id)
+    WHERE resolved_by_upload_id IS NOT NULL;
+
+-- ---------------------------------------------------------------- categories per user
+
+CREATE TABLE user_bank_category (
+    user_id             uuid        NOT NULL REFERENCES user_state ON DELETE CASCADE,
+    category_id         text        NOT NULL REFERENCES category,
+    first_uploaded_at   timestamptz NOT NULL,
+    first_line_number   bigint      NOT NULL CHECK (first_line_number > 0),
+    PRIMARY KEY (user_id, category_id)
+);
+
+COMMENT ON TABLE user_bank_category IS
+    'Bank categories the user met, with the first appearance: 5.1 lists categories outside the '
+    'registry in this order (docs/calc.md 10). Kept when the upload is deleted.';
+
+-- ---------------------------------------------------------------- regular payments, selections
+
+CREATE TABLE regular_payment (
+    user_id      uuid        NOT NULL REFERENCES user_state ON DELETE CASCADE,
+    id           uuid        NOT NULL DEFAULT uuidv7(),
+    periodicity  text        NOT NULL CHECK (periodicity IN ('monthly')),
+    description  text        NOT NULL CHECK (char_length(description) BETWEEN 1 AND 1000),
+    dismissed_at timestamptz,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, id),
+    UNIQUE (user_id, periodicity, description)
+);
+
+COMMENT ON TABLE regular_payment IS
+    'Key of a recognised regular payment (description + periodicity) and its stable ID (6.3). The '
+    'row is created on first recognition and kept, so the ID and the «не подписка» mark survive '
+    'recalculations and re-uploads.';
+COMMENT ON COLUMN regular_payment.dismissed_at IS 'Marked «не подписка» (DismissRegularPayment); NULL - shown.';
+
+CREATE TABLE merchant (
+    user_id    uuid        NOT NULL REFERENCES user_state ON DELETE CASCADE,
+    id         uuid        NOT NULL DEFAULT uuidv7(),
+    key        text        NOT NULL CHECK (char_length(key) BETWEEN 1 AND 1000),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, id),
+    UNIQUE (user_id, key)
+);
+
+COMMENT ON TABLE merchant IS
+    'Merchants (normalised descriptions) behind selection tokens s_merchant_<id>: the token carries '
+    'no description (personal data in a query string) and stays valid while the row exists.';
+
+-- ---------------------------------------------------------------- calculation
+
+CREATE TABLE recalc_queue (
+    user_id         uuid        NOT NULL REFERENCES user_state ON DELETE CASCADE,
+    month           date        NOT NULL CHECK (extract(day FROM month) = 1),
+    generation      bigint      NOT NULL DEFAULT 1 CHECK (generation > 0),
+    enqueued_at     timestamptz NOT NULL DEFAULT now(),
+    next_attempt_at timestamptz NOT NULL DEFAULT now(),
+    attempts        bigint      NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    last_error      text,
+    PRIMARY KEY (user_id, month)
+);
+
+COMMENT ON TABLE recalc_queue IS
+    'Months to recalculate. Marking: INSERT ... ON CONFLICT DO UPDATE SET generation = generation + 1. '
+    'A worker claims rows (FOR UPDATE SKIP LOCKED, next_attempt_at moved forward as a lease), '
+    'recalculates outside that transaction, then in one transaction writes month_state/monthly_agg, '
+    'increments calc_version, adds the outbox row and deletes the queue row only if generation is '
+    'unchanged; a changed row stays and is picked again.';
+COMMENT ON COLUMN recalc_queue.month IS 'First day of the month in the user''s zone.';
+
+CREATE INDEX recalc_queue_next_attempt_at_idx ON recalc_queue (next_attempt_at);
+
+CREATE TABLE month_state (
+    user_id       uuid        NOT NULL REFERENCES user_state ON DELETE CASCADE,
+    month         date        NOT NULL CHECK (extract(day FROM month) = 1),
+    time_zone     text        NOT NULL CHECK (char_length(time_zone) BETWEEN 1 AND 64),
+    covered_days  smallint    NOT NULL,
+    days_in_month smallint    NOT NULL CHECK (days_in_month BETWEEN 28 AND 31),
+    data_from     timestamptz NOT NULL,
+    data_to       timestamptz NOT NULL,
+    calc_version  bigint      NOT NULL CHECK (calc_version > 0),
+    calculated_at timestamptz NOT NULL,
+    PRIMARY KEY (user_id, month),
+    CHECK (covered_days BETWEEN 1 AND days_in_month),
+    CHECK (data_from <= data_to)
+);
+
+COMMENT ON TABLE month_state IS
+    'Months with at least one covered day. No row - no data for the month; a row without '
+    'monthly_agg rows - covered and zero. This is where «нет данных» differs from 0.';
+COMMENT ON COLUMN month_state.data_to IS 'DataBounds.data_to of the month (docs/api.md, «Формат»).';
+
+CREATE TABLE monthly_agg (
+    user_id      uuid   NOT NULL,
+    month        date   NOT NULL,
+    account_id   bigint NOT NULL,
+    category_id  text   NOT NULL REFERENCES category,
+    kind         text   NOT NULL CHECK (kind IN ('expense', 'income', 'refund')),
+    currency     text   NOT NULL CHECK (currency ~ '^[A-Z]{3}$'),
+    amount_minor bigint NOT NULL CHECK (amount_minor >= 0),
+    op_count     bigint NOT NULL CHECK (op_count > 0),
+    PRIMARY KEY (user_id, month, account_id, category_id, kind, currency),
+    FOREIGN KEY (user_id, month) REFERENCES month_state ON DELETE CASCADE,
+    FOREIGN KEY (user_id, account_id) REFERENCES account ON DELETE CASCADE
+);
+
+COMMENT ON TABLE monthly_agg IS
+    'Background cache of sums per month, account, final category and kind, rebuilt with the whole '
+    'month. A refund is kind refund under its target category and reduces its expenses.';
+
+CREATE TABLE metric_definition (
+    metric_id  text        NOT NULL CHECK (metric_id ~ '^[a-z][a-z0-9_.]{0,63}$'),
+    version    bigint      NOT NULL CHECK (version > 0),
+    params     jsonb       NOT NULL DEFAULT '{}' CHECK (jsonb_typeof(params) = 'object'),
+    is_current boolean     NOT NULL DEFAULT false,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (metric_id, version)
+);
+
+COMMENT ON TABLE metric_definition IS
+    'Registry of metric and rule definitions with versions (FIN-6): thresholds and parameters of '
+    'docs/calc.md 7. One current version per metric.';
+
+CREATE UNIQUE INDEX metric_definition_current_idx ON metric_definition (metric_id) WHERE is_current;
+
+CREATE TABLE user_metric_version (
+    user_id     uuid        NOT NULL REFERENCES user_state ON DELETE CASCADE,
+    metric_id   text        NOT NULL,
+    version     bigint      NOT NULL,
+    computed_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, metric_id),
+    FOREIGN KEY (metric_id, version) REFERENCES metric_definition
+);
+
+COMMENT ON TABLE user_metric_version IS
+    'Definition version a user''s metric was last computed with: the backfill job picks users behind '
+    'the current version; until then the metric is unavailable, not zero.';
+
+CREATE INDEX user_metric_version_metric_idx ON user_metric_version (metric_id, version);

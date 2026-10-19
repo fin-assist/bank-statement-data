@@ -48,7 +48,7 @@ updates them in the same PR. A service made from the template rewrites the first
 | gRPC handlers (messages ↔ usecases) | `internal/adapter/grpc/<feature>/` |
 | Pools, transaction manager, repositories | `internal/adapter/postgres/`; rules — `docs/migrations.md`, «Запросы на pgx» |
 | Migration runner and the PostgreSQL for tests | `internal/adapter/postgres/migrate/`, `migratetest/` |
-| SQL migrations (embedded) | `migrations/`; rules — `docs/migrations.md` |
+| SQL migrations (embedded) and tests of the schema invariants on PostgreSQL | `migrations/` (`schema_test.go`); rules — `docs/migrations.md` |
 | Clients of other services, service token source | `internal/adapter/client/` |
 | Background jobs | `internal/worker/` |
 | Configuration: every variable with its default and description | `internal/config/vars.go` (`Vars`); generated tables — `docs/config.md` |
