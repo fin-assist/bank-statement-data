@@ -9,9 +9,11 @@
 --   DELETE FROM user_state (plus the files in Object Storage).
 -- * Foreign keys between user tables include user_id, so a row can never point at another
 --   user's account, upload or operation.
--- * Rows of user tables are deleted physically only by the purge; an upload is deleted
---   logically (status deleted), so foreign keys between user tables cascade: with NO ACTION
---   the cascade from user_state would fail on whichever table it reaches first.
+-- * Foreign keys between user tables cascade. The purge deletes everything through them
+--   (with NO ACTION the cascade from user_state would fail on whichever table it reaches
+--   first); the service deletes operations physically when an upload goes (their source
+--   records, upload membership and pairs follow) and month_state when a month is rebuilt
+--   (its monthly_agg follows). Only upload itself is deleted logically (status deleted).
 -- * IDs that leave the database (API, other services, support) are UUIDv7 (uuidv7() of
 --   PostgreSQL 18 as the default; the service may pass its own). Internal IDs are bigint
 --   identities.
@@ -158,6 +160,8 @@ CREATE TABLE upload (
     last_operation_at  timestamptz,
     result             jsonb       CHECK (jsonb_typeof(result) = 'object'),
     PRIMARY KEY (user_id, id),
+    -- the purge deletes the user's files by this prefix: a key outside it would outlive the account
+    CHECK (starts_with(object_key, user_id::text || '/')),
     CHECK ((status = 'processing') = (finished_at IS NULL)),
     CHECK ((status = 'failed') = (error_code IS NOT NULL)),
     CHECK ((status = 'deleted') = (deleted_at IS NOT NULL)),
@@ -176,7 +180,7 @@ COMMENT ON TABLE upload IS
 COMMENT ON COLUMN upload.content_sha256 IS
     'SHA-256 of the file: the request hash of the idempotency key (with file_name) and a hint for '
     'support. Not unique: the same file may be uploaded again (FIN-79).';
-COMMENT ON COLUMN upload.object_key IS 'Object Storage key of the file; the key starts with the user ID so a purge can delete by prefix.';
+COMMENT ON COLUMN upload.object_key IS 'Object Storage key of the file: <user_id>/..., so a purge deletes the user''s files by prefix.';
 COMMENT ON COLUMN upload.file_deleted_at IS
     'When the file was removed from Object Storage. failed/deleted with NULL here - a job still has to remove it.';
 COMMENT ON COLUMN upload.status IS
@@ -233,6 +237,10 @@ CREATE TABLE operation (
     created_at                timestamptz NOT NULL DEFAULT now(),
     updated_at                timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (user_id, occurred_at, id),
+    -- Target of the transfer_pair foreign keys that carry the direction of each side
+    -- (one operation - one role - at most one pair). Redundant as a key (the PK is unique
+    -- already); its cost is a second index per partition.
+    CONSTRAINT operation_pair_side_key UNIQUE (user_id, occurred_at, id, direction),
     FOREIGN KEY (user_id, account_id) REFERENCES account ON DELETE CASCADE,
     -- docs/calc.md 3.5: a manual category wins over every rule
     CHECK (manual_category_id IS NULL OR category_id = manual_category_id),
@@ -314,16 +322,24 @@ CREATE TABLE transfer_pair (
     id                  uuid        NOT NULL DEFAULT uuidv7(),
     debit_occurred_at   timestamptz NOT NULL,
     debit_operation_id  uuid        NOT NULL,
+    debit_direction     text        NOT NULL DEFAULT 'expense' CHECK (debit_direction = 'expense'),
     credit_occurred_at  timestamptz NOT NULL,
     credit_operation_id uuid        NOT NULL,
+    credit_direction    text        NOT NULL DEFAULT 'income' CHECK (credit_direction = 'income'),
     created_at          timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (user_id, id),
     UNIQUE (user_id, debit_operation_id),
     UNIQUE (user_id, credit_operation_id),
-    CHECK (debit_operation_id <> credit_operation_id),
-    FOREIGN KEY (user_id, debit_occurred_at, debit_operation_id) REFERENCES operation
+    -- The direction is part of each foreign key: an operation is a debit side only as an
+    -- expense and a credit side only as an income, so it cannot be a debit in one pair and a
+    -- credit in another, and with the two UNIQUE above it is in at most one pair
+    -- (docs/calc.md 3.2). Changing the direction of a paired operation cascades into these
+    -- columns and fails their CHECK: the pair has to go first.
+    FOREIGN KEY (user_id, debit_occurred_at, debit_operation_id, debit_direction)
+        REFERENCES operation (user_id, occurred_at, id, direction)
         ON DELETE CASCADE ON UPDATE CASCADE,
-    FOREIGN KEY (user_id, credit_occurred_at, credit_operation_id) REFERENCES operation
+    FOREIGN KEY (user_id, credit_occurred_at, credit_operation_id, credit_direction)
+        REFERENCES operation (user_id, occurred_at, id, direction)
         ON DELETE CASCADE ON UPDATE CASCADE
 );
 

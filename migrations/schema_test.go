@@ -187,6 +187,66 @@ func TestRowsCannotPointAtAnotherUser(t *testing.T) {
 		VALUES ($1, $2, 1, 'truncated', $3, 'read')`, b.user, b.upload, a.upload)
 	fails(t, conn, foreignKeyViolation, `INSERT INTO upload_record (user_id, upload_id, source_record_id)
 		SELECT $1, $2, id FROM source_record WHERE user_id = $3`, b.user, b.upload, a.user)
+	// B's upload with A's account.
+	fails(t, conn, foreignKeyViolation, `INSERT INTO upload_account (user_id, upload_id, account_id) VALUES ($1, $2, $3)`,
+		b.user, b.upload, a.account)
+	// B's line on A's account.
+	fails(t, conn, foreignKeyViolation, `INSERT INTO unread_line (user_id, upload_id, line_number, reason, account_id)
+		VALUES ($1, $2, 2, 'truncated', $3)`, b.user, b.upload, a.account)
+	// B's pair on A's operation (as either side).
+	fails(t, conn, foreignKeyViolation, `INSERT INTO transfer_pair (user_id, debit_occurred_at, debit_operation_id, credit_occurred_at, credit_operation_id)
+		SELECT $1, $2, $3, occurred_at, id FROM operation WHERE user_id = $1`, b.user, a.at, a.operation)
+	// B's covered month with A's account.
+	exec(t, conn, `INSERT INTO month_state (user_id, month, time_zone, covered_days, days_in_month, data_from, data_to, calc_version, calculated_at)
+		VALUES ($1, '2026-09-01', 'Europe/Moscow', 25, 30, now(), now(), 1, now())`, b.user)
+	fails(t, conn, foreignKeyViolation, `INSERT INTO monthly_agg (user_id, month, account_id, category_id, kind, currency, amount_minor, op_count)
+		VALUES ($1, '2026-09-01', $2, 'cat_supermarkets', 'expense', 'RUB', 1, 1)`, b.user, a.account)
+}
+
+// Every foreign key between two tables that both have user_id includes user_id and maps it
+// to user_id: a new or changed key cannot let a row of one user point at another user's row.
+func TestForeignKeysBetweenUserTablesIncludeUserID(t *testing.T) {
+	conn, _ := schema(t)
+	rows, err := conn.Query(context.Background(), `
+		SELECT c.conname,
+		       c.conrelid::regclass::text,
+		       c.confrelid::regclass::text,
+		       EXISTS (
+		           SELECT 1 FROM unnest(c.conkey, c.confkey) AS k(src, dst)
+		           JOIN pg_attribute s ON s.attrelid = c.conrelid AND s.attnum = k.src
+		           JOIN pg_attribute d ON d.attrelid = c.confrelid AND d.attnum = k.dst
+		           WHERE s.attname = 'user_id' AND d.attname = 'user_id')
+		FROM pg_constraint c
+		JOIN pg_class r ON r.oid = c.conrelid
+		WHERE c.contype = 'f'
+		  AND c.conparentid = 0 AND NOT r.relispartition
+		  AND c.connamespace = 'public'::regnamespace
+		  AND EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = c.conrelid AND attname = 'user_id' AND NOT attisdropped)
+		  AND EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = c.confrelid AND attname = 'user_id' AND NOT attisdropped)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type fk struct {
+		name, from, to string
+		ok             bool
+	}
+	keys, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (fk, error) {
+		var k fk
+		return k, r.Scan(&k.name, &k.from, &k.to, &k.ok)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 11 references to user_state and 14 between user tables at the time of writing; a much
+	// smaller number means the query lost them.
+	if len(keys) < 20 {
+		t.Fatalf("foreign keys between user tables: %d, the query is wrong", len(keys))
+	}
+	for _, k := range keys {
+		if !k.ok {
+			t.Errorf("%s: %s -> %s does not map user_id to user_id", k.name, k.from, k.to)
+		}
+	}
 }
 
 func TestOperationPartitions(t *testing.T) {
@@ -269,10 +329,13 @@ func TestUploadStatusInvariants(t *testing.T) {
 	conn, _ := schema(t)
 	seedCategories(t, conn)
 	a := seed(t, conn, userA, 1)
-	insert := `INSERT INTO upload (user_id, source_id, file_name, size_bytes, content_sha256, object_key, status, finished_at, error_code, deleted_at, operation_count, result)
-		VALUES ($1, 'tbank_ofx', 'f.ofx', 1, $2, 'k', $3, $4, $5, $6, $7, $8)`
+	insert := `INSERT INTO upload (user_id, source_id, file_name, size_bytes, content_sha256, object_key, status, finished_at,
+			error_code, deleted_at, operation_count, result, stage, file_deleted_at, first_operation_at, last_operation_at)
+		VALUES ($1, 'tbank_ofx', 'f.ofx', 1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`
 	sha := make([]byte, 32)
+	key := a.user + "/f"
 	now := time.Now()
+	earlier := now.Add(-time.Hour)
 	type row struct {
 		status   string
 		finished any
@@ -280,25 +343,54 @@ func TestUploadStatusInvariants(t *testing.T) {
 		deleted  any
 		opCount  any
 		result   any
+		stage    any
+		fileGone any
+		first    any
+		last     any
 	}
+	done := row{status: "done", finished: now, opCount: 1, result: "{}"}
+	with := func(r row, f func(*row)) row { f(&r); return r }
 	bad := map[string]row{
-		"processing with finished_at": {"processing", now, nil, nil, nil, nil},
-		"done without finished_at":    {"done", nil, nil, nil, 1, "{}"},
-		"done without result":         {"done", now, nil, nil, 1, nil},
-		"failed without error code":   {"failed", now, nil, nil, nil, nil},
-		"error code on done":          {"done", now, "cancelled", nil, 1, "{}"},
-		"deleted without deleted_at":  {"deleted", now, nil, nil, 1, nil},
-		"unknown status":              {"queued", nil, nil, nil, nil, nil},
+		"processing with finished_at":     {status: "processing", finished: now},
+		"done without finished_at":        with(done, func(r *row) { r.finished = nil }),
+		"done without result":             with(done, func(r *row) { r.result = nil }),
+		"done without operation_count":    with(done, func(r *row) { r.opCount = nil }),
+		"done with deleted_at":            with(done, func(r *row) { r.deleted = now }),
+		"done with a stage":               with(done, func(r *row) { r.stage = "rules" }),
+		"error code on done":              with(done, func(r *row) { r.errCode = "cancelled" }),
+		"failed without error code":       {status: "failed", finished: now},
+		"failed with result":              {status: "failed", finished: now, errCode: "processing_failed", result: "{}"},
+		"deleted without deleted_at":      {status: "deleted", finished: now, opCount: 1},
+		"deleted without operation_count": {status: "deleted", finished: now, deleted: now},
+		"processing with file deleted":    {status: "processing", fileGone: now},
+		"first without last":              with(done, func(r *row) { r.first = earlier }),
+		"last without first":              with(done, func(r *row) { r.last = earlier }),
+		"first after last":                with(done, func(r *row) { r.first, r.last = now, earlier }),
+		"unknown status":                  {status: "queued"},
+		"unknown stage":                   {status: "processing", stage: "upload"},
 	}
 	for name, r := range bad {
 		t.Run(name, func(t *testing.T) {
-			fails(t, conn, checkViolation, insert, a.user, sha, r.status, r.finished, r.errCode, r.deleted, r.opCount, r.result)
+			fails(t, conn, checkViolation, insert, a.user, sha, key, r.status, r.finished, r.errCode, r.deleted,
+				r.opCount, r.result, r.stage, r.fileGone, r.first, r.last)
 		})
 	}
-	exec(t, conn, insert, a.user, sha, "failed", now, "processing_failed", nil, nil, nil)
-	exec(t, conn, insert, a.user, sha, "processing", nil, nil, nil, nil, nil)
+	ok := func(r row) {
+		t.Helper()
+		exec(t, conn, insert, a.user, sha, key, r.status, r.finished, r.errCode, r.deleted, r.opCount, r.result,
+			r.stage, r.fileGone, r.first, r.last)
+	}
+	ok(row{status: "failed", finished: now, errCode: "processing_failed", fileGone: now})
+	ok(row{status: "processing", stage: "parsing"})
+	ok(row{status: "deleted", finished: now, deleted: now, opCount: 3})
 	// The same content may be uploaded again (FIN-79: a fixed or the same file).
-	exec(t, conn, insert, a.user, sha, "done", now, nil, nil, 0, "{}")
+	ok(with(done, func(r *row) { r.first, r.last = earlier, now }))
+
+	// The purge deletes files by the user's prefix: a key outside it is rejected.
+	b := seed(t, conn, userB, 2)
+	fails(t, conn, checkViolation, insert, a.user, sha, b.user+"/f", "processing", nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	fails(t, conn, checkViolation, insert, a.user, sha, "uploads/f", "processing", nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	fails(t, conn, checkViolation, insert, a.user, sha, a.user, "processing", nil, nil, nil, nil, nil, nil, nil, nil, nil)
 }
 
 func TestUnreadLineInvariants(t *testing.T) {
@@ -307,7 +399,7 @@ func TestUnreadLineInvariants(t *testing.T) {
 	a := seed(t, conn, userA, 1)
 	var later string
 	if err := conn.QueryRow(context.Background(), `INSERT INTO upload (user_id, source_id, file_name, size_bytes, content_sha256, object_key, status, finished_at, operation_count, result)
-		VALUES ($1, 'tbank_ofx', 'fixed.ofx', 1, $2, 'k2', 'done', now(), 1, '{}') RETURNING id`, a.user, make([]byte, 32)).Scan(&later); err != nil {
+		VALUES ($1, 'tbank_ofx', 'fixed.ofx', 1, $2, $3, 'done', now(), 1, '{}') RETURNING id`, a.user, make([]byte, 32), a.user+"/fixed").Scan(&later); err != nil {
 		t.Fatal(err)
 	}
 	ins := `INSERT INTO unread_line (user_id, upload_id, line_number, reason, occurred_at, account_id, external_id, resolved_by_upload_id, resolution)
@@ -338,26 +430,53 @@ func TestTransferPairInvariants(t *testing.T) {
 	seedCategories(t, conn)
 	a := seed(t, conn, userA, 1)
 	ctx := context.Background()
-	newOp := func(direction string, at time.Time) string {
-		var id string
+	t0 := time.Date(2026, 9, 18, 6, 30, 0, 0, time.UTC)
+	type op struct {
+		id string
+		at time.Time
+	}
+	n := 0
+	newOp := func(direction string) op {
+		n++
+		o := op{at: t0.Add(time.Duration(n) * time.Minute)}
 		if err := conn.QueryRow(ctx, `INSERT INTO operation (user_id, occurred_at, account_id, direction, amount_minor, currency, status, bank_category_id, category_id)
-			VALUES ($1, $2, $3, $4, 2000000, 'RUB', 'posted', 'cat_transfers', 'cat_own_transfer') RETURNING id`, a.user, at, a.account, direction).Scan(&id); err != nil {
+			VALUES ($1, $2, $3, $4, 2000000, 'RUB', 'posted', 'cat_transfers', 'cat_own_transfer') RETURNING id`, a.user, o.at, a.account, direction).Scan(&o.id); err != nil {
 			t.Fatal(err)
 		}
-		return id
+		return o
 	}
-	t0 := time.Date(2026, 9, 18, 6, 30, 0, 0, time.UTC)
-	debit, credit, credit2 := newOp("expense", t0), newOp("income", t0.Add(time.Minute)), newOp("income", t0.Add(2*time.Minute))
 	ins := `INSERT INTO transfer_pair (user_id, debit_occurred_at, debit_operation_id, credit_occurred_at, credit_operation_id) VALUES ($1, $2, $3, $4, $5)`
-	exec(t, conn, ins, a.user, t0, debit, t0.Add(time.Minute), credit)
-	// An operation is in at most one pair (docs/calc.md 3.2).
-	fails(t, conn, uniqueViolation, ins, a.user, t0, debit, t0.Add(2*time.Minute), credit2)
-	fails(t, conn, checkViolation, ins, a.user, t0, debit, t0, debit)
-	// Losing a side deletes the pair.
-	exec(t, conn, `DELETE FROM operation WHERE user_id = $1 AND id = $2`, a.user, credit)
-	if n := count(t, conn, `SELECT count(*) FROM transfer_pair WHERE user_id = $1`, a.user); n != 0 {
-		t.Fatalf("pairs after a side was deleted: %d", n)
+	debit, credit := newOp("expense"), newOp("income")
+	debit2, credit2 := newOp("expense"), newOp("income")
+	exec(t, conn, ins, a.user, debit.at, debit.id, credit.at, credit.id)
+
+	// An operation is in at most one pair (docs/calc.md 3.2), whichever side it takes.
+	fails(t, conn, uniqueViolation, ins, a.user, debit.at, debit.id, credit2.at, credit2.id) // debit again
+	fails(t, conn, uniqueViolation, ins, a.user, debit2.at, debit2.id, credit.at, credit.id) // credit again
+	// The debit of one pair as the credit of another: the direction in the foreign key
+	// rejects an expense on the credit side, so no operation takes two roles.
+	fails(t, conn, foreignKeyViolation, ins, a.user, debit2.at, debit2.id, debit.at, debit.id)
+	fails(t, conn, foreignKeyViolation, ins, a.user, credit.at, credit.id, credit2.at, credit2.id)
+	// Sides of the wrong direction, even unpaired, are rejected the same way.
+	fails(t, conn, foreignKeyViolation, ins, a.user, credit2.at, credit2.id, debit2.at, debit2.id)
+	fails(t, conn, checkViolation, `INSERT INTO transfer_pair (user_id, debit_occurred_at, debit_operation_id, debit_direction, credit_occurred_at, credit_operation_id)
+		VALUES ($1, $2, $3, 'income', $4, $5)`, a.user, credit2.at, credit2.id, debit2.at, debit2.id)
+
+	// The direction of a paired operation cannot change under the pair: the cascade into
+	// debit_direction fails its CHECK. The pair is deleted first.
+	fails(t, conn, checkViolation, `UPDATE operation SET direction = 'income' WHERE user_id = $1 AND id = $2`, a.user, debit.id)
+	// Moving a side to another day or year moves the pair reference with it.
+	exec(t, conn, `UPDATE operation SET occurred_at = '2027-01-02 00:00:00+00' WHERE user_id = $1 AND id = $2`, a.user, credit.id)
+	if c := count(t, conn, `SELECT count(*) FROM transfer_pair WHERE user_id = $1 AND credit_occurred_at = '2027-01-02 00:00:00+00'`, a.user); c != 1 {
+		t.Fatalf("pair did not follow its credit side: %d", c)
 	}
+	// Losing a side deletes the pair.
+	exec(t, conn, `DELETE FROM operation WHERE user_id = $1 AND id = $2`, a.user, credit.id)
+	if c := count(t, conn, `SELECT count(*) FROM transfer_pair WHERE user_id = $1`, a.user); c != 0 {
+		t.Fatalf("pairs after a side was deleted: %d", c)
+	}
+	// With the pair gone, the debit is free for a new pair.
+	exec(t, conn, ins, a.user, debit.at, debit.id, credit2.at, credit2.id)
 }
 
 func TestRegularPaymentIDIsStable(t *testing.T) {
@@ -404,6 +523,12 @@ func TestNoDataIsNotZero(t *testing.T) {
 		VALUES ($1, '2026-08-01', 'Europe/Moscow', 0, 31, '2026-08-01 00:00+03', '2026-08-01 00:00+03', 1, now())`, a.user)
 	fails(t, conn, checkViolation, `INSERT INTO month_state (user_id, month, time_zone, covered_days, days_in_month, data_from, data_to, calc_version, calculated_at)
 		VALUES ($1, '2026-08-15', 'Europe/Moscow', 1, 31, now(), now(), 1, now())`, a.user)
+	// More covered days than the month has (31 in September).
+	fails(t, conn, checkViolation, `INSERT INTO month_state (user_id, month, time_zone, covered_days, days_in_month, data_from, data_to, calc_version, calculated_at)
+		VALUES ($1, '2026-10-01', 'Europe/Moscow', 31, 30, now(), now(), 1, now())`, a.user)
+	// Data bounds in the wrong order.
+	fails(t, conn, checkViolation, `INSERT INTO month_state (user_id, month, time_zone, covered_days, days_in_month, data_from, data_to, calc_version, calculated_at)
+		VALUES ($1, '2026-10-01', 'Europe/Moscow', 2, 31, '2026-10-02 00:00+03', '2026-10-01 00:00+03', 1, now())`, a.user)
 	// Recalculating the month replaces it: deleting the month removes its sums.
 	exec(t, conn, `DELETE FROM month_state WHERE user_id = $1 AND month = '2026-09-01'`, a.user)
 	if n := count(t, conn, `SELECT count(*) FROM monthly_agg WHERE user_id = $1`, a.user); n != 0 {
@@ -435,7 +560,16 @@ func TestOneCurrentMetricDefinition(t *testing.T) {
 	exec(t, conn, `INSERT INTO metric_definition (metric_id, version, is_current) VALUES ('insights.regular_payments', 1, true)`)
 	fails(t, conn, uniqueViolation, `INSERT INTO metric_definition (metric_id, version, is_current) VALUES ('insights.regular_payments', 2, true)`)
 	exec(t, conn, `INSERT INTO metric_definition (metric_id, version) VALUES ('insights.regular_payments', 2)`)
-	fails(t, conn, foreignKeyViolation, `INSERT INTO user_metric_version (user_id, metric_id, version) VALUES ($1, 'insights.regular_payments', 3)`, userA)
+
+	// The user exists, so a refusal below can only come from the (metric_id, version) key.
+	exec(t, conn, `INSERT INTO user_state (user_id) VALUES ($1)`, userA)
+	exec(t, conn, `INSERT INTO user_metric_version (user_id, metric_id, version) VALUES ($1, 'insights.regular_payments', 2)`, userA)
+	_, err := conn.Exec(context.Background(),
+		`UPDATE user_metric_version SET version = 3 WHERE user_id = $1 AND metric_id = 'insights.regular_payments'`, userA)
+	var pg *pgconn.PgError
+	if !errors.As(err, &pg) || pg.Code != foreignKeyViolation || pg.ConstraintName != "user_metric_version_metric_id_version_fkey" {
+		t.Fatalf("version 3 of the metric: want a violation of user_metric_version_metric_id_version_fkey, got %v", err)
+	}
 }
 
 // PurgeUserData is one DELETE of the user's row: nothing of the user is left, the other user
@@ -455,8 +589,16 @@ func TestPurgeUserRemovesEverything(t *testing.T) {
 		VALUES ($1, '2026-09-01', 'Europe/Moscow', 25, 30, now(), now(), 1, now())`, a.user)
 	exec(t, conn, `INSERT INTO monthly_agg (user_id, month, account_id, category_id, kind, currency, amount_minor, op_count)
 		VALUES ($1, '2026-09-01', $2, 'cat_supermarkets', 'expense', 'RUB', 1, 1)`, a.user, a.account)
-
-	exec(t, conn, `DELETE FROM user_state WHERE user_id = $1`, a.user)
+	exec(t, conn, `INSERT INTO metric_definition (metric_id, version, is_current) VALUES ('tiles.expense', 1, true)`)
+	exec(t, conn, `INSERT INTO user_metric_version (user_id, metric_id, version) VALUES ($1, 'tiles.expense', 1), ($2, 'tiles.expense', 1)`, a.user, userB)
+	var credit string
+	creditAt := a.at.Add(time.Minute)
+	if err := conn.QueryRow(ctx, `INSERT INTO operation (user_id, occurred_at, account_id, direction, amount_minor, currency, status, bank_category_id, category_id)
+		VALUES ($1, $2, $3, 'income', 234000, 'RUB', 'posted', 'cat_transfers', 'cat_own_transfer') RETURNING id`, a.user, creditAt, a.account).Scan(&credit); err != nil {
+		t.Fatal(err)
+	}
+	exec(t, conn, `INSERT INTO transfer_pair (user_id, debit_occurred_at, debit_operation_id, credit_occurred_at, credit_operation_id)
+		VALUES ($1, $2, $3, $4, $5)`, a.user, a.at, a.operation, creditAt, credit)
 
 	rows, err := conn.Query(ctx, `SELECT c.relname FROM pg_attribute a
 		JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -472,6 +614,16 @@ func TestPurgeUserRemovesEverything(t *testing.T) {
 	if len(tables) < 15 {
 		t.Fatalf("user tables found: %d, the query is wrong", len(tables))
 	}
+	// The fixture has rows in every user table: a zero after the purge then proves the
+	// cascade, and a new user table without a row here fails the test.
+	for _, table := range tables {
+		if n := count(t, conn, `SELECT count(*) FROM `+pgx.Identifier{table}.Sanitize()+` WHERE user_id = $1`, a.user); n == 0 {
+			t.Fatalf("%s: no rows of the user before the purge, add them to the fixture", table)
+		}
+	}
+
+	exec(t, conn, `DELETE FROM user_state WHERE user_id = $1`, a.user)
+
 	for _, table := range tables {
 		if n := count(t, conn, `SELECT count(*) FROM `+pgx.Identifier{table}.Sanitize()+` WHERE user_id = $1`, a.user); n != 0 {
 			t.Errorf("%s: %d rows of the purged user", table, n)
@@ -479,6 +631,9 @@ func TestPurgeUserRemovesEverything(t *testing.T) {
 	}
 	if n := count(t, conn, `SELECT count(*) FROM operation WHERE user_id = $1`, userB); n != 1 {
 		t.Errorf("the other user lost operations: %d", n)
+	}
+	if n := count(t, conn, `SELECT count(*) FROM user_metric_version WHERE user_id = $1`, userB); n != 1 {
+		t.Errorf("the other user lost metric versions: %d", n)
 	}
 }
 
