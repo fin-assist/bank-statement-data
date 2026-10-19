@@ -5,6 +5,7 @@ Go-сервис «Понятных финансов»: приём выписок
 - [docs/server.md](docs/server.md) — gRPC-сервер и интерцепторы, идентичность, таблица доступа, клиенты, транзакции, логи и метрики.
 - [docs/config.md](docs/config.md) — переменные окружения.
 - [docs/migrations.md](docs/migrations.md) — миграции и запросы на pgx ([FIN-115](https://finassist.youtrack.cloud/issue/FIN-115)).
+- [docs/schema.md](docs/schema.md) — что держит схема БД и какие инварианты проверяет код ([FIN-111](https://finassist.youtrack.cloud/issue/FIN-111)).
 - [AGENTS.md](AGENTS.md) — карта и правила для агентов, Code Review Rules.
 
 ## Что ещё не сделано после переноса шаблона

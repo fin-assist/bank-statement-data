@@ -9,7 +9,7 @@ DROP TABLE merchant;
 DROP TABLE regular_payment;
 DROP TABLE user_bank_category;
 DROP TABLE unread_line;
-DROP TABLE transfer_pair;
+DROP TABLE transfer_pair, transfer_pair_member;
 DROP TABLE upload_record;
 DROP TABLE source_record;
 DROP TABLE operation;

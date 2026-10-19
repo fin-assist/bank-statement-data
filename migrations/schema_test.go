@@ -17,13 +17,16 @@ import (
 	"github.com/fin-assist/bank-statement-data/migrations"
 )
 
-// The invariants of the schema (FIN-111) are checked by real inserts: a constraint that is
-// dropped or weakened by a later migration fails one of these tests.
+// The constraints of the schema (FIN-111) are checked by real inserts: a key that is dropped
+// or weakened by a later migration fails one of these tests. The schema holds only keys,
+// NOT NULL and DEFAULT (owner's decision of 19.10.2026); the other invariants are the
+// service code's (docs/schema.md) and are tested with that code.
 
 const (
 	uniqueViolation     = "23505"
 	foreignKeyViolation = "23503"
-	checkViolation      = "23514"
+	checkViolation      = "23514" // a row outside every partition of operation
+	notNullViolation    = "23502"
 	lockNotAvailable    = "55P03"
 )
 
@@ -117,7 +120,7 @@ func seed(t *testing.T, conn *pgx.Conn, user string, hmacByte byte) fixture {
 	if err := conn.QueryRow(ctx, `INSERT INTO upload (user_id, source_id, file_name, size_bytes, content_sha256, object_key,
 			status, finished_at, operation_count, result)
 		VALUES ($1, 'tbank_ofx', 'operations.ofx', 100, $2, $3, 'done', now(), 1, '{}') RETURNING id`,
-		user, make([]byte, 32), user+"/u1").Scan(&f.upload); err != nil {
+		user, make([]byte, 32), user+"/seed").Scan(&f.upload); err != nil {
 		t.Fatal(err)
 	}
 	exec(t, conn, `INSERT INTO upload_account (user_id, upload_id, account_id, statement_start, statement_end)
@@ -153,7 +156,7 @@ func TestSourceRecordDeduplication(t *testing.T) {
 	}
 }
 
-func TestAccountIsUniquePerUserAndHasNoNumber(t *testing.T) {
+func TestAccountIsUniquePerUser(t *testing.T) {
 	conn, _ := schema(t)
 	seedCategories(t, conn)
 	a := seed(t, conn, userA, 7)
@@ -163,13 +166,9 @@ func TestAccountIsUniquePerUserAndHasNoNumber(t *testing.T) {
 	hmac[0] = 7
 	fails(t, conn, uniqueViolation, `INSERT INTO account (user_id, source_id, ext_id_hmac, ext_id_key_version, type, is_other_bank)
 		VALUES ($1, 'tbank_ofx', $2, 1, 'savings', false)`, a.user, hmac)
-	// Only a 32-byte HMAC fits: a raw 20-digit number does not.
-	fails(t, conn, checkViolation, `INSERT INTO account (user_id, source_id, ext_id_hmac, ext_id_key_version, type, is_other_bank)
-		VALUES ($1, 'tbank_ofx', convert_to('40817810000000004821', 'UTF8'), 1, 'checking', false)`, a.user)
-	// An account of another bank has no mask.
-	hmac[0] = 8
-	fails(t, conn, checkViolation, `INSERT INTO account (user_id, source_id, ext_id_hmac, ext_id_key_version, type, mask, is_other_bank)
-		VALUES ($1, 'tbank_ofx', $2, 1, 'checking', '1234', true)`, a.user, hmac)
+	// The HMAC is required; its length and the mask rule are the code's (docs/schema.md).
+	fails(t, conn, notNullViolation, `INSERT INTO account (user_id, source_id, ext_id_key_version, type, is_other_bank)
+		VALUES ($1, 'tbank_ofx', 1, 'checking', false)`, a.user)
 }
 
 func TestRowsCannotPointAtAnotherUser(t *testing.T) {
@@ -193,9 +192,26 @@ func TestRowsCannotPointAtAnotherUser(t *testing.T) {
 	// B's line on A's account.
 	fails(t, conn, foreignKeyViolation, `INSERT INTO unread_line (user_id, upload_id, line_number, reason, account_id)
 		VALUES ($1, $2, 2, 'truncated', $3)`, b.user, b.upload, a.account)
-	// B's pair on A's operation (as either side).
-	fails(t, conn, foreignKeyViolation, `INSERT INTO transfer_pair (user_id, debit_occurred_at, debit_operation_id, credit_occurred_at, credit_operation_id)
-		SELECT $1, $2, $3, occurred_at, id FROM operation WHERE user_id = $1`, b.user, a.at, a.operation)
+	// B's pair member on A's operation: the only reason to refuse is the foreign user (the pair
+	// of B exists, the operation exists, it is in no pair).
+	pairB := newPair(t, conn, b.user)
+	fails(t, conn, foreignKeyViolation, `INSERT INTO transfer_pair_member (user_id, operation_id, operation_occurred_at, pair_id)
+		VALUES ($1, $2, $3, $4)`, b.user, a.operation, a.at, pairB)
+	// A's member row in B's pair.
+	fails(t, conn, foreignKeyViolation, `INSERT INTO transfer_pair_member (user_id, operation_id, operation_occurred_at, pair_id)
+		VALUES ($1, $2, $3, $4)`, a.user, a.operation, a.at, pairB)
+	// B's pair whose sides are A's members: the side keys reach members of another user.
+	aDebit, aCredit := newOp(t, conn, a, "expense", time.Minute), newOp(t, conn, a, "income", 2*time.Minute)
+	pairA := pairOf(t, conn, a.user, aDebit, aCredit)
+	tx, err := conn.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(context.Background(), `INSERT INTO transfer_pair (user_id, id, debit_operation_id, credit_operation_id) VALUES ($1, $2, $3, $4)`,
+		b.user, pairA, aDebit.id, aCredit.id); err != nil {
+		t.Fatal(err)
+	}
+	failsCommit(t, tx, foreignKeyViolation)
 	// B's covered month with A's account.
 	exec(t, conn, `INSERT INTO month_state (user_id, month, time_zone, covered_days, days_in_month, data_from, data_to, calc_version, calculated_at)
 		VALUES ($1, '2026-09-01', 'Europe/Moscow', 25, 30, now(), now(), 1, now())`, b.user)
@@ -280,120 +296,65 @@ func TestOperationPartitions(t *testing.T) {
 	}
 }
 
-func TestOperationCategoryInvariants(t *testing.T) {
+func TestOperationReferences(t *testing.T) {
 	conn, _ := schema(t)
 	seedCategories(t, conn)
 	a := seed(t, conn, userA, 1)
 	op := `UPDATE operation SET %s WHERE user_id = '` + a.user + `' AND id = '` + a.operation + `'`
 	set := func(s string) string { return fmt.Sprintf(op, s) }
 
-	// A manual category is the final category.
-	fails(t, conn, checkViolation, set(`manual_category_id = 'cat_transfers'`))
-	exec(t, conn, set(`manual_category_id = 'cat_transfers', category_id = 'cat_transfers'`))
-	// cat_uncategorized cannot be chosen by hand (assignable = false).
-	fails(t, conn, checkViolation, set(`manual_category_id = 'cat_uncategorized', category_id = 'cat_uncategorized'`))
-	// A refund is an income with a target.
-	fails(t, conn, checkViolation, set(`manual_category_id = NULL, category_id = 'cat_refund'`))
-	fails(t, conn, checkViolation, set(`manual_category_id = NULL, category_id = 'cat_refund', refund_target_category_id = 'cat_supermarkets'`))
-	exec(t, conn, set(`manual_category_id = NULL, direction = 'income', category_id = 'cat_refund', refund_target_category_id = 'cat_supermarkets'`))
-	fails(t, conn, checkViolation, set(`refund_target_category_id = 'cat_own_transfer'`))
-	// A target only on a refund.
-	fails(t, conn, checkViolation, set(`category_id = 'cat_supermarkets'`))
-	// Amounts are unsigned.
-	fails(t, conn, checkViolation, set(`amount_minor = -1`))
-	// An unknown category ID is not accepted.
-	fails(t, conn, foreignKeyViolation, set(`bank_category_id = 'cat_unknown'`))
+	// Every category column references the dictionary.
+	for _, col := range []string{"bank_category_id", "category_id", "manual_category_id", "refund_target_category_id"} {
+		fails(t, conn, foreignKeyViolation, set(col+` = 'cat_unknown'`))
+	}
+	fails(t, conn, notNullViolation, set(`category_id = NULL`))
 	// FIN-67: an operation without a description is accepted.
 	exec(t, conn, set(`description = ''`))
+	// The rules between the category columns (manual = final, refund target) are the code's.
+	exec(t, conn, set(`manual_category_id = 'cat_transfers', category_id = 'cat_transfers'`))
 }
 
-func TestCategoryInvariants(t *testing.T) {
+func TestCategoryKeys(t *testing.T) {
 	conn, _ := schema(t)
-	// A bank category not yet in the registry applies to both directions (docs/calc.md 3.1).
-	fails(t, conn, checkViolation, `INSERT INTO category (id, name, bank_name, icon, for_expense, for_income, assignable)
-		VALUES ('cat_kripto', 'Крипто', 'Крипто', 'tag', false, true, true)`)
 	exec(t, conn, `INSERT INTO category (id, name, bank_name, icon, for_expense, for_income, assignable)
 		VALUES ('cat_kripto', 'Крипто', 'Крипто', 'tag', true, true, true)`)
 	// One dictionary row per bank category name.
 	fails(t, conn, uniqueViolation, `INSERT INTO category (id, name, bank_name, icon, for_expense, for_income, assignable)
 		VALUES ('cat_kripto_2', 'Крипто', 'Крипто', 'tag', true, true, true)`)
-	// Names are cut to 64 characters by the service; a longer one is a bug.
-	fails(t, conn, checkViolation, `INSERT INTO category (id, name, bank_name, icon, for_expense, for_income, assignable)
-		VALUES ('cat_long', repeat('я', 65), repeat('я', 65), 'tag', true, true, true)`)
+	// One position per display slot.
+	fails(t, conn, uniqueViolation, `INSERT INTO category (id, name, bank_name, icon, for_expense, for_income, assignable, sort_order)
+		VALUES ('cat_other', 'Другое', 'Другое', 'tag', true, true, true, 10)`)
 	if n := count(t, conn, `SELECT count(*) FROM category WHERE is_system`); n != 3 {
 		t.Fatalf("system categories: %d, want 3", n)
 	}
 }
 
-func TestUploadStatusInvariants(t *testing.T) {
+func TestUploadKeys(t *testing.T) {
 	conn, _ := schema(t)
 	seedCategories(t, conn)
 	a := seed(t, conn, userA, 1)
-	insert := `INSERT INTO upload (user_id, source_id, file_name, size_bytes, content_sha256, object_key, status, finished_at,
-			error_code, deleted_at, operation_count, result, stage, file_deleted_at, first_operation_at, last_operation_at)
-		VALUES ($1, 'tbank_ofx', 'f.ofx', 1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`
-	sha := make([]byte, 32)
-	key := a.user + "/f"
-	now := time.Now()
-	earlier := now.Add(-time.Hour)
-	type row struct {
-		status   string
-		finished any
-		errCode  any
-		deleted  any
-		opCount  any
-		result   any
-		stage    any
-		fileGone any
-		first    any
-		last     any
-	}
-	done := row{status: "done", finished: now, opCount: 1, result: "{}"}
-	with := func(r row, f func(*row)) row { f(&r); return r }
-	bad := map[string]row{
-		"processing with finished_at":     {status: "processing", finished: now},
-		"done without finished_at":        with(done, func(r *row) { r.finished = nil }),
-		"done without result":             with(done, func(r *row) { r.result = nil }),
-		"done without operation_count":    with(done, func(r *row) { r.opCount = nil }),
-		"done with deleted_at":            with(done, func(r *row) { r.deleted = now }),
-		"done with a stage":               with(done, func(r *row) { r.stage = "rules" }),
-		"error code on done":              with(done, func(r *row) { r.errCode = "cancelled" }),
-		"failed without error code":       {status: "failed", finished: now},
-		"failed with result":              {status: "failed", finished: now, errCode: "processing_failed", result: "{}"},
-		"deleted without deleted_at":      {status: "deleted", finished: now, opCount: 1},
-		"deleted without operation_count": {status: "deleted", finished: now, deleted: now},
-		"processing with file deleted":    {status: "processing", fileGone: now},
-		"first without last":              with(done, func(r *row) { r.first = earlier }),
-		"last without first":              with(done, func(r *row) { r.last = earlier }),
-		"first after last":                with(done, func(r *row) { r.first, r.last = now, earlier }),
-		"unknown status":                  {status: "queued"},
-		"unknown stage":                   {status: "processing", stage: "upload"},
-	}
-	for name, r := range bad {
-		t.Run(name, func(t *testing.T) {
-			fails(t, conn, checkViolation, insert, a.user, sha, key, r.status, r.finished, r.errCode, r.deleted,
-				r.opCount, r.result, r.stage, r.fileGone, r.first, r.last)
-		})
-	}
-	ok := func(r row) {
-		t.Helper()
-		exec(t, conn, insert, a.user, sha, key, r.status, r.finished, r.errCode, r.deleted, r.opCount, r.result,
-			r.stage, r.fileGone, r.first, r.last)
-	}
-	ok(row{status: "failed", finished: now, errCode: "processing_failed", fileGone: now})
-	ok(row{status: "processing", stage: "parsing"})
-	ok(row{status: "deleted", finished: now, deleted: now, opCount: 3})
-	// The same content may be uploaded again (FIN-79: a fixed or the same file).
-	ok(with(done, func(r *row) { r.first, r.last = earlier, now }))
-
-	// The purge deletes files by the user's prefix: a key outside it is rejected.
 	b := seed(t, conn, userB, 2)
-	fails(t, conn, checkViolation, insert, a.user, sha, b.user+"/f", "processing", nil, nil, nil, nil, nil, nil, nil, nil, nil)
-	fails(t, conn, checkViolation, insert, a.user, sha, "uploads/f", "processing", nil, nil, nil, nil, nil, nil, nil, nil, nil)
-	fails(t, conn, checkViolation, insert, a.user, sha, a.user, "processing", nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	insert := `INSERT INTO upload (user_id, source_id, file_name, size_bytes, content_sha256, object_key) VALUES ($1, 'tbank_ofx', 'f.ofx', 1, $2, $3)`
+	sha := make([]byte, 32)
+
+	// The same content uploaded again is a new upload with its own file.
+	exec(t, conn, insert, a.user, sha, a.user+"/first")
+	exec(t, conn, insert, a.user, sha, a.user+"/second")
+	// Two uploads never share a file: deleting one file cannot take another upload's.
+	fails(t, conn, uniqueViolation, insert, a.user, sha, a.user+"/first")
+	// The key is unique per user: another user's row does not collide (its key has its own
+	// prefix anyway; the prefix is built by the code, docs/schema.md).
+	exec(t, conn, insert, b.user, sha, a.user+"/first")
+
+	var status string
+	if err := conn.QueryRow(context.Background(), `SELECT status FROM upload WHERE user_id = $1 AND object_key = $2`,
+		a.user, a.user+"/second").Scan(&status); err != nil || status != "processing" {
+		t.Fatalf("a new upload: status %q, %v; want processing by default", status, err)
+	}
+	fails(t, conn, notNullViolation, `INSERT INTO upload (user_id, source_id, file_name, size_bytes, content_sha256) VALUES ($1, 'tbank_ofx', 'f.ofx', 1, $2)`, a.user, sha)
 }
 
-func TestUnreadLineInvariants(t *testing.T) {
+func TestUnreadLineKeys(t *testing.T) {
 	conn, _ := schema(t)
 	seedCategories(t, conn)
 	a := seed(t, conn, userA, 1)
@@ -408,13 +369,8 @@ func TestUnreadLineInvariants(t *testing.T) {
 	exec(t, conn, ins, a.user, a.upload, 412, "bad_amount", day, a.account, "FIT1", nil, nil)
 	// The same line number of one upload is one line.
 	fails(t, conn, uniqueViolation, ins, a.user, a.upload, 412, "bad_amount", day, a.account, "FIT1", nil, nil)
-	// A closed line has both the closing upload and the outcome; never itself.
-	fails(t, conn, checkViolation, ins, a.user, a.upload, 413, "truncated", nil, a.account, nil, later, nil)
-	fails(t, conn, checkViolation, ins, a.user, a.upload, 414, "truncated", nil, a.account, nil, a.upload, "read")
-	// A line without a date cannot carry one.
-	fails(t, conn, checkViolation, ins, a.user, a.upload, 415, "no_date", day, a.account, nil, nil, nil)
-	// FITID without an account cannot close anything.
-	fails(t, conn, checkViolation, ins, a.user, a.upload, 416, "bad_amount", day, nil, "FIT2", nil, nil)
+	// The closing upload must exist.
+	fails(t, conn, foreignKeyViolation, ins, a.user, a.upload, 413, "truncated", nil, a.account, nil, "01a10800-0000-7000-8000-0000000000ff", "read")
 	exec(t, conn, ins, a.user, a.upload, 417, "truncated", nil, a.account, nil, later, "replaced")
 
 	// Deleting the closing upload (logically) reopens its lines: the service clears the reference.
@@ -425,58 +381,154 @@ func TestUnreadLineInvariants(t *testing.T) {
 	}
 }
 
+// newOp adds an operation of the fixture's user, offset from the fixture's time.
+func newOp(t *testing.T, conn *pgx.Conn, f fixture, direction string, after time.Duration) op {
+	t.Helper()
+	o := op{at: f.at.Add(after)}
+	if err := conn.QueryRow(context.Background(), `INSERT INTO operation (user_id, occurred_at, account_id, direction, amount_minor, currency, status, bank_category_id, category_id)
+		VALUES ($1, $2, $3, $4, 2000000, 'RUB', 'posted', 'cat_transfers', 'cat_own_transfer') RETURNING id`, f.user, o.at, f.account, direction).Scan(&o.id); err != nil {
+		t.Fatal(err)
+	}
+	return o
+}
+
+type op struct {
+	id string
+	at time.Time
+}
+
+// newPair returns the ID of a committed pair of the user with two fresh sides.
+func newPair(t *testing.T, conn *pgx.Conn, user string) string {
+	t.Helper()
+	f := fixture{user: user, at: time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC)}
+	if err := conn.QueryRow(context.Background(), `SELECT id FROM account WHERE user_id = $1 LIMIT 1`, user).Scan(&f.account); err != nil {
+		t.Fatal(err)
+	}
+	return pairOf(t, conn, user, newOp(t, conn, f, "expense", 0), newOp(t, conn, f, "income", time.Minute))
+}
+
+// pairOf writes a pair the way the service does: the pair and both members in one transaction.
+func pairOf(t *testing.T, conn *pgx.Conn, user string, debit, credit op) string {
+	t.Helper()
+	id, err := insertPair(conn, user, debit, credit)
+	if err != nil {
+		t.Fatalf("pair %s/%s: %v", debit.id, credit.id, err)
+	}
+	return id
+}
+
+func insertPair(conn *pgx.Conn, user string, debit, credit op) (string, error) {
+	ctx := context.Background()
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var id string
+	if err := tx.QueryRow(ctx, `INSERT INTO transfer_pair (user_id, debit_operation_id, credit_operation_id) VALUES ($1, $2, $3) RETURNING id`,
+		user, debit.id, credit.id).Scan(&id); err != nil {
+		return "", err
+	}
+	for _, side := range []op{debit, credit} {
+		if _, err := tx.Exec(ctx, `INSERT INTO transfer_pair_member (user_id, operation_id, operation_occurred_at, pair_id) VALUES ($1, $2, $3, $4)`,
+			user, side.id, side.at, id); err != nil {
+			return "", err
+		}
+	}
+	return id, tx.Commit(ctx)
+}
+
+// failsCommit commits tx and expects the deferred constraint check to fail with code.
+func failsCommit(t *testing.T, tx pgx.Tx, code string) {
+	t.Helper()
+	err := tx.Commit(context.Background())
+	var pg *pgconn.PgError
+	if !errors.As(err, &pg) || pg.Code != code {
+		t.Fatalf("commit: want SQLSTATE %s, got %v", code, err)
+	}
+}
+
+func wantCode(t *testing.T, err error, code string) {
+	t.Helper()
+	var pg *pgconn.PgError
+	if !errors.As(err, &pg) || pg.Code != code {
+		t.Fatalf("want SQLSTATE %s, got %v", code, err)
+	}
+}
+
 func TestTransferPairInvariants(t *testing.T) {
 	conn, _ := schema(t)
 	seedCategories(t, conn)
 	a := seed(t, conn, userA, 1)
+	debit, credit := newOp(t, conn, a, "expense", time.Minute), newOp(t, conn, a, "income", 2*time.Minute)
+	debit2, credit2 := newOp(t, conn, a, "expense", 3*time.Minute), newOp(t, conn, a, "income", 4*time.Minute)
+	pair := pairOf(t, conn, a.user, debit, credit)
+
+	// An operation is in at most one pair (docs/calc.md 3.2), in any role: the member key is
+	// the operation alone, whichever side and whichever pair.
+	cases := map[string][2]op{
+		"debit again as a debit":   {debit, credit2},
+		"credit again as a credit": {debit2, credit},
+		"debit as a credit":        {debit2, debit},
+		"credit as a debit":        {credit, credit2},
+	}
+	for name, sides := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := insertPair(conn, a.user, sides[0], sides[1])
+			wantCode(t, err, uniqueViolation)
+		})
+	}
+	// A pair cannot name sides that are not its members: no member rows, the deferred side
+	// keys fail at commit.
 	ctx := context.Background()
-	t0 := time.Date(2026, 9, 18, 6, 30, 0, 0, time.UTC)
-	type op struct {
-		id string
-		at time.Time
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
 	}
-	n := 0
-	newOp := func(direction string) op {
-		n++
-		o := op{at: t0.Add(time.Duration(n) * time.Minute)}
-		if err := conn.QueryRow(ctx, `INSERT INTO operation (user_id, occurred_at, account_id, direction, amount_minor, currency, status, bank_category_id, category_id)
-			VALUES ($1, $2, $3, $4, 2000000, 'RUB', 'posted', 'cat_transfers', 'cat_own_transfer') RETURNING id`, a.user, o.at, a.account, direction).Scan(&o.id); err != nil {
-			t.Fatal(err)
-		}
-		return o
+	if _, err := tx.Exec(ctx, `INSERT INTO transfer_pair (user_id, debit_operation_id, credit_operation_id) VALUES ($1, $2, $3)`,
+		a.user, debit2.id, credit2.id); err != nil {
+		t.Fatal(err)
 	}
-	ins := `INSERT INTO transfer_pair (user_id, debit_occurred_at, debit_operation_id, credit_occurred_at, credit_operation_id) VALUES ($1, $2, $3, $4, $5)`
-	debit, credit := newOp("expense"), newOp("income")
-	debit2, credit2 := newOp("expense"), newOp("income")
-	exec(t, conn, ins, a.user, debit.at, debit.id, credit.at, credit.id)
+	failsCommit(t, tx, foreignKeyViolation)
+	// Nor name a member of another pair as its side: one case per side key, the other side
+	// being a proper member of the new pair, so only that key can refuse.
+	for name, sides := range map[string][3]op{
+		"debit from another pair":  {debit, credit2, credit2}, // debit, credit, member of the new pair
+		"credit from another pair": {debit2, credit, debit2},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tx, err := conn.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = tx.Rollback(ctx) }()
+			var other string
+			if err := tx.QueryRow(ctx, `INSERT INTO transfer_pair (user_id, debit_operation_id, credit_operation_id) VALUES ($1, $2, $3) RETURNING id`,
+				a.user, sides[0].id, sides[1].id).Scan(&other); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tx.Exec(ctx, `INSERT INTO transfer_pair_member (user_id, operation_id, operation_occurred_at, pair_id) VALUES ($1, $2, $3, $4)`,
+				a.user, sides[2].id, sides[2].at, other); err != nil {
+				t.Fatal(err)
+			}
+			failsCommit(t, tx, foreignKeyViolation)
+		})
+	}
 
-	// An operation is in at most one pair (docs/calc.md 3.2), whichever side it takes.
-	fails(t, conn, uniqueViolation, ins, a.user, debit.at, debit.id, credit2.at, credit2.id) // debit again
-	fails(t, conn, uniqueViolation, ins, a.user, debit2.at, debit2.id, credit.at, credit.id) // credit again
-	// The debit of one pair as the credit of another: the direction in the foreign key
-	// rejects an expense on the credit side, so no operation takes two roles.
-	fails(t, conn, foreignKeyViolation, ins, a.user, debit2.at, debit2.id, debit.at, debit.id)
-	fails(t, conn, foreignKeyViolation, ins, a.user, credit.at, credit.id, credit2.at, credit2.id)
-	// Sides of the wrong direction, even unpaired, are rejected the same way.
-	fails(t, conn, foreignKeyViolation, ins, a.user, credit2.at, credit2.id, debit2.at, debit2.id)
-	fails(t, conn, checkViolation, `INSERT INTO transfer_pair (user_id, debit_occurred_at, debit_operation_id, debit_direction, credit_occurred_at, credit_operation_id)
-		VALUES ($1, $2, $3, 'income', $4, $5)`, a.user, credit2.at, credit2.id, debit2.at, debit2.id)
-
-	// The direction of a paired operation cannot change under the pair: the cascade into
-	// debit_direction fails its CHECK. The pair is deleted first.
-	fails(t, conn, checkViolation, `UPDATE operation SET direction = 'income' WHERE user_id = $1 AND id = $2`, a.user, debit.id)
-	// Moving a side to another day or year moves the pair reference with it.
+	// Moving a side to another year moves its member row with it.
 	exec(t, conn, `UPDATE operation SET occurred_at = '2027-01-02 00:00:00+00' WHERE user_id = $1 AND id = $2`, a.user, credit.id)
-	if c := count(t, conn, `SELECT count(*) FROM transfer_pair WHERE user_id = $1 AND credit_occurred_at = '2027-01-02 00:00:00+00'`, a.user); c != 1 {
-		t.Fatalf("pair did not follow its credit side: %d", c)
+	if c := count(t, conn, `SELECT count(*) FROM transfer_pair_member WHERE user_id = $1 AND operation_occurred_at = '2027-01-02 00:00:00+00'`, a.user); c != 1 {
+		t.Fatalf("member did not follow its operation: %d", c)
 	}
-	// Losing a side deletes the pair.
+	// Losing a side deletes the pair and frees the other side.
 	exec(t, conn, `DELETE FROM operation WHERE user_id = $1 AND id = $2`, a.user, credit.id)
-	if c := count(t, conn, `SELECT count(*) FROM transfer_pair WHERE user_id = $1`, a.user); c != 0 {
-		t.Fatalf("pairs after a side was deleted: %d", c)
+	if c := count(t, conn, `SELECT count(*) FROM transfer_pair WHERE user_id = $1 AND id = $2`, a.user, pair); c != 0 {
+		t.Fatalf("pair after a side was deleted: %d", c)
 	}
-	// With the pair gone, the debit is free for a new pair.
-	exec(t, conn, ins, a.user, debit.at, debit.id, credit2.at, credit2.id)
+	if c := count(t, conn, `SELECT count(*) FROM transfer_pair_member WHERE user_id = $1`, a.user); c != 0 {
+		t.Fatalf("members after a side was deleted: %d, want 0", c)
+	}
+	pairOf(t, conn, a.user, debit, credit2)
 }
 
 func TestRegularPaymentIDIsStable(t *testing.T) {
@@ -504,8 +556,11 @@ func TestRegularPaymentIDIsStable(t *testing.T) {
 	if other := get(userB); other == first {
 		t.Fatal("two users share a payment ID")
 	}
-	fails(t, conn, checkViolation, `INSERT INTO regular_payment (user_id, periodicity, description) VALUES ($1, 'monthly', '')`, userA)
-	fails(t, conn, checkViolation, `INSERT INTO regular_payment (user_id, periodicity, description) VALUES ($1, 'weekly', 'x')`, userA)
+	// A different periodicity is a different payment with its own ID.
+	var weekly string
+	if err := conn.QueryRow(context.Background(), `INSERT INTO regular_payment (user_id, periodicity, description) VALUES ($1, 'weekly', 'Яндекс Плюс') RETURNING id`, userA).Scan(&weekly); err != nil || weekly == first {
+		t.Fatalf("weekly payment: %s, %v", weekly, err)
+	}
 }
 
 func TestNoDataIsNotZero(t *testing.T) {
@@ -519,16 +574,9 @@ func TestNoDataIsNotZero(t *testing.T) {
 	exec(t, conn, `INSERT INTO month_state (user_id, month, time_zone, covered_days, days_in_month, data_from, data_to, calc_version, calculated_at)
 		VALUES ($1, '2026-09-01', 'Europe/Moscow', 25, 30, '2026-09-01 00:00+03', '2026-09-25 21:40+03', 1, now())`, a.user)
 	exec(t, conn, agg, a.user, a.account)
-	fails(t, conn, checkViolation, `INSERT INTO month_state (user_id, month, time_zone, covered_days, days_in_month, data_from, data_to, calc_version, calculated_at)
-		VALUES ($1, '2026-08-01', 'Europe/Moscow', 0, 31, '2026-08-01 00:00+03', '2026-08-01 00:00+03', 1, now())`, a.user)
-	fails(t, conn, checkViolation, `INSERT INTO month_state (user_id, month, time_zone, covered_days, days_in_month, data_from, data_to, calc_version, calculated_at)
-		VALUES ($1, '2026-08-15', 'Europe/Moscow', 1, 31, now(), now(), 1, now())`, a.user)
-	// More covered days than the month has (31 in September).
-	fails(t, conn, checkViolation, `INSERT INTO month_state (user_id, month, time_zone, covered_days, days_in_month, data_from, data_to, calc_version, calculated_at)
-		VALUES ($1, '2026-10-01', 'Europe/Moscow', 31, 30, now(), now(), 1, now())`, a.user)
-	// Data bounds in the wrong order.
-	fails(t, conn, checkViolation, `INSERT INTO month_state (user_id, month, time_zone, covered_days, days_in_month, data_from, data_to, calc_version, calculated_at)
-		VALUES ($1, '2026-10-01', 'Europe/Moscow', 2, 31, '2026-10-02 00:00+03', '2026-10-01 00:00+03', 1, now())`, a.user)
+	// One state per month.
+	fails(t, conn, uniqueViolation, `INSERT INTO month_state (user_id, month, time_zone, covered_days, days_in_month, data_from, data_to, calc_version, calculated_at)
+		VALUES ($1, '2026-09-01', 'Europe/Moscow', 25, 30, now(), now(), 2, now())`, a.user)
 	// Recalculating the month replaces it: deleting the month removes its sums.
 	exec(t, conn, `DELETE FROM month_state WHERE user_id = $1 AND month = '2026-09-01'`, a.user)
 	if n := count(t, conn, `SELECT count(*) FROM monthly_agg WHERE user_id = $1`, a.user); n != 0 {
@@ -552,7 +600,6 @@ func TestRecalcQueueMarksAMonthOnce(t *testing.T) {
 	if err != nil || tag.RowsAffected() != 0 {
 		t.Fatalf("stale worker deleted a re-marked month: %v %d", err, tag.RowsAffected())
 	}
-	fails(t, conn, checkViolation, `INSERT INTO recalc_queue (user_id, month) VALUES ($1, '2026-09-02')`, a.user)
 }
 
 func TestOneCurrentMetricDefinition(t *testing.T) {
@@ -591,14 +638,7 @@ func TestPurgeUserRemovesEverything(t *testing.T) {
 		VALUES ($1, '2026-09-01', $2, 'cat_supermarkets', 'expense', 'RUB', 1, 1)`, a.user, a.account)
 	exec(t, conn, `INSERT INTO metric_definition (metric_id, version, is_current) VALUES ('tiles.expense', 1, true)`)
 	exec(t, conn, `INSERT INTO user_metric_version (user_id, metric_id, version) VALUES ($1, 'tiles.expense', 1), ($2, 'tiles.expense', 1)`, a.user, userB)
-	var credit string
-	creditAt := a.at.Add(time.Minute)
-	if err := conn.QueryRow(ctx, `INSERT INTO operation (user_id, occurred_at, account_id, direction, amount_minor, currency, status, bank_category_id, category_id)
-		VALUES ($1, $2, $3, 'income', 234000, 'RUB', 'posted', 'cat_transfers', 'cat_own_transfer') RETURNING id`, a.user, creditAt, a.account).Scan(&credit); err != nil {
-		t.Fatal(err)
-	}
-	exec(t, conn, `INSERT INTO transfer_pair (user_id, debit_occurred_at, debit_operation_id, credit_occurred_at, credit_operation_id)
-		VALUES ($1, $2, $3, $4, $5)`, a.user, a.at, a.operation, creditAt, credit)
+	pairOf(t, conn, a.user, op{id: a.operation, at: a.at}, newOp(t, conn, a, "income", time.Minute))
 
 	rows, err := conn.Query(ctx, `SELECT c.relname FROM pg_attribute a
 		JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace

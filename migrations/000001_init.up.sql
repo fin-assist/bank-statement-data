@@ -17,8 +17,11 @@
 -- * IDs that leave the database (API, other services, support) are UUIDv7 (uuidv7() of
 --   PostgreSQL 18 as the default; the service may pass its own). Internal IDs are bigint
 --   identities.
--- * Codes are text with a CHECK of the allowed set: readable in psql, a new value is a new
---   migration that replaces the constraint.
+-- * Only keys, NOT NULL and DEFAULT live here (owner's decision of 19.10.2026): no CHECK,
+--   EXCLUDE, triggers or functions. Value sets, formats, status transitions and the other
+--   rules are checked by the service code (docs/schema.md, «Инварианты в коде сервиса»).
+--   Foreign key cascades and partitioning stay.
+-- * Codes are plain text (readable in psql); the allowed values are listed in the comments.
 -- * Money is bigint minor units; operation amounts are unsigned, the direction is a column.
 -- * Instants are timestamptz. Calendar months are date (the 1st) in the user's time zone at
 --   calculation time; the zone they were computed in is stored next to them.
@@ -27,10 +30,9 @@
 
 CREATE TABLE user_state (
     user_id               uuid        PRIMARY KEY,
-    timezone              text        NOT NULL DEFAULT 'Europe/Moscow'
-        CHECK (char_length(timezone) BETWEEN 1 AND 64),
-    settings_version      bigint      NOT NULL DEFAULT 0 CHECK (settings_version >= 0),
-    calc_version          bigint      NOT NULL DEFAULT 0 CHECK (calc_version >= 0),
+    timezone              text        NOT NULL DEFAULT 'Europe/Moscow',
+    settings_version      bigint      NOT NULL DEFAULT 0,
+    calc_version          bigint      NOT NULL DEFAULT 0,
     categories_changed_at timestamptz,
     uploads_changed_at    timestamptz,
     daily_recalc_due_at   timestamptz,
@@ -62,8 +64,8 @@ CREATE INDEX user_state_daily_recalc_due_at_idx ON user_state (daily_recalc_due_
 -- ---------------------------------------------------------------- reference data
 
 CREATE TABLE source (
-    id   text PRIMARY KEY CHECK (id ~ '^[a-z][a-z0-9_]{0,31}$'),
-    name text NOT NULL CHECK (char_length(name) BETWEEN 1 AND 64)
+    id   text PRIMARY KEY,
+    name text NOT NULL
 );
 
 COMMENT ON TABLE source IS 'Data sources (statement formats, bank APIs); name is source_name of the API.';
@@ -71,25 +73,19 @@ COMMENT ON TABLE source IS 'Data sources (statement formats, bank APIs); name is
 INSERT INTO source (id, name) VALUES ('tbank_ofx', 'Выписка Т-Банка');
 
 CREATE TABLE category (
-    id          text        PRIMARY KEY CHECK (id ~ '^cat_[a-z0-9_]{1,250}$'),
-    name        text        NOT NULL CHECK (char_length(name) BETWEEN 1 AND 64),
-    bank_name   text        UNIQUE CHECK (char_length(bank_name) BETWEEN 1 AND 64),
-    icon        text        NOT NULL CHECK (char_length(icon) BETWEEN 1 AND 32),
+    id          text        PRIMARY KEY,
+    name        text        NOT NULL,
+    bank_name   text        UNIQUE,
+    icon        text        NOT NULL,
     is_system   boolean     NOT NULL DEFAULT false,
     is_known    boolean     NOT NULL DEFAULT false,
     for_expense boolean     NOT NULL,
     for_income  boolean     NOT NULL,
     assignable  boolean     NOT NULL,
     sort_order  bigint      UNIQUE,
-    note        text        CHECK (char_length(note) BETWEEN 1 AND 64),
+    note        text,
     created_at  timestamptz NOT NULL DEFAULT now(),
-    updated_at  timestamptz NOT NULL DEFAULT now(),
-    CHECK (for_expense OR for_income),
-    -- a bank category outside the registry list applies to both directions (docs/calc.md 3.1)
-    CHECK (is_known OR (for_expense AND for_income)),
-    -- every non-system category comes from a statement
-    CHECK (is_system OR bank_name IS NOT NULL),
-    CHECK (note IS NULL OR is_system)
+    updated_at  timestamptz NOT NULL DEFAULT now()
 );
 
 COMMENT ON TABLE category IS
@@ -113,16 +109,15 @@ CREATE TABLE account (
     user_id            uuid        NOT NULL REFERENCES user_state ON DELETE CASCADE,
     id                 bigint      GENERATED ALWAYS AS IDENTITY,
     source_id          text        NOT NULL REFERENCES source,
-    ext_id_hmac        bytea       NOT NULL CHECK (octet_length(ext_id_hmac) = 32),
-    ext_id_key_version bigint      NOT NULL CHECK (ext_id_key_version > 0),
-    type               text        NOT NULL CHECK (type ~ '^[a-z][a-z0-9_]{0,31}$'),
-    mask               text        CHECK (char_length(mask) = 4),
+    ext_id_hmac        bytea       NOT NULL,
+    ext_id_key_version bigint      NOT NULL,
+    type               text        NOT NULL,
+    mask               text,
     is_other_bank      boolean     NOT NULL,
-    currency           text        CHECK (currency ~ '^[A-Z]{3}$'),
+    currency           text,
     created_at         timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (user_id, id),
-    UNIQUE (user_id, source_id, ext_id_hmac),
-    CHECK (NOT is_other_bank OR mask IS NULL)
+    UNIQUE (user_id, source_id, ext_id_hmac)
 );
 
 COMMENT ON TABLE account IS
@@ -142,35 +137,26 @@ CREATE TABLE upload (
     user_id            uuid        NOT NULL REFERENCES user_state ON DELETE CASCADE,
     id                 uuid        NOT NULL DEFAULT uuidv7(),
     source_id          text        NOT NULL REFERENCES source,
-    file_name          text        NOT NULL CHECK (char_length(file_name) <= 255),
-    size_bytes         bigint      NOT NULL CHECK (size_bytes > 0),
-    content_sha256     bytea       NOT NULL CHECK (octet_length(content_sha256) = 32),
-    object_key         text        NOT NULL CHECK (char_length(object_key) BETWEEN 1 AND 1024),
+    file_name          text        NOT NULL,
+    size_bytes         bigint      NOT NULL,
+    content_sha256     bytea       NOT NULL,
+    object_key         text        NOT NULL,
     file_deleted_at    timestamptz,
-    status             text        NOT NULL DEFAULT 'processing'
-        CHECK (status IN ('processing', 'done', 'failed', 'deleted')),
-    error_code         text        CHECK (error_code IN ('processing_failed', 'cancelled')),
-    stage              text        CHECK (stage IN ('parsing', 'dedup', 'rules')),
-    percent            bigint      NOT NULL DEFAULT 0 CHECK (percent BETWEEN 0 AND 100),
+    status             text        NOT NULL DEFAULT 'processing',
+    error_code         text,
+    stage              text,
+    percent            bigint      NOT NULL DEFAULT 0,
     uploaded_at        timestamptz NOT NULL DEFAULT now(),
     finished_at        timestamptz,
     deleted_at         timestamptz,
-    operation_count    bigint      CHECK (operation_count >= 0),
+    operation_count    bigint,
     first_operation_at timestamptz,
     last_operation_at  timestamptz,
-    result             jsonb       CHECK (jsonb_typeof(result) = 'object'),
+    result             jsonb,
     PRIMARY KEY (user_id, id),
-    -- the purge deletes the user's files by this prefix: a key outside it would outlive the account
-    CHECK (starts_with(object_key, user_id::text || '/')),
-    CHECK ((status = 'processing') = (finished_at IS NULL)),
-    CHECK ((status = 'failed') = (error_code IS NOT NULL)),
-    CHECK ((status = 'deleted') = (deleted_at IS NOT NULL)),
-    CHECK ((status = 'done') = (result IS NOT NULL)),
-    CHECK (status NOT IN ('done', 'deleted') OR operation_count IS NOT NULL),
-    CHECK (status = 'processing' OR stage IS NULL),
-    CHECK (status <> 'processing' OR file_deleted_at IS NULL),
-    CHECK ((first_operation_at IS NULL) = (last_operation_at IS NULL)),
-    CHECK (first_operation_at <= last_operation_at)
+    -- One file per upload: deleting the file of one upload never removes another's, even when
+    -- the same content is uploaded again.
+    UNIQUE (user_id, object_key)
 );
 
 COMMENT ON TABLE upload IS
@@ -180,12 +166,16 @@ COMMENT ON TABLE upload IS
 COMMENT ON COLUMN upload.content_sha256 IS
     'SHA-256 of the file: the request hash of the idempotency key (with file_name) and a hint for '
     'support. Not unique: the same file may be uploaded again (FIN-79).';
-COMMENT ON COLUMN upload.object_key IS 'Object Storage key of the file: <user_id>/..., so a purge deletes the user''s files by prefix.';
+COMMENT ON COLUMN upload.object_key IS
+    'Object Storage key of the file, <user_id>/<upload id>: unique per upload, and the purge deletes '
+    'the user''s files by the <user_id>/ prefix (the service builds the key; docs/schema.md).';
 COMMENT ON COLUMN upload.file_deleted_at IS
     'When the file was removed from Object Storage. failed/deleted with NULL here - a job still has to remove it.';
 COMMENT ON COLUMN upload.status IS
     'processing -> done | failed (error_code); done -> deleted. 3.4 shows processing and done.';
-COMMENT ON COLUMN upload.stage IS 'Current stage while processing, for the first WatchUpload event.';
+COMMENT ON COLUMN upload.error_code IS 'Only for failed: processing_failed | cancelled.';
+COMMENT ON COLUMN upload.stage IS
+    'Current stage while processing (parsing | dedup | rules), for the first WatchUpload event.';
 COMMENT ON COLUMN upload.uploaded_at IS
     'Creation of the upload; orders uploads for closing unread lines (ties - by id) and for 3.4.';
 COMMENT ON COLUMN upload.operation_count IS 'Operations read from the file, including ones already loaded.';
@@ -206,8 +196,7 @@ CREATE TABLE upload_account (
     statement_end   timestamptz,
     PRIMARY KEY (user_id, upload_id, account_id),
     FOREIGN KEY (user_id, upload_id) REFERENCES upload ON DELETE CASCADE,
-    FOREIGN KEY (user_id, account_id) REFERENCES account ON DELETE CASCADE,
-    CHECK (statement_start <= statement_end)
+    FOREIGN KEY (user_id, account_id) REFERENCES account ON DELETE CASCADE
 );
 
 COMMENT ON TABLE upload_account IS
@@ -221,15 +210,15 @@ CREATE TABLE operation (
     occurred_at               timestamptz NOT NULL,
     id                        uuid        NOT NULL DEFAULT uuidv7(),
     account_id                bigint      NOT NULL,
-    direction                 text        NOT NULL CHECK (direction IN ('expense', 'income')),
-    amount_minor              bigint      NOT NULL CHECK (amount_minor >= 0),
-    currency                  text        NOT NULL CHECK (currency ~ '^[A-Z]{3}$'),
-    status                    text        NOT NULL CHECK (status IN ('posted', 'pending')),
-    description               text        NOT NULL DEFAULT '' CHECK (char_length(description) <= 1000),
+    direction                 text        NOT NULL,
+    amount_minor              bigint      NOT NULL,
+    currency                  text        NOT NULL,
+    status                    text        NOT NULL,
+    description               text        NOT NULL DEFAULT '',
     bank_category_id          text        NOT NULL REFERENCES category,
     posted_at                 timestamptz,
-    mcc                       text        CHECK (mcc ~ '^[0-9]{4}$'),
-    extensions                jsonb       CHECK (jsonb_typeof(extensions) = 'object'),
+    mcc                       text,
+    extensions                jsonb,
     category_id               text        NOT NULL REFERENCES category,
     manual_category_id        text        REFERENCES category,
     refund_target_category_id text        REFERENCES category,
@@ -237,23 +226,14 @@ CREATE TABLE operation (
     created_at                timestamptz NOT NULL DEFAULT now(),
     updated_at                timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (user_id, occurred_at, id),
-    -- Target of the transfer_pair foreign keys that carry the direction of each side
-    -- (one operation - one role - at most one pair). Redundant as a key (the PK is unique
-    -- already); its cost is a second index per partition.
-    CONSTRAINT operation_pair_side_key UNIQUE (user_id, occurred_at, id, direction),
-    FOREIGN KEY (user_id, account_id) REFERENCES account ON DELETE CASCADE,
-    -- docs/calc.md 3.5: a manual category wins over every rule
-    CHECK (manual_category_id IS NULL OR category_id = manual_category_id),
-    CHECK (manual_category_id <> 'cat_uncategorized'),
-    -- a refund always has a target: the chain of 3.3 ends with cat_uncategorized
-    CHECK ((category_id = 'cat_refund') = (refund_target_category_id IS NOT NULL)),
-    CHECK (refund_target_category_id NOT IN ('cat_refund', 'cat_own_transfer')),
-    CHECK (category_id <> 'cat_refund' OR direction = 'income')
+    FOREIGN KEY (user_id, account_id) REFERENCES account ON DELETE CASCADE
 ) PARTITION BY RANGE (occurred_at);
 
 COMMENT ON TABLE operation IS
     'Canonical operations, yearly partitions by occurred_at (UTC bounds). Rule columns (category_id, '
     'refund_target_category_id, is_split) are recomputed after every import, deletion and manual change.';
+COMMENT ON COLUMN operation.direction IS 'expense | income.';
+COMMENT ON COLUMN operation.status IS 'posted | pending.';
 COMMENT ON COLUMN operation.occurred_at IS 'Time of the operation (OFX DTPOSTED); partition, sort and month key.';
 COMMENT ON COLUMN operation.description IS 'Description from the source as is; may be empty (FIN-67).';
 COMMENT ON COLUMN operation.bank_category_id IS 'Category from the source (MEMO) as a dictionary ID; empty MEMO - cat_uncategorized.';
@@ -282,7 +262,7 @@ CREATE TABLE source_record (
     user_id               uuid        NOT NULL REFERENCES user_state ON DELETE CASCADE,
     id                    bigint      GENERATED ALWAYS AS IDENTITY,
     account_id            bigint      NOT NULL,
-    external_id           text        NOT NULL CHECK (char_length(external_id) BETWEEN 1 AND 255),
+    external_id           text        NOT NULL,
     operation_occurred_at timestamptz NOT NULL,
     operation_id          uuid        NOT NULL,
     created_at            timestamptz NOT NULL DEFAULT now(),
@@ -317,64 +297,72 @@ COMMENT ON TABLE upload_record IS
 -- "Is the record in another upload?" when an upload is deleted; cascade from source_record.
 CREATE INDEX upload_record_source_record_idx ON upload_record (user_id, source_record_id);
 
+CREATE TABLE transfer_pair_member (
+    user_id               uuid        NOT NULL REFERENCES user_state ON DELETE CASCADE,
+    operation_id          uuid        NOT NULL,
+    operation_occurred_at timestamptz NOT NULL,
+    pair_id               uuid        NOT NULL,
+    -- An operation is in at most one pair, whichever side it takes (docs/calc.md 3.2).
+    PRIMARY KEY (user_id, operation_id),
+    -- Target of the side keys of transfer_pair.
+    UNIQUE (user_id, pair_id, operation_id),
+    FOREIGN KEY (user_id, operation_occurred_at, operation_id) REFERENCES operation
+        ON DELETE CASCADE ON UPDATE CASCADE
+);
+
+COMMENT ON TABLE transfer_pair_member IS
+    'Operations that are sides of a transfer pair. The primary key keeps an operation in one pair '
+    'at most; deleting an operation deletes its member row and, through transfer_pair, the pair '
+    'and the other member.';
+
 CREATE TABLE transfer_pair (
     user_id             uuid        NOT NULL REFERENCES user_state ON DELETE CASCADE,
     id                  uuid        NOT NULL DEFAULT uuidv7(),
-    debit_occurred_at   timestamptz NOT NULL,
     debit_operation_id  uuid        NOT NULL,
-    debit_direction     text        NOT NULL DEFAULT 'expense' CHECK (debit_direction = 'expense'),
-    credit_occurred_at  timestamptz NOT NULL,
     credit_operation_id uuid        NOT NULL,
-    credit_direction    text        NOT NULL DEFAULT 'income' CHECK (credit_direction = 'income'),
     created_at          timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (user_id, id),
-    UNIQUE (user_id, debit_operation_id),
-    UNIQUE (user_id, credit_operation_id),
-    -- The direction is part of each foreign key: an operation is a debit side only as an
-    -- expense and a credit side only as an income, so it cannot be a debit in one pair and a
-    -- credit in another, and with the two UNIQUE above it is in at most one pair
-    -- (docs/calc.md 3.2). Changing the direction of a paired operation cascades into these
-    -- columns and fails their CHECK: the pair has to go first.
-    FOREIGN KEY (user_id, debit_occurred_at, debit_operation_id, debit_direction)
-        REFERENCES operation (user_id, occurred_at, id, direction)
-        ON DELETE CASCADE ON UPDATE CASCADE,
-    FOREIGN KEY (user_id, credit_occurred_at, credit_operation_id, credit_direction)
-        REFERENCES operation (user_id, occurred_at, id, direction)
-        ON DELETE CASCADE ON UPDATE CASCADE
+    -- Both sides must be members of this very pair. The members are inserted in the same
+    -- transaction after the pair, hence DEFERRABLE INITIALLY DEFERRED; the cascade still fires
+    -- at once: losing a member deletes the pair (and with it the other member).
+    FOREIGN KEY (user_id, id, debit_operation_id) REFERENCES transfer_pair_member (user_id, pair_id, operation_id)
+        ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+    FOREIGN KEY (user_id, id, credit_operation_id) REFERENCES transfer_pair_member (user_id, pair_id, operation_id)
+        ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 );
+
+ALTER TABLE transfer_pair_member ADD FOREIGN KEY (user_id, pair_id) REFERENCES transfer_pair ON DELETE CASCADE;
 
 COMMENT ON TABLE transfer_pair IS
     'Pairs of transfers between the user''s own accounts, shown as one own_transfer record whose ID '
     'is id. A pair survives later imports while both sides exist (docs/calc.md 3.2); losing a side '
-    'deletes the pair.';
+    'deletes the pair. That the debit is an expense, the credit an income and the two differ is '
+    'checked by the code (docs/schema.md).';
 
 CREATE TABLE unread_line (
     user_id               uuid        NOT NULL,
     upload_id             uuid        NOT NULL,
-    line_number           bigint      NOT NULL CHECK (line_number > 0),
-    reason                text        NOT NULL CHECK (reason IN ('bad_amount', 'bad_date', 'no_date', 'truncated')),
+    line_number           bigint      NOT NULL,
+    reason                text        NOT NULL,
     occurred_at           timestamptz,
     account_id            bigint,
-    external_id           text        CHECK (char_length(external_id) BETWEEN 1 AND 255),
+    external_id           text,
     resolved_by_upload_id uuid,
-    resolution            text        CHECK (resolution IN ('read', 'replaced')),
+    resolution            text,
     PRIMARY KEY (user_id, upload_id, line_number),
     FOREIGN KEY (user_id, upload_id) REFERENCES upload ON DELETE CASCADE,
     FOREIGN KEY (user_id, resolved_by_upload_id) REFERENCES upload ON DELETE CASCADE,
-    FOREIGN KEY (user_id, account_id) REFERENCES account ON DELETE CASCADE,
-    CHECK ((resolved_by_upload_id IS NULL) = (resolution IS NULL)),
-    CHECK (resolved_by_upload_id <> upload_id),
-    CHECK (external_id IS NULL OR account_id IS NOT NULL),
-    CHECK (reason NOT IN ('no_date', 'bad_date') OR occurred_at IS NULL)
+    FOREIGN KEY (user_id, account_id) REFERENCES account ON DELETE CASCADE
 );
 
+COMMENT ON COLUMN unread_line.reason IS 'bad_amount | bad_date | no_date | truncated.';
 COMMENT ON TABLE unread_line IS
     'Lines of a file that could not be counted (3.6). The content is not stored: only the line '
     'number, the date, the reason and, when read, the account and FITID used to close the line.';
 COMMENT ON COLUMN unread_line.occurred_at IS 'Date of the operation, when it was read.';
 COMMENT ON COLUMN unread_line.resolved_by_upload_id IS
     'The later upload that closed the line (FIN-79); NULL - open. Cleared and rechecked when that upload is deleted.';
-COMMENT ON COLUMN unread_line.resolution IS 'read - the later upload read it; replaced - it failed there again.';
+COMMENT ON COLUMN unread_line.resolution IS 'read - the later upload read it; replaced - it failed there again; set together with resolved_by_upload_id.';
 
 -- 3.6 by period and unread_lines_count of a month: open lines with a date.
 CREATE INDEX unread_line_open_date_idx ON unread_line (user_id, occurred_at)
@@ -392,7 +380,7 @@ CREATE TABLE user_bank_category (
     user_id             uuid        NOT NULL REFERENCES user_state ON DELETE CASCADE,
     category_id         text        NOT NULL REFERENCES category,
     first_uploaded_at   timestamptz NOT NULL,
-    first_line_number   bigint      NOT NULL CHECK (first_line_number > 0),
+    first_line_number   bigint      NOT NULL,
     PRIMARY KEY (user_id, category_id)
 );
 
@@ -405,8 +393,8 @@ COMMENT ON TABLE user_bank_category IS
 CREATE TABLE regular_payment (
     user_id      uuid        NOT NULL REFERENCES user_state ON DELETE CASCADE,
     id           uuid        NOT NULL DEFAULT uuidv7(),
-    periodicity  text        NOT NULL CHECK (periodicity IN ('monthly')),
-    description  text        NOT NULL CHECK (char_length(description) BETWEEN 1 AND 1000),
+    periodicity  text        NOT NULL,
+    description  text        NOT NULL,
     dismissed_at timestamptz,
     created_at   timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (user_id, id),
@@ -417,12 +405,13 @@ COMMENT ON TABLE regular_payment IS
     'Key of a recognised regular payment (description + periodicity) and its stable ID (6.3). The '
     'row is created on first recognition and kept, so the ID and the «не подписка» mark survive '
     'recalculations and re-uploads.';
+COMMENT ON COLUMN regular_payment.periodicity IS 'monthly (others later, FIN-127).';
 COMMENT ON COLUMN regular_payment.dismissed_at IS 'Marked «не подписка» (DismissRegularPayment); NULL - shown.';
 
 CREATE TABLE merchant (
     user_id    uuid        NOT NULL REFERENCES user_state ON DELETE CASCADE,
     id         uuid        NOT NULL DEFAULT uuidv7(),
-    key        text        NOT NULL CHECK (char_length(key) BETWEEN 1 AND 1000),
+    key        text        NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (user_id, id),
     UNIQUE (user_id, key)
@@ -436,11 +425,11 @@ COMMENT ON TABLE merchant IS
 
 CREATE TABLE recalc_queue (
     user_id         uuid        NOT NULL REFERENCES user_state ON DELETE CASCADE,
-    month           date        NOT NULL CHECK (extract(day FROM month) = 1),
-    generation      bigint      NOT NULL DEFAULT 1 CHECK (generation > 0),
+    month           date        NOT NULL,
+    generation      bigint      NOT NULL DEFAULT 1,
     enqueued_at     timestamptz NOT NULL DEFAULT now(),
     next_attempt_at timestamptz NOT NULL DEFAULT now(),
-    attempts        bigint      NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    attempts        bigint      NOT NULL DEFAULT 0,
     last_error      text,
     PRIMARY KEY (user_id, month)
 );
@@ -457,17 +446,15 @@ CREATE INDEX recalc_queue_next_attempt_at_idx ON recalc_queue (next_attempt_at);
 
 CREATE TABLE month_state (
     user_id       uuid        NOT NULL REFERENCES user_state ON DELETE CASCADE,
-    month         date        NOT NULL CHECK (extract(day FROM month) = 1),
-    time_zone     text        NOT NULL CHECK (char_length(time_zone) BETWEEN 1 AND 64),
+    month         date        NOT NULL,
+    time_zone     text        NOT NULL,
     covered_days  bigint      NOT NULL,
-    days_in_month bigint      NOT NULL CHECK (days_in_month BETWEEN 28 AND 31),
+    days_in_month bigint      NOT NULL,
     data_from     timestamptz NOT NULL,
     data_to       timestamptz NOT NULL,
-    calc_version  bigint      NOT NULL CHECK (calc_version > 0),
+    calc_version  bigint      NOT NULL,
     calculated_at timestamptz NOT NULL,
-    PRIMARY KEY (user_id, month),
-    CHECK (covered_days BETWEEN 1 AND days_in_month),
-    CHECK (data_from <= data_to)
+    PRIMARY KEY (user_id, month)
 );
 
 COMMENT ON TABLE month_state IS
@@ -480,23 +467,24 @@ CREATE TABLE monthly_agg (
     month        date   NOT NULL,
     account_id   bigint NOT NULL,
     category_id  text   NOT NULL REFERENCES category,
-    kind         text   NOT NULL CHECK (kind IN ('expense', 'income', 'refund')),
-    currency     text   NOT NULL CHECK (currency ~ '^[A-Z]{3}$'),
-    amount_minor bigint NOT NULL CHECK (amount_minor >= 0),
-    op_count     bigint NOT NULL CHECK (op_count > 0),
+    kind         text   NOT NULL,
+    currency     text   NOT NULL,
+    amount_minor bigint NOT NULL,
+    op_count     bigint NOT NULL,
     PRIMARY KEY (user_id, month, account_id, category_id, kind, currency),
     FOREIGN KEY (user_id, month) REFERENCES month_state ON DELETE CASCADE,
     FOREIGN KEY (user_id, account_id) REFERENCES account ON DELETE CASCADE
 );
 
+COMMENT ON COLUMN monthly_agg.kind IS 'expense | income | refund.';
 COMMENT ON TABLE monthly_agg IS
     'Background cache of sums per month, account, final category and kind, rebuilt with the whole '
     'month. A refund is kind refund under its target category and reduces its expenses.';
 
 CREATE TABLE metric_definition (
-    metric_id  text        NOT NULL CHECK (metric_id ~ '^[a-z][a-z0-9_.]{0,63}$'),
-    version    bigint      NOT NULL CHECK (version > 0),
-    params     jsonb       NOT NULL DEFAULT '{}' CHECK (jsonb_typeof(params) = 'object'),
+    metric_id  text        NOT NULL,
+    version    bigint      NOT NULL,
+    params     jsonb       NOT NULL DEFAULT '{}',
     is_current boolean     NOT NULL DEFAULT false,
     created_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (metric_id, version)

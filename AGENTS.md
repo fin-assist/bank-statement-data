@@ -48,7 +48,7 @@ updates them in the same PR. A service made from the template rewrites the first
 | gRPC handlers (messages ↔ usecases) | `internal/adapter/grpc/<feature>/` |
 | Pools, transaction manager, repositories | `internal/adapter/postgres/`; rules — `docs/migrations.md`, «Запросы на pgx» |
 | Migration runner and the PostgreSQL for tests | `internal/adapter/postgres/migrate/`, `migratetest/` |
-| SQL migrations (embedded) and tests of the schema invariants on PostgreSQL | `migrations/` (`schema_test.go`); rules — `docs/migrations.md` |
+| SQL migrations (embedded) and tests of the schema constraints on PostgreSQL | `migrations/` (`schema_test.go`); rules — `docs/migrations.md`; what the schema holds and the invariants left to the code — `docs/schema.md` |
 | Clients of other services, service token source | `internal/adapter/client/` |
 | Background jobs | `internal/worker/` |
 | Configuration: every variable with its default and description | `internal/config/vars.go` (`Vars`); generated tables — `docs/config.md` |
@@ -131,6 +131,9 @@ Priorities when they pull apart, in this order:
 - Database: SQL with parameters only (`$1`), table and column names are constants. A usecase opens the transaction
   with `db.Run`; repositories take `db.Writer(ctx)` / `db.Reader(ctx)`; no calls to other services inside `Run`.
   Migrations follow `docs/migrations.md` (two releases for an incompatible change, `CONCURRENTLY` alone in a file).
+  The schema holds only keys (PK, UNIQUE, FK with cascades), NOT NULL and DEFAULT — no CHECK, EXCLUDE, triggers or
+  functions (owner's decision of 19.10.2026). Every other rule lives in the code: the table of «Инварианты в коде
+  сервиса» in `docs/schema.md` says where; a new rule adds its row there.
 - Clients of other services: `client.Dial` with `Retry` listing only reads and methods idempotent by construction;
   the context carries the deadline.
 - Time: "now" in business logic comes from an injected clock (`func() time.Time` or an interface passed by `wire()`),
