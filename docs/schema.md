@@ -34,21 +34,72 @@
 - **Один путь записи.** Каждую таблицу пишет один репозиторий (`internal/adapter/postgres`). Значения он получает из типов домена (`internal/domain`), а не из сырых строк и чисел. Правило проверяет конструктор или метод типа — один раз и в одном месте. Ручных `INSERT`/`UPDATE` в обход репозитория нет.
 - **Тесты.** У каждого правила — юнит-тест типа домена: допустимые и недопустимые значения. Интеграционный тест репозитория на PostgreSQL проверяет, что записанное читается тем же типом. Строку, нарушающую правило, код не пишет, а при чтении считает ошибкой данных: лог и алерт, без паники и без молчаливой подмены.
 
-| Таблица | Инвариант | Где в коде |
-|---|---|---|
-| все | коды — из закрытого набора: `upload.status` (`processing`, `done`, `failed`, `deleted`), `upload.error_code`, `upload.stage`, `operation.direction`, `operation.status`, `unread_line.reason`, `unread_line.resolution`, `monthly_agg.kind`, `regular_payment.periodicity` | типы-перечисления домена с разбором строки, неизвестное значение — ошибка |
-| все | суммы, счётчики и версии неотрицательны (`amount_minor`, `op_count`, `operation_count`, `calc_version`, `settings_version`, `generation`, `attempts`, `line_number`, `size_bytes`), `percent` — 0–100 | конструкторы типов домена |
-| все | форматы: `currency` — ISO 4217 из трёх букв, `mcc` — 4 цифры, `category.id` — `cat_<слаг>`, `source.id`, `metric_id`, `account.type` — латинский слаг; длины названий (категория — 64, описание — 1000, `file_name` — 255, `external_id` — 255); `jsonb` (`extensions`, `result`, `params`) — объект | нормализация на входе: адаптер источника (OFX) и типы домена; обрезка названия категории до 64 — `docs/calc.md` 3.1 |
-| `account` | `ext_id_hmac` — ровно 32 байта (HMAC-SHA-256 по `user_id` и номеру); полного номера в БД нет; у счёта другого банка нет маски, у остальных маска — 4 символа | тип `AccountKey` строится только функцией HMAC из адаптера, сырого номера нет в типах дальше адаптера |
-| `upload` | переходы статуса `processing → done / failed`, `done → deleted`. При `processing` нет `finished_at`, `stage` и `file_deleted_at`; `error_code` только у `failed`; `result` только у `done`; `deleted_at` только у `deleted`; `operation_count` у `done` и `deleted`; `first_operation_at` и `last_operation_at` оба или ни одного, по порядку | методы агрегата загрузки (`Finish`, `Fail`, `Delete`) меняют поля вместе; репозиторий пишет агрегат целиком в одном `UPDATE` с условием на прежний статус (`WHERE status = 'processing'`), так что гонка двух переходов даёт 0 строк, а не смешанное состояние |
-| `upload` | `object_key` = `<user_id>/<upload id>` | ключ строит одна функция из пары (пользователь, загрузка); purge удаляет файлы **листингом префикса `<user_id>/` в хранилище**, а не по строкам `upload`: только так находится файл, положенный без строки (сбой между PUT и INSERT) |
-| `upload_account` | `statement_start ≤ statement_end` | адаптер OFX при чтении `DTSTART`/`DTEND` |
-| `operation` | ручная категория — она же итоговая; `cat_uncategorized` вручную не назначается; у возврата (`cat_refund`) всегда есть цель, и только у него; цель — не «Возврат» и не «Между своими счетами»; возврат — только зачисление | правила `docs/calc.md` 3.2–3.5 считают все колонки правил одной функцией и пишут их вместе; ручная смена категории (4.3) проверяет `assignable` и `kinds` |
-| `transfer_pair` | дебетовая сторона — расход, кредитовая — доход; стороны разные (схема допустила бы `debit = credit` — оба FK сошлись бы на одного члена); у пары ровно два члена, и это её стороны (лишний член с тем же `pair_id` схема не запрещает) | поиск пар (`docs/calc.md` 3.2) выбирает только такие операции; репозиторий пишет пару и двух членов в одной транзакции и проверяет направление сторон перед записью. Смена направления операции в паре невозможна: направление задаёт выписка, правила его не меняют |
-| `unread_line` | `resolved_by_upload_id` и `resolution` оба или ни одного; строка не закрывает сама себя; у `no_date` и `bad_date` нет даты; FITID только вместе со счётом | шаг закрытия строк (api.md 3.6) — одна функция под блокировкой пользователя |
-| `category` | хотя бы одно направление; категория банка вне реестра — оба направления; несистемная категория — с `bank_name`; `note` только у системных | синхронизация справочника с реестром (FIN-6) и создание новой категории банка при импорте |
-| `month_state` | `month` — первое число; 1 ≤ `covered_days` ≤ `days_in_month` (28–31); `data_from ≤ data_to` | расчёт месяца (`docs/calc.md` 4) |
-| `recalc_queue` | `month` — первое число | пометка месяца для пересчёта |
-| `regular_payment` | непустое описание (операции без описания не распознаются, FIN-67) | распознавание регулярных платежей (`docs/calc.md` 5) |
+Ниже — каждое снятое ограничение черновика (миграция до коммита `3bcee2d`) с той же границей, по таблицам. Новое правило добавляет строку сюда.
+
+| Таблица | Колонка или связь | Правило (точная граница) | Где в коде |
+|---|---|---|---|
+| `user_state` | `timezone` | IANA-имя, 1–64 символа | тип `TimeZone`: разбор через `time.LoadLocation`; неизвестный пояс от `user` не записывается, остаётся прежний (по умолчанию `Europe/Moscow`) |
+| `user_state` | `settings_version`, `calc_version` | ≥ 0 (стартуют с 0) | `settings_version` приходит из `SetUserTimezone` и записывается только при большем значении; `calc_version` только увеличивается на 1 под блокировкой пользователя |
+| `source` | `id` | `^[a-z][a-z0-9_]{0,31}$` | константы источников в коде (`tbank_ofx`), новый источник — миграция данных |
+| `source` | `name` | 1–64 символа | там же |
+| `category` | `id` | `^cat_[a-z0-9_]{1,250}$` | тип `CategoryID`: слаг из транслита названия (`docs/calc.md` 3.1) |
+| `category` | `name`, `bank_name`, `note` | 1–64 символа; `bank_name` — `MEMO` после обрезки краёв, обрезанный до 64 | нормализация `MEMO` в адаптере OFX (`docs/calc.md` 2, 3.1) |
+| `category` | `icon` | 1–32 символа | ключи иконок — константы; новая категория банка — `tag` |
+| `category` | направления | `for_expense OR for_income`; не в реестре (`is_known = false`) → оба направления | синхронизация справочника с реестром (FIN-6) и создание новой категории банка при импорте |
+| `category` | `bank_name`, `note` | у несистемной `bank_name` задан; `note` только у системной | там же; системные категории — только из миграции |
+| `account` | `ext_id_hmac` | ровно 32 байта (HMAC-SHA-256 по `user_id` и номеру) | тип `AccountKey` строится только функцией HMAC в адаптере; сырого номера нет в типах дальше адаптера |
+| `account` | `ext_id_key_version` | > 0 | версия ключа из конфигурации, тип `KeyVersion` с проверкой ≥ 1 |
+| `account` | `type` | `^[a-z][a-z0-9_]{0,31}$` | перечисление типов счёта в адаптере (`ACCTTYPE` → `checking`, `savings`, …) |
+| `account` | `mask` | ровно 4 символа; у счёта другого банка (`is_other_bank`) — нет | адаптер OFX: последние 4 символа `ACCTID`, для `OB$…` — пусто (`docs/calc.md` 2) |
+| `account` | `currency` | `^[A-Z]{3}$` (ISO 4217) или пусто | тип `Currency` |
+| `upload` | `file_name` | ≤ 255 символов | обрезка имени из `UploadHeader` до 255 при приёме |
+| `upload` | `size_bytes` | > 0 | приём файла: пустой поток — ошибка формата, загрузка не создаётся |
+| `upload` | `content_sha256` | ровно 32 байта | SHA-256 считается при приёме (`[32]byte` в типе) |
+| `upload` | `object_key` | 1–1024 символа, `<user_id>/<upload id>` | ключ строит одна функция из пары (пользователь, загрузка); purge удаляет файлы **листингом префикса `<user_id>/` в хранилище**, а не по строкам `upload`: только так находится файл без строки (сбой между PUT и INSERT) |
+| `upload` | `status`, `error_code`, `stage` | `status` ∈ {`processing`, `done`, `failed`, `deleted`}; `error_code` ∈ {`processing_failed`, `cancelled`}; `stage` ∈ {`parsing`, `dedup`, `rules`} | перечисления домена; неизвестное значение при чтении — ошибка данных |
+| `upload` | переходы | `processing → done / failed`, `done → deleted` | методы агрегата загрузки (`Finish`, `Fail`, `Delete`) меняют связанные поля вместе; репозиторий пишет агрегат одним `UPDATE` с условием на прежний статус (`WHERE status = 'processing'` и т. п.): гонка двух переходов даёт 0 строк, а не смешанное состояние |
+| `upload` | `finished_at` | задан ⇔ статус не `processing` | там же |
+| `upload` | `stage` | **задан только при `processing`** (текущий этап для первого события `WatchUpload`, меняется по ходу разбора) и **очищается при выходе из `processing`** (в `done`, `failed`) | там же: `Finish` и `Fail` обнуляют `stage` |
+| `upload` | `file_deleted_at` | пусто при `processing` (файл удаляется только у завершённой загрузки) | задание добора файлов выбирает только `failed` и `deleted` |
+| `upload` | `error_code` | задан ⇔ `failed` | `Fail(code)` |
+| `upload` | `deleted_at` | задан ⇔ `deleted` | `Delete` |
+| `upload` | `result` | задан ⇔ `done`; JSON-объект (`ImportResult`) | `Finish(result)`; `Delete` обнуляет; сериализация `protojson` |
+| `upload` | `operation_count` | ≥ 0; задан у `done` и `deleted` | `Finish` |
+| `upload` | `first_operation_at`, `last_operation_at` | оба или ни одного; `first ≤ last` | `Finish`: границы по операциям файла, пустой файл — оба пусты |
+| `upload` | `percent` | 0–100 | расчёт прогресса ограничивает значение |
+| `upload_account` | `statement_start`, `statement_end` | `start ≤ end` | адаптер OFX при чтении `DTSTART`/`DTEND`; блок с обратным порядком — ошибка разбора файла |
+| `operation` | `direction`, `status` | `direction` ∈ {`expense`, `income`}; `status` ∈ {`posted`, `pending`} | перечисления домена; адаптер (`docs/calc.md` 2) |
+| `operation` | `amount_minor` | ≥ 0 (направление — в `direction`) | адаптер: \|`TRNAMT`\| × 100 |
+| `operation` | `currency` | `^[A-Z]{3}$` | тип `Currency` |
+| `operation` | `description` | ≤ 1000 символов, может быть пустым (FIN-67) | адаптер: обрезка до 1000 |
+| `operation` | `mcc` | `^[0-9]{4}$` или пусто | тип `MCC` |
+| `operation` | `extensions` | JSON-объект или пусто | сериализация расширений адаптера |
+| `operation` | категории | ручная категория = итоговая; `manual_category_id ≠ cat_uncategorized`; итоговая `cat_refund` ⇔ задана цель возврата; цель ∉ {`cat_refund`, `cat_own_transfer`}; `cat_refund` — только у зачисления | правила `docs/calc.md` 3.2–3.5 считают все колонки правил одной функцией и пишут их вместе; ручная смена категории (4.3) проверяет `assignable` и `kinds` |
+| `source_record` | `external_id` | 1–255 символов | адаптер: пустой `FITID` — непрочитанная строка `truncated`, длиннее 255 — тоже ошибка строки |
+| `transfer_pair` | стороны | дебет — расход, кредит — доход; стороны разные (схема допустила бы `debit = credit` — оба FK сошлись бы на одного члена); у пары ровно два члена, и это её стороны (лишний член с тем же `pair_id` схема не запрещает) | поиск пар (`docs/calc.md` 3.2) выбирает только такие операции; репозиторий пишет пару и двух членов в одной транзакции и проверяет направление сторон перед записью. Направление задаёт выписка, правила его не меняют |
+| `unread_line` | `line_number` | > 0 (номера строк файла с 1) | адаптер OFX |
+| `unread_line` | `reason`, `resolution` | `reason` ∈ {`bad_amount`, `bad_date`, `no_date`, `truncated`}; `resolution` ∈ {`read`, `replaced`} | перечисления домена |
+| `unread_line` | `external_id` | 1–255 символов или пусто; задан только вместе с `account_id` | адаптер: FITID берётся только в блоке со счётом |
+| `unread_line` | закрытие | `resolved_by_upload_id` и `resolution` оба или ни одного; `resolved_by_upload_id ≠ upload_id` | шаг закрытия строк (api.md 3.6) — одна функция под блокировкой пользователя |
+| `unread_line` | `occurred_at` | пусто при `reason` ∈ {`no_date`, `bad_date`} | адаптер: дата пишется только прочитанная |
+| `user_bank_category` | `first_line_number` | > 0 | импорт: номер строки файла |
+| `regular_payment` | `periodicity` | ∈ {`monthly`} (другие — FIN-127) | перечисление домена |
+| `regular_payment` | `description` | 1–1000 символов (операции без описания не распознаются, FIN-67) | распознавание регулярных платежей (`docs/calc.md` 5) |
+| `merchant` | `key` | 1–1000 символов | нормализованное описание операции; пустое описание продавцом не становится |
+| `recalc_queue` | `month` | первое число месяца | тип `Month` (год и месяц) с переводом в `date` |
+| `recalc_queue` | `generation` | > 0 (стартует с 1, только растёт) | пометка месяца: `DEFAULT 1` и `generation + 1` в `ON CONFLICT` |
+| `recalc_queue` | `attempts` | ≥ 0 (стартует с 0, только растёт) | воркер очереди |
+| `month_state` | `month` | первое число месяца | тип `Month` |
+| `month_state` | `time_zone` | IANA-имя, 1–64 символа | пояс, в котором посчитан месяц (`user_state.timezone`) |
+| `month_state` | `days_in_month`, `covered_days` | `days_in_month` ∈ 28–31; 1 ≤ `covered_days` ≤ `days_in_month` (месяц без покрытых дней не пишется — «нет данных» ≠ 0) | расчёт месяца (`docs/calc.md` 4) |
+| `month_state` | `data_from`, `data_to` | `data_from ≤ data_to` | там же |
+| `month_state` | `calc_version` | > 0 (версия, которой посчитан месяц, — после первого инкремента) | пишется в той же транзакции, что инкремент `user_state.calc_version` |
+| `monthly_agg` | `kind` | ∈ {`expense`, `income`, `refund`} | перечисление домена |
+| `monthly_agg` | `currency` | `^[A-Z]{3}$` | тип `Currency` |
+| `monthly_agg` | `amount_minor` | ≥ 0 (знак применяет расчёт по `kind`) | агрегация месяца |
+| `monthly_agg` | `op_count` | > 0 (строки без операций не пишутся) | агрегация месяца |
+| `metric_definition` | `metric_id` | `^[a-z][a-z0-9_.]{0,63}$` | ID метрик — константы реестра (FIN-6) |
+| `metric_definition` | `version` | > 0 | реестр: версии с 1 |
+| `metric_definition` | `params` | JSON-объект | сериализация параметров реестра |
 
 Партиции `operation` — не ограничение-валидатор, а хранение. Операция вне всех партиций (нет партиции на год) роняет вставку с SQLSTATE 23514 — это сигнал создать партицию (FIN-193), а не правило данных.

@@ -520,15 +520,47 @@ func TestTransferPairInvariants(t *testing.T) {
 	if c := count(t, conn, `SELECT count(*) FROM transfer_pair_member WHERE user_id = $1 AND operation_occurred_at = '2027-01-02 00:00:00+00'`, a.user); c != 1 {
 		t.Fatalf("member did not follow its operation: %d", c)
 	}
-	// Losing a side deletes the pair and frees the other side.
-	exec(t, conn, `DELETE FROM operation WHERE user_id = $1 AND id = $2`, a.user, credit.id)
-	if c := count(t, conn, `SELECT count(*) FROM transfer_pair WHERE user_id = $1 AND id = $2`, a.user, pair); c != 0 {
-		t.Fatalf("pair after a side was deleted: %d", c)
+	_ = pair
+}
+
+// Losing either side of a pair deletes the pair and both member rows, and the remaining
+// operation can enter a new pair. Each side is checked on its own pair: the two sides go
+// through different foreign keys of transfer_pair.
+func TestTransferPairLosesASide(t *testing.T) {
+	for _, lost := range []string{"debit", "credit"} {
+		t.Run(lost, func(t *testing.T) {
+			conn, _ := schema(t)
+			seedCategories(t, conn)
+			a := seed(t, conn, userA, 1)
+			debit, credit := newOp(t, conn, a, "expense", time.Minute), newOp(t, conn, a, "income", 2*time.Minute)
+			pair := pairOf(t, conn, a.user, debit, credit)
+			// An unrelated pair stays.
+			other := pairOf(t, conn, a.user, newOp(t, conn, a, "expense", 3*time.Minute), newOp(t, conn, a, "income", 4*time.Minute))
+
+			gone, kept := debit, credit
+			if lost == "credit" {
+				gone, kept = credit, debit
+			}
+			exec(t, conn, `DELETE FROM operation WHERE user_id = $1 AND id = $2`, a.user, gone.id)
+
+			if c := count(t, conn, `SELECT count(*) FROM transfer_pair WHERE user_id = $1 AND id = $2`, a.user, pair); c != 0 {
+				t.Fatalf("pair after its %s was deleted: %d", lost, c)
+			}
+			if c := count(t, conn, `SELECT count(*) FROM transfer_pair_member WHERE user_id = $1 AND pair_id = $2`, a.user, pair); c != 0 {
+				t.Fatalf("members of the pair after its %s was deleted: %d, want 0", lost, c)
+			}
+			if c := count(t, conn, `SELECT count(*) FROM transfer_pair_member WHERE user_id = $1 AND pair_id = $2`, a.user, other); c != 2 {
+				t.Fatalf("members of an unrelated pair: %d, want 2", c)
+			}
+			// The remaining side is free for a new pair.
+			partner := newOp(t, conn, a, "income", 5*time.Minute)
+			if lost == "credit" {
+				pairOf(t, conn, a.user, kept, partner)
+			} else {
+				pairOf(t, conn, a.user, newOp(t, conn, a, "expense", 5*time.Minute), kept)
+			}
+		})
 	}
-	if c := count(t, conn, `SELECT count(*) FROM transfer_pair_member WHERE user_id = $1`, a.user); c != 0 {
-		t.Fatalf("members after a side was deleted: %d, want 0", c)
-	}
-	pairOf(t, conn, a.user, debit, credit2)
 }
 
 func TestRegularPaymentIDIsStable(t *testing.T) {
