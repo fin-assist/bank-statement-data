@@ -807,6 +807,9 @@ func TestBankCategoriesInOrderOfFirstAppearance(t *testing.T) {
 	exec(t, conn, `INSERT INTO category (id, name, bank_name, icon, for_expense, for_income, assignable)
 		VALUES ('cat_zoo', 'Зоотовары', 'Зоотовары', 'tag', true, true, true),
 		       ('cat_avia', 'Авиабилеты', 'Авиабилеты', 'tag', true, true, true)`)
+	// A registry category earlier in the registry than cat_supermarkets.
+	exec(t, conn, `INSERT INTO category (id, name, bank_name, icon, is_known, for_expense, for_income, assignable, sort_order)
+		VALUES ('cat_cafe', 'Кафе', 'Кафе', 'tag', true, true, false, true, 50)`)
 
 	// addRecord imports one line: an operation of the category and its source record.
 	addRecord := func(f fixture, category, fitid string, after time.Duration) string {
@@ -825,6 +828,9 @@ func TestBankCategoriesInOrderOfFirstAppearance(t *testing.T) {
 	addRecord(a, "cat_zoo", "A1", 48*time.Hour)
 	addRecord(a, "cat_avia", "A2", -48*time.Hour)
 	addRecord(a, "cat_zoo", "A3", time.Hour)
+	// The user meets cat_cafe last, after the new categories and cat_supermarkets: registry
+	// categories still go first and in registry order, not in the order of first appearance.
+	addRecord(a, "cat_cafe", "A4", 2*time.Hour)
 	addRecord(b, "cat_avia", "B1", 0)
 	addRecord(b, "cat_zoo", "B2", 0)
 
@@ -852,7 +858,7 @@ func TestBankCategoriesInOrderOfFirstAppearance(t *testing.T) {
 	}
 	// cat_transfers is in the registry, but neither user has it in a statement.
 	const system = "cat_own_transfer,cat_refund,cat_uncategorized,"
-	if got, want := strings.Join(order(a.user), ","), system+"cat_supermarkets,cat_zoo,cat_avia"; got != want {
+	if got, want := strings.Join(order(a.user), ","), system+"cat_cafe,cat_supermarkets,cat_zoo,cat_avia"; got != want {
 		t.Fatalf("categories of A: %s, want %s", got, want)
 	}
 	if got, want := strings.Join(order(b.user), ","), system+"cat_supermarkets,cat_avia,cat_zoo"; got != want {
