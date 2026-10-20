@@ -308,7 +308,8 @@ COMMENT ON COLUMN operation.id IS 'Идентификатор операции, 
 COMMENT ON COLUMN operation.account_id IS 'Счёт, по которому прошла операция.';
 COMMENT ON COLUMN operation.direction IS 'Расход (expense) или доход (income).';
 COMMENT ON COLUMN operation.amount_minor IS
-    'Сумма в копейках без знака. Расход это или доход, показывает направление.';
+    'Сумма без знака в минимальных единицах валюты операции (для рублей — в копейках). Расход это или доход, '
+    'показывает направление.';
 COMMENT ON COLUMN operation.currency IS 'Валюта операции.';
 COMMENT ON COLUMN operation.status IS
     'Проведена операция банком (posted) или ещё ожидает проведения (pending).';
