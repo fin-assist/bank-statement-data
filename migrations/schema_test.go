@@ -756,42 +756,65 @@ func TestUserLockDoesNotBlockChildInserts(t *testing.T) {
 	exec(t, other, `SELECT 1 FROM user_state WHERE user_id = $1 FOR NO KEY UPDATE`, a.user)
 }
 
-// Every table of the schema carries a description in Russian (COMMENT ON TABLE), so a table
-// added later without one fails here. Leaf partitions of operation are described by their
-// parent; schema_migrations belongs to golang-migrate.
-func TestEveryTableHasDescription(t *testing.T) {
+// Every table of the schema and every column of it carries a description in Russian
+// (COMMENT ON TABLE, COMMENT ON COLUMN), so a table or a column added later without one fails
+// here. Leaf partitions of operation are described by their parent; schema_migrations
+// belongs to golang-migrate.
+func TestEveryTableAndColumnHasDescription(t *testing.T) {
 	conn, _ := schema(t)
+	// One row per table (column NULL) and per column of it.
 	rows, err := conn.Query(context.Background(), `
-		SELECT c.relname, coalesce(obj_description(c.oid, 'pg_class'), '')
-		FROM pg_class c
-		JOIN pg_namespace n ON n.oid = c.relnamespace
-		WHERE n.nspname = 'public'
-		  AND c.relkind IN ('r', 'p')
-		  AND NOT c.relispartition
-		  AND c.relname <> 'schema_migrations'
-		ORDER BY c.relname`)
+		WITH described_table AS (
+			SELECT c.oid, c.relname
+			FROM pg_class c
+			JOIN pg_namespace n ON n.oid = c.relnamespace
+			WHERE n.nspname = 'public'
+			  AND c.relkind IN ('r', 'p')
+			  AND NOT c.relispartition
+			  AND c.relname <> 'schema_migrations'
+		)
+		SELECT relname, NULL::text, coalesce(obj_description(oid, 'pg_class'), '')
+		FROM described_table
+		UNION ALL
+		SELECT t.relname, a.attname::text, coalesce(col_description(t.oid, a.attnum), '')
+		FROM described_table t
+		JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum > 0 AND NOT a.attisdropped
+		ORDER BY 1, 2 NULLS FIRST`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	descriptions, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) ([2]string, error) {
-		var d [2]string
-		err := row.Scan(&d[0], &d[1])
-		return d, err
+	type object struct {
+		table       string
+		column      *string
+		description string
+	}
+	objects, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (object, error) {
+		var o object
+		err := row.Scan(&o.table, &o.column, &o.description)
+		return o, err
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(descriptions) == 0 {
-		t.Fatal("no tables found in schema public")
-	}
-	for _, d := range descriptions {
-		table, description := d[0], strings.TrimSpace(d[1])
+	var tables, columns int
+	for _, o := range objects {
+		name, statement := "table "+o.table, "COMMENT ON TABLE"
+		if o.column != nil {
+			name, statement = "column "+o.table+"."+*o.column, "COMMENT ON COLUMN"
+			columns++
+		} else {
+			tables++
+		}
+		description := strings.TrimSpace(o.description)
 		switch {
 		case description == "":
-			t.Errorf("table %s has no COMMENT ON TABLE", table)
+			t.Errorf("%s has no %s", name, statement)
 		case !startsInRussian.MatchString(description):
-			t.Errorf("table %s: description does not start in Russian: %q", table, description)
+			t.Errorf("%s: description does not start in Russian: %q", name, description)
 		}
+	}
+	if tables == 0 || columns == 0 {
+		t.Fatalf("found %d tables and %d columns in schema public", tables, columns)
 	}
 }
 

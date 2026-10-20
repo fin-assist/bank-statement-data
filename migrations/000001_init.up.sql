@@ -25,9 +25,9 @@
 -- * Money is bigint minor units; operation amounts are unsigned, the direction is a column.
 -- * Instants are timestamptz. Calendar months are date (the 1st) in the user's time zone at
 --   calculation time; the zone they were computed in is stored next to them.
--- * Every table has a COMMENT ON TABLE in Russian (owner's request in the review of FIN-111):
---   what it holds, its key and its role. Partitions of operation have none; the parent
---   describes them. Column comments stay in English.
+-- * Every table and every column has a COMMENT ON in Russian (owner's request in the review
+--   of FIN-111): for a table what it holds, its key and its role, for a column its meaning.
+--   Partitions of operation have none; the parent describes them.
 
 -- ---------------------------------------------------------------- user
 
@@ -48,18 +48,21 @@ COMMENT ON TABLE user_state IS
     'один DELETE этой строки. Шаги одного пользователя (закрытие непрочитанных строк, calc_version) '
     'сериализуются блокировкой SELECT ... FOR NO KEY UPDATE: FOR UPDATE ждал бы каждую открытую транзакцию, '
     'вставившую ссылающиеся строки (их FK берёт FOR KEY SHARE), и два импорта взаимно блокировались бы.';
+COMMENT ON COLUMN user_state.user_id IS 'Идентификатор пользователя из сервиса user (sub токена).';
 COMMENT ON COLUMN user_state.timezone IS
-    'IANA zone of the profile; Europe/Moscow until the first SetUserTimezone arrives.';
+    'Часовой пояс профиля (IANA); Europe/Moscow, пока не пришёл первый SetUserTimezone.';
 COMMENT ON COLUMN user_state.settings_version IS
-    'Version of the applied SetUserTimezone; a smaller or equal one is acknowledged and ignored.';
+    'Версия применённого SetUserTimezone; событие с меньшей или равной версией подтверждается и '
+    'игнорируется.';
 COMMENT ON COLUMN user_state.calc_version IS
-    'Monotonic per user: incremented in the transaction that writes an UpsertUserMetrics outbox row.';
+    'Монотонна у пользователя: увеличивается в транзакции, которая пишет строку outbox UpsertUserMetrics.';
 COMMENT ON COLUMN user_state.categories_changed_at IS
-    'DataVersion.categories_changed_at: last manual category change, re-categorisation or dismissal.';
-COMMENT ON COLUMN user_state.uploads_changed_at IS
-    'DataVersion.uploads_changed_at: last upload finished or deleted.';
+    'Последняя ручная смена категории, перекатегоризация или отметка «не подписка» '
+    '(DataVersion.categories_changed_at).';
+COMMENT ON COLUMN user_state.uploads_changed_at IS 'Последнее завершение или удаление загрузки (DataVersion.uploads_changed_at).';
 COMMENT ON COLUMN user_state.daily_recalc_due_at IS
-    'Next 00:05 in the user''s zone when the current periods are recalculated; NULL - no data yet.';
+    'Ближайшие 00:05 в поясе пользователя, когда пересчитываются текущие периоды; NULL — данных ещё нет.';
+COMMENT ON COLUMN user_state.created_at IS 'Когда строка создана; техническая отметка.';
 
 CREATE INDEX user_state_daily_recalc_due_at_idx ON user_state (daily_recalc_due_at)
     WHERE daily_recalc_due_at IS NOT NULL;
@@ -73,6 +76,8 @@ CREATE TABLE source (
 
 COMMENT ON TABLE source IS
     'Справочник источников данных (форматы выписок, API банков), ключ — код источника; name — source_name в API.';
+COMMENT ON COLUMN source.id IS 'Код источника (tbank_ofx); новый источник добавляется миграцией данных.';
+COMMENT ON COLUMN source.name IS 'Название источника для показа — source_name в API («Выписка Т-Банка»).';
 
 INSERT INTO source (id, name) VALUES ('tbank_ofx', 'Выписка Т-Банка');
 
@@ -96,11 +101,27 @@ COMMENT ON TABLE category IS
     'Общий для всех пользователей справочник категорий (5.1), ключ — код категории: системные категории, '
     'реестр известных категорий банка (FIN-6) и впервые встреченные категории банка (is_known = false). '
     'Не персональные данные: названия берутся из MEMO — это категория банка.';
+COMMENT ON COLUMN category.id IS 'Код категории (cat_…) — category_id в API.';
+COMMENT ON COLUMN category.name IS 'Название категории для показа — category_name в API.';
 COMMENT ON COLUMN category.bank_name IS
-    'MEMO after trimming, cut to 64 characters: the bank category this row stands for.';
+    'Категория банка, которую представляет строка: MEMO после обрезки краёв, обрезанный до 64 символов; у '
+    'системных без соответствия — NULL.';
+COMMENT ON COLUMN category.icon IS 'Ключ иконки — category_icon в API.';
+COMMENT ON COLUMN category.is_system IS
+    'Системная категория («Между своими счетами», «Возврат», «Без категории»); создаётся только '
+    'миграцией.';
+COMMENT ON COLUMN category.is_known IS
+    'Категория из реестра известных категорий банка (FIN-6) или системная; false — категория банка, '
+    'встреченная впервые.';
+COMMENT ON COLUMN category.for_expense IS 'Категорию можно дать расходу (kinds в 5.1).';
+COMMENT ON COLUMN category.for_income IS 'Категорию можно дать доходу (kinds в 5.1).';
+COMMENT ON COLUMN category.assignable IS 'Пользователь может выбрать категорию вручную (4.3); у «Без категории» — нет.';
 COMMENT ON COLUMN category.sort_order IS
-    'Display order of system and registry categories; NULL - after them, by first appearance for '
-    'the user (user_bank_category).';
+    'Порядок показа системных категорий и категорий реестра; NULL — после них, по первому появлению у '
+    'пользователя (user_bank_category).';
+COMMENT ON COLUMN category.note IS 'Пояснение к системной категории («не в тратах»); у остальных NULL.';
+COMMENT ON COLUMN category.created_at IS 'Когда строка создана.';
+COMMENT ON COLUMN category.updated_at IS 'Когда строка последний раз изменена (синхронизация с реестром FIN-6).';
 
 INSERT INTO category (id, name, bank_name, icon, is_system, is_known, for_expense, for_income, assignable, sort_order, note) VALUES
     ('cat_own_transfer',  'Между своими счетами', NULL,            'transfer', true, true, true,  true, true,  10, 'не в тратах'),
@@ -128,13 +149,20 @@ COMMENT ON TABLE account IS
     'Счета пользователя, встреченные в выписках; ключ (user_id, id), счёт источника однозначен по '
     '(user_id, source_id, ext_id_hmac). Полный номер (ACCTID) не хранится: только его HMAC с ключом сервиса, '
     'тип и последние 4 символа.';
+COMMENT ON COLUMN account.user_id IS 'Пользователь (user_state).';
+COMMENT ON COLUMN account.id IS 'Внутренний ID счёта; наружу не уходит.';
+COMMENT ON COLUMN account.source_id IS 'Источник, из которого пришёл счёт.';
 COMMENT ON COLUMN account.ext_id_hmac IS
-    'HMAC-SHA-256 with the service key over user_id and ACCTID (or the source''s account ID): the '
-    'same account of two users gives different values, so rows cannot be linked across users.';
+    'Хеш номера счёта — HMAC-SHA-256 с ключом сервиса по user_id и ACCTID (или ID счёта в источнике): '
+    'один и тот же счёт двух пользователей даёт разные значения, строки разных пользователей не связать.';
 COMMENT ON COLUMN account.ext_id_key_version IS
-    'Version of the HMAC key the value was computed with; rotation rewrites the rows to the new key.';
-COMMENT ON COLUMN account.type IS 'Account type code from the source (checking, savings, ...); type_name is built by the service.';
-COMMENT ON COLUMN account.mask IS 'Last 4 characters of the number; NULL for an account of another bank (OB$...).';
+    'Версия ключа HMAC, которым посчитано значение; ротация переписывает строки на новый ключ.';
+COMMENT ON COLUMN account.type IS 'Код типа счёта из источника (checking, savings, …); type_name строит сервис.';
+COMMENT ON COLUMN account.mask IS 'Последние 4 символа номера; NULL у счёта другого банка (OB$…).';
+COMMENT ON COLUMN account.is_other_bank IS
+    'Счёт другого банка, подключённый в Т-Банке (ACCTID с префиксом OB$); маски у него нет.';
+COMMENT ON COLUMN account.currency IS 'Валюта счёта (ISO 4217), если источник её сообщает; иначе NULL.';
+COMMENT ON COLUMN account.created_at IS 'Когда счёт впервые встретился в выписке.';
 
 -- ---------------------------------------------------------------- uploads
 
@@ -168,24 +196,38 @@ COMMENT ON TABLE upload IS
     'Загрузки выписок (3.2-3.5), ключ (user_id, id). Удалённая или неудачная загрузка сохраняет строку: '
     'DELETE существовавшей загрузки отвечает OK, NOT_FOUND — только для ID, которого у пользователя не было; '
     'WatchUpload повторяет итог неудачной загрузки.';
+COMMENT ON COLUMN upload.user_id IS 'Пользователь (user_state).';
+COMMENT ON COLUMN upload.id IS 'Идентификатор загрузки (UUIDv7) — upload_id в API.';
+COMMENT ON COLUMN upload.source_id IS 'Источник файла (формат выписки).';
+COMMENT ON COLUMN upload.file_name IS 'Имя файла, как его прислал клиент, до 255 символов (3.4).';
+COMMENT ON COLUMN upload.size_bytes IS 'Размер файла в байтах.';
 COMMENT ON COLUMN upload.content_sha256 IS
-    'SHA-256 of the file: the request hash of the idempotency key (with file_name) and a hint for '
-    'support. Not unique: the same file may be uploaded again (FIN-79).';
+    'Хеш SHA-256 файла: хеш запроса для ключа идемпотентности (вместе с file_name) и подсказка поддержке. '
+    'Не уникален: тот же файл можно загрузить снова (FIN-79).';
 COMMENT ON COLUMN upload.object_key IS
-    'Object Storage key of the file, <user_id>/<upload id>: unique per upload, and the purge deletes '
-    'the user''s files by the <user_id>/ prefix (the service builds the key; docs/schema.md).';
+    'Ключ файла в Object Storage, <user_id>/<id загрузки>: уникален у загрузки, а purge удаляет файлы '
+    'пользователя по префиксу <user_id>/ (ключ строит сервис; docs/schema.md).';
 COMMENT ON COLUMN upload.file_deleted_at IS
-    'When the file was removed from Object Storage. failed/deleted with NULL here - a job still has to remove it.';
+    'Когда файл удалён из Object Storage. failed/deleted с NULL здесь — файл ещё должно удалить задание.';
 COMMENT ON COLUMN upload.status IS
-    'processing -> done | failed (error_code); done -> deleted. 3.4 shows processing and done.';
-COMMENT ON COLUMN upload.error_code IS 'Only for failed: processing_failed | cancelled.';
+    'Статус: processing -> done | failed (error_code); done -> deleted. 3.4 показывает processing и done.';
+COMMENT ON COLUMN upload.error_code IS 'Только у failed: processing_failed | cancelled.';
 COMMENT ON COLUMN upload.stage IS
-    'Current stage while processing (parsing | dedup | rules), for the first WatchUpload event.';
+    'Текущий этап разбора при processing (parsing | dedup | rules) для первого события WatchUpload; при '
+    'выходе из processing очищается.';
+COMMENT ON COLUMN upload.percent IS
+    'Общий прогресс разбора 0–100 для события progress WatchUpload; обновляется по ходу разбора.';
 COMMENT ON COLUMN upload.uploaded_at IS
-    'Creation of the upload; orders uploads for closing unread lines (ties - by id) and for 3.4.';
-COMMENT ON COLUMN upload.operation_count IS 'Operations read from the file, including ones already loaded.';
+    'Создание загрузки; упорядочивает загрузки при закрытии непрочитанных строк (при равенстве — по id) и '
+    'в 3.4.';
+COMMENT ON COLUMN upload.finished_at IS 'Когда загрузка вышла из processing (done или failed); NULL — ещё разбирается.';
+COMMENT ON COLUMN upload.deleted_at IS 'Когда загрузка удалена (3.5); задан только у deleted.';
+COMMENT ON COLUMN upload.operation_count IS 'Операций прочитано из файла, включая уже загруженные ранее.';
+COMMENT ON COLUMN upload.first_operation_at IS 'Первая операция файла (период в 3.4); NULL — в файле нет операций.';
+COMMENT ON COLUMN upload.last_operation_at IS 'Последняя операция файла (период в 3.4); NULL — в файле нет операций.';
 COMMENT ON COLUMN upload.result IS
-    'ImportResult of the complete event (protojson), replayed by WatchUpload; only while done.';
+    'Итог импорта (ImportResult) события complete (protojson), который повторяет WatchUpload; только у '
+    'done.';
 
 -- Timeout sweep: uploads processing for more than 3 minutes, across users.
 CREATE INDEX upload_processing_idx ON upload (uploaded_at) WHERE status = 'processing';
@@ -207,6 +249,11 @@ CREATE TABLE upload_account (
 COMMENT ON TABLE upload_account IS
     'Счета загрузки с периодом выписки DTSTART..DTEND как в файле, ключ (user_id, upload_id, account_id). '
     'По нему в зоне профиля на момент проверки считаются покрытые дни, пропуски и закрытие непрочитанных строк.';
+COMMENT ON COLUMN upload_account.user_id IS 'Пользователь (user_state).';
+COMMENT ON COLUMN upload_account.upload_id IS 'Загрузка.';
+COMMENT ON COLUMN upload_account.account_id IS 'Счёт блока STMTTRNRS в файле загрузки.';
+COMMENT ON COLUMN upload_account.statement_start IS 'Начало периода выписки — DTSTART блока как в файле; NULL — тега нет.';
+COMMENT ON COLUMN upload_account.statement_end IS 'Конец периода выписки — DTEND блока как в файле; NULL — тега нет.';
 
 -- ---------------------------------------------------------------- operations
 
@@ -238,16 +285,29 @@ COMMENT ON TABLE operation IS
     'Канонические операции пользователя, ключ (user_id, occurred_at, id); секционирована по годам occurred_at '
     '(границы в UTC), у партиций operation_yYYYY своих описаний нет. Столбцы правил (category_id, '
     'refund_target_category_id, is_split) пересчитываются после каждого импорта, удаления и ручного изменения.';
-COMMENT ON COLUMN operation.direction IS 'expense | income.';
-COMMENT ON COLUMN operation.status IS 'posted | pending.';
-COMMENT ON COLUMN operation.occurred_at IS 'Time of the operation (OFX DTPOSTED); partition, sort and month key.';
-COMMENT ON COLUMN operation.description IS 'Description from the source as is; may be empty (FIN-67).';
-COMMENT ON COLUMN operation.bank_category_id IS 'Category from the source (MEMO) as a dictionary ID; empty MEMO - cat_uncategorized.';
-COMMENT ON COLUMN operation.extensions IS 'Fields only one source has (extensions.<source>), schema per adapter version.';
-COMMENT ON COLUMN operation.category_id IS 'Final category (docs/calc.md 3.5).';
-COMMENT ON COLUMN operation.manual_category_id IS 'Category chosen by the user (4.3); survives re-import and recalculation.';
-COMMENT ON COLUMN operation.refund_target_category_id IS 'For a refund (category cat_refund): the category whose expenses it reduces.';
-COMMENT ON COLUMN operation.is_split IS 'The user split the transfer pair this operation was in (docs/calc.md 3.2, 3.4).';
+COMMENT ON COLUMN operation.user_id IS 'Пользователь (user_state).';
+COMMENT ON COLUMN operation.occurred_at IS 'Время операции (OFX DTPOSTED); ключ партиции, сортировки и месяца.';
+COMMENT ON COLUMN operation.id IS 'Идентификатор операции (UUIDv7) — id в API.';
+COMMENT ON COLUMN operation.account_id IS 'Счёт операции.';
+COMMENT ON COLUMN operation.direction IS 'Направление: expense | income.';
+COMMENT ON COLUMN operation.amount_minor IS 'Сумма без знака в минорных единицах; направление — в direction.';
+COMMENT ON COLUMN operation.currency IS 'Валюта операции (ISO 4217).';
+COMMENT ON COLUMN operation.status IS 'Статус: posted | pending.';
+COMMENT ON COLUMN operation.description IS 'Описание из источника как есть; может быть пустым (FIN-67).';
+COMMENT ON COLUMN operation.bank_category_id IS
+    'Категория из источника (MEMO) как ID справочника; пустой MEMO — cat_uncategorized.';
+COMMENT ON COLUMN operation.posted_at IS 'Время проведения банком; NULL — источник не сообщает.';
+COMMENT ON COLUMN operation.mcc IS 'Код MCC торговой точки, если источник его сообщает (в OFX Т-Банка нет).';
+COMMENT ON COLUMN operation.extensions IS
+    'Поля, которые есть только у одного источника (extensions.<source>), схема — по версии адаптера.';
+COMMENT ON COLUMN operation.category_id IS 'Итоговая категория (docs/calc.md 3.5).';
+COMMENT ON COLUMN operation.manual_category_id IS
+    'Категория, выбранная пользователем (4.3); переживает повторный импорт и пересчёт.';
+COMMENT ON COLUMN operation.refund_target_category_id IS 'У возврата (категория cat_refund): категория, расходы которой он уменьшает.';
+COMMENT ON COLUMN operation.is_split IS
+    'Пользователь разделил пару перевода, в которой была операция (docs/calc.md 3.2, 3.4).';
+COMMENT ON COLUMN operation.created_at IS 'Когда операция создана импортом.';
+COMMENT ON COLUMN operation.updated_at IS 'Когда строка последний раз изменена (правила, ручная категория).';
 
 -- GetOperation and ChangeCategory by ID: one probe per yearly partition.
 CREATE INDEX operation_user_id_id_idx ON operation (user_id, id);
@@ -283,7 +343,15 @@ COMMENT ON TABLE source_record IS
     'Реестр дедупликации, без секционирования: одна строка на (счёт, внешний ID) источника, уникальна по '
     '(user_id, account_id, external_id), и ссылка на её каноническую операцию. На одну операцию могут '
     'ссылаться несколько записей (несколько источников).';
-COMMENT ON COLUMN source_record.external_id IS 'ID of the operation in the source (OFX FITID), opaque.';
+COMMENT ON COLUMN source_record.user_id IS 'Пользователь (user_state).';
+COMMENT ON COLUMN source_record.id IS 'Внутренний ID записи; наружу не уходит.';
+COMMENT ON COLUMN source_record.account_id IS 'Счёт, в рамках которого уникален external_id.';
+COMMENT ON COLUMN source_record.external_id IS 'Идентификатор операции в источнике (OFX FITID), непрозрачный.';
+COMMENT ON COLUMN source_record.operation_occurred_at IS
+    'Время канонической операции (её occurred_at) — часть её ключа (партиция); следует за операцией через '
+    'ON UPDATE CASCADE.';
+COMMENT ON COLUMN source_record.operation_id IS 'Каноническая операция, которую представляет запись.';
+COMMENT ON COLUMN source_record.created_at IS 'Когда запись впервые встретилась в загрузке.';
 
 -- Cascade from operation and the lookup of an operation's records.
 CREATE INDEX source_record_operation_idx ON source_record (user_id, operation_id);
@@ -301,6 +369,9 @@ COMMENT ON TABLE upload_record IS
     'Какие загрузки содержат запись источника, ключ (user_id, upload_id, source_record_id). Операция живёт, '
     'пока её запись есть хотя бы в одной загрузке (docs/calc.md 2); FIN-79 закрывает строку по FITID только '
     'через загрузку, в которой она есть.';
+COMMENT ON COLUMN upload_record.user_id IS 'Пользователь (user_state).';
+COMMENT ON COLUMN upload_record.upload_id IS 'Загрузка, в файле которой есть запись.';
+COMMENT ON COLUMN upload_record.source_record_id IS 'Запись источника.';
 
 -- "Is the record in another upload?" when an upload is deleted; cascade from source_record.
 CREATE INDEX upload_record_source_record_idx ON upload_record (user_id, source_record_id);
@@ -322,6 +393,11 @@ COMMENT ON TABLE transfer_pair_member IS
     'Операции — стороны пары перевода между своими счетами. Ключ (user_id, operation_id) не даёт операции '
     'попасть больше чем в одну пару; удаление операции удаляет её строку здесь, а через transfer_pair — пару '
     'и вторую сторону.';
+COMMENT ON COLUMN transfer_pair_member.user_id IS 'Пользователь (user_state).';
+COMMENT ON COLUMN transfer_pair_member.operation_id IS 'Операция — сторона пары; первичный ключ держит её не больше чем в одной паре.';
+COMMENT ON COLUMN transfer_pair_member.operation_occurred_at IS
+    'Время операции (её occurred_at) — часть ключа для FK на секционированную operation.';
+COMMENT ON COLUMN transfer_pair_member.pair_id IS 'Пара, стороной которой является операция.';
 
 CREATE TABLE transfer_pair (
     user_id             uuid        NOT NULL REFERENCES user_state ON DELETE CASCADE,
@@ -346,6 +422,11 @@ COMMENT ON TABLE transfer_pair IS
     'own_transfer с ID = id. Пара переживает следующие импорты, пока существуют обе стороны (docs/calc.md 3.2), '
     'потеря стороны удаляет пару. Что дебет — расход, кредит — доход и это разные операции, проверяет код '
     '(docs/schema.md).';
+COMMENT ON COLUMN transfer_pair.user_id IS 'Пользователь (user_state).';
+COMMENT ON COLUMN transfer_pair.id IS 'Идентификатор пары (UUIDv7) — ID записи own_transfer в API.';
+COMMENT ON COLUMN transfer_pair.debit_operation_id IS 'Сторона списания (расход); время и сумма записи own_transfer берутся у неё.';
+COMMENT ON COLUMN transfer_pair.credit_operation_id IS 'Сторона зачисления (доход).';
+COMMENT ON COLUMN transfer_pair.created_at IS 'Когда пара собрана.';
 
 CREATE TABLE unread_line (
     user_id               uuid        NOT NULL,
@@ -363,15 +444,24 @@ CREATE TABLE unread_line (
     FOREIGN KEY (user_id, account_id) REFERENCES account ON DELETE CASCADE
 );
 
-COMMENT ON COLUMN unread_line.reason IS 'bad_amount | bad_date | no_date | truncated.';
 COMMENT ON TABLE unread_line IS
     'Строки файла, которые не удалось учесть (3.6), ключ (user_id, upload_id, line_number). Содержимое не '
     'хранится: только номер строки, дата, причина и, если прочитаны, счёт и FITID, по которым строку '
     'закрывает более поздняя загрузка.';
-COMMENT ON COLUMN unread_line.occurred_at IS 'Date of the operation, when it was read.';
+COMMENT ON COLUMN unread_line.user_id IS 'Пользователь (user_state).';
+COMMENT ON COLUMN unread_line.upload_id IS 'Загрузка, в файле которой строка.';
+COMMENT ON COLUMN unread_line.line_number IS 'Номер строки тега <STMTTRN> в файле, с 1.';
+COMMENT ON COLUMN unread_line.reason IS 'Причина: bad_amount | bad_date | no_date | truncated.';
+COMMENT ON COLUMN unread_line.occurred_at IS 'Дата операции, если прочиталась.';
+COMMENT ON COLUMN unread_line.account_id IS 'Счёт блока, если строка в блоке со счётом.';
+COMMENT ON COLUMN unread_line.external_id IS
+    'Идентификатор строки (FITID), если есть: по (счёт, FITID) строку закрывает более поздняя загрузка.';
 COMMENT ON COLUMN unread_line.resolved_by_upload_id IS
-    'The later upload that closed the line (FIN-79); NULL - open. Cleared and rechecked when that upload is deleted.';
-COMMENT ON COLUMN unread_line.resolution IS 'read - the later upload read it; replaced - it failed there again; set together with resolved_by_upload_id.';
+    'Более поздняя загрузка, закрывшая строку (FIN-79); NULL — строка открыта. При удалении той загрузки '
+    'очищается и проверяется заново.';
+COMMENT ON COLUMN unread_line.resolution IS
+    'Как закрыта: read — более поздняя загрузка её прочитала; replaced — там она снова не прочиталась; '
+    'задаётся вместе с resolved_by_upload_id.';
 
 -- 3.6 by period and unread_lines_count of a month: open lines with a date.
 CREATE INDEX unread_line_open_date_idx ON unread_line (user_id, occurred_at)
@@ -396,6 +486,11 @@ CREATE TABLE user_bank_category (
 COMMENT ON TABLE user_bank_category IS
     'Категории банка, встреченные пользователем, с первым появлением; ключ (user_id, category_id). 5.1 выводит '
     'категории вне реестра в этом порядке (docs/calc.md 10). Строка остаётся после удаления загрузки.';
+COMMENT ON COLUMN user_bank_category.user_id IS 'Пользователь (user_state).';
+COMMENT ON COLUMN user_bank_category.category_id IS 'Категория банка (строка справочника category).';
+COMMENT ON COLUMN user_bank_category.first_uploaded_at IS 'Время загрузки (uploaded_at), в которой категория встретилась впервые.';
+COMMENT ON COLUMN user_bank_category.first_line_number IS
+    'Номер строки первого появления в том файле; вместе с first_uploaded_at задаёт порядок в 5.1.';
 
 -- ---------------------------------------------------------------- regular payments, selections
 
@@ -414,8 +509,12 @@ COMMENT ON TABLE regular_payment IS
     'Распознанные регулярные платежи: ключ платежа (описание + периодичность, уникален у пользователя) и его '
     'стабильный ID (6.3), ключ (user_id, id). Строка создаётся при первом распознавании и не удаляется, '
     'поэтому ID и отметка «не подписка» переживают пересчёты и повторные загрузки.';
-COMMENT ON COLUMN regular_payment.periodicity IS 'monthly (others later, FIN-127).';
-COMMENT ON COLUMN regular_payment.dismissed_at IS 'Marked «не подписка» (DismissRegularPayment); NULL - shown.';
+COMMENT ON COLUMN regular_payment.user_id IS 'Пользователь (user_state).';
+COMMENT ON COLUMN regular_payment.id IS 'Стабильный ID платежа (6.3); из описания не выводится.';
+COMMENT ON COLUMN regular_payment.periodicity IS 'Периодичность: monthly (другие позже, FIN-127).';
+COMMENT ON COLUMN regular_payment.description IS 'Описание операций платежа (точное совпадение) — часть ключа платежа.';
+COMMENT ON COLUMN regular_payment.dismissed_at IS 'Отмечен «не подписка» (DismissRegularPayment); NULL — показывается.';
+COMMENT ON COLUMN regular_payment.created_at IS 'Когда платёж впервые распознан.';
 
 CREATE TABLE merchant (
     user_id    uuid        NOT NULL REFERENCES user_state ON DELETE CASCADE,
@@ -430,6 +529,10 @@ COMMENT ON TABLE merchant IS
     'Получатели платежей (нормализованные описания) за токенами выборки s_merchant_<id>; ключ (user_id, id), '
     'key уникален у пользователя. Токен не несёт описания (персональные данные в строке запроса) и действует, '
     'пока строка существует.';
+COMMENT ON COLUMN merchant.user_id IS 'Пользователь (user_state).';
+COMMENT ON COLUMN merchant.id IS 'Идентификатор продавца в токене выборки s_merchant_<id>.';
+COMMENT ON COLUMN merchant.key IS 'Нормализованное описание операций — продавец; уникально у пользователя.';
+COMMENT ON COLUMN merchant.created_at IS 'Когда продавец впервые понадобился для токена.';
 
 -- ---------------------------------------------------------------- calculation
 
@@ -450,7 +553,15 @@ COMMENT ON TABLE recalc_queue IS
     'как аренду), считает вне этой транзакции, затем одной транзакцией пишет month_state/monthly_agg, '
     'увеличивает calc_version, добавляет строку outbox и удаляет строку очереди, только если generation не '
     'изменился; изменившаяся строка остаётся и будет взята снова.';
-COMMENT ON COLUMN recalc_queue.month IS 'First day of the month in the user''s zone.';
+COMMENT ON COLUMN recalc_queue.user_id IS 'Пользователь (user_state).';
+COMMENT ON COLUMN recalc_queue.month IS 'Первое число месяца в поясе пользователя.';
+COMMENT ON COLUMN recalc_queue.generation IS
+    'Счётчик пометок месяца; строка удаляется после пересчёта, только если он не изменился.';
+COMMENT ON COLUMN recalc_queue.enqueued_at IS 'Когда месяц помечен впервые.';
+COMMENT ON COLUMN recalc_queue.next_attempt_at IS
+    'С какого момента строку можно взять: аренда обработчика и отсрочка повтора после ошибки.';
+COMMENT ON COLUMN recalc_queue.attempts IS 'Неудачных попыток пересчёта.';
+COMMENT ON COLUMN recalc_queue.last_error IS 'Последняя ошибка пересчёта для диагностики; NULL — ошибок не было.';
 
 CREATE INDEX recalc_queue_next_attempt_at_idx ON recalc_queue (next_attempt_at);
 
@@ -470,7 +581,16 @@ CREATE TABLE month_state (
 COMMENT ON TABLE month_state IS
     'Месяцы пользователя хотя бы с одним покрытым днём, ключ (user_id, month). Нет строки — нет данных за '
     'месяц; строка без строк monthly_agg — месяц покрыт и суммы нулевые. Здесь «нет данных» отличается от 0.';
-COMMENT ON COLUMN month_state.data_to IS 'DataBounds.data_to of the month (docs/api.md, «Формат»).';
+COMMENT ON COLUMN month_state.user_id IS 'Пользователь (user_state).';
+COMMENT ON COLUMN month_state.month IS 'Первое число месяца в поясе time_zone.';
+COMMENT ON COLUMN month_state.time_zone IS
+    'Часовой пояс (IANA), в котором посчитан месяц (user_state.timezone на момент расчёта).';
+COMMENT ON COLUMN month_state.covered_days IS 'Покрытых загрузками дней месяца (docs/calc.md 4), от 1.';
+COMMENT ON COLUMN month_state.days_in_month IS 'Дней в месяце, 28–31.';
+COMMENT ON COLUMN month_state.data_from IS 'Начало данных месяца — DataBounds.data_from (docs/api.md, «Формат»).';
+COMMENT ON COLUMN month_state.data_to IS 'Конец данных месяца — DataBounds.data_to (docs/api.md, «Формат»).';
+COMMENT ON COLUMN month_state.calc_version IS 'Версия расчёта (calc_version), с которой посчитан месяц.';
+COMMENT ON COLUMN month_state.calculated_at IS 'Когда месяц посчитан.';
 
 CREATE TABLE monthly_agg (
     user_id      uuid   NOT NULL,
@@ -486,11 +606,18 @@ CREATE TABLE monthly_agg (
     FOREIGN KEY (user_id, account_id) REFERENCES account ON DELETE CASCADE
 );
 
-COMMENT ON COLUMN monthly_agg.kind IS 'expense | income | refund.';
 COMMENT ON TABLE monthly_agg IS
     'Фоновый кэш сумм по месяцу, счёту, итоговой категории и виду (ключ — эти столбцы с user_id и валютой), '
     'перестраивается целиком вместе с месяцем. Возврат учитывается видом refund под целевой категорией и '
     'уменьшает её расходы.';
+COMMENT ON COLUMN monthly_agg.user_id IS 'Пользователь (user_state).';
+COMMENT ON COLUMN monthly_agg.month IS 'Месяц (первое число) — ключ month_state.';
+COMMENT ON COLUMN monthly_agg.account_id IS 'Счёт операций.';
+COMMENT ON COLUMN monthly_agg.category_id IS 'Итоговая категория; у возврата — категория-цель.';
+COMMENT ON COLUMN monthly_agg.kind IS 'Вид суммы: expense | income | refund.';
+COMMENT ON COLUMN monthly_agg.currency IS 'Валюта сумм (ISO 4217).';
+COMMENT ON COLUMN monthly_agg.amount_minor IS 'Сумма без знака в минорных единицах; знак применяет расчёт по kind.';
+COMMENT ON COLUMN monthly_agg.op_count IS 'Операций в строке, от 1.';
 
 CREATE TABLE metric_definition (
     metric_id  text        NOT NULL,
@@ -504,6 +631,11 @@ CREATE TABLE metric_definition (
 COMMENT ON TABLE metric_definition IS
     'Реестр определений метрик и правил с версиями (FIN-6), ключ (metric_id, version): пороги и параметры '
     'docs/calc.md 7. Текущая версия у метрики одна.';
+COMMENT ON COLUMN metric_definition.metric_id IS 'Идентификатор метрики или правила из реестра (FIN-6).';
+COMMENT ON COLUMN metric_definition.version IS 'Версия определения, с 1.';
+COMMENT ON COLUMN metric_definition.params IS 'Пороги и параметры версии (JSON-объект).';
+COMMENT ON COLUMN metric_definition.is_current IS 'Текущая версия метрики; у метрики она одна (metric_definition_current_idx).';
+COMMENT ON COLUMN metric_definition.created_at IS 'Когда версия добавлена.';
 
 CREATE UNIQUE INDEX metric_definition_current_idx ON metric_definition (metric_id) WHERE is_current;
 
@@ -520,5 +652,9 @@ COMMENT ON TABLE user_metric_version IS
     'Версия определения, по которой метрика пользователя посчитана последней; ключ (user_id, metric_id). '
     'Задание дозаполнения выбирает пользователей с версией ниже текущей; до пересчёта метрика недоступна, а не '
     'равна нулю.';
+COMMENT ON COLUMN user_metric_version.user_id IS 'Пользователь (user_state).';
+COMMENT ON COLUMN user_metric_version.metric_id IS 'Метрика.';
+COMMENT ON COLUMN user_metric_version.version IS 'Версия определения, которой метрика посчитана последней.';
+COMMENT ON COLUMN user_metric_version.computed_at IS 'Когда метрика посчитана.';
 
 CREATE INDEX user_metric_version_metric_idx ON user_metric_version (metric_id, version);
