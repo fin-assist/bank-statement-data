@@ -30,10 +30,15 @@
 -- * Money is bigint minor units; operation amounts are unsigned, the direction is a column.
 -- * Integers are sized by their real bounds (owner's decision in the review of FIN-111): money
 --   is bigint; counters and small quantities are integer (a file is at most 10 MB, a user never
---   has a million operations in one file, calc_version grows by a few per day); the percent
---   of parsing and settings_version are smallint. The contracts carry the versions as int64:
+--   has a million operations in one file, calc_version grows by a few per day); small bounded
+--   values are smallint (the percent of parsing, settings_version, category.sort_order, and
+--   recalc_queue.generation and attempts, which restart with every new queue row). The contracts carry the versions as int64:
 --   the code converts them and refuses a value out of range (docs/schema.md).
 --   squawk-ignore-file prefer-bigint-over-int, prefer-bigint-over-smallint
+-- * Timestamps (owner's decision in the review of FIN-111): no general updated_at anywhere, only
+--   the times of events that something reads (finished_at, deleted_at, dismissed_at, ...);
+--   every table whose rows are inserted by events has its creation time with DEFAULT now()
+--   (created_at, or uploaded_at / enqueued_at where that is the name), set by the database.
 -- * Instants are timestamptz. Calendar months are date (the 1st) in the user's time zone at
 --   calculation time (user_state.timezone); a zone change recalculates every month.
 -- * Every table and every column has a COMMENT ON in Russian (owner's request in the review
@@ -48,7 +53,6 @@ CREATE TABLE user_state (
     settings_version      smallint    NOT NULL DEFAULT 0,
     calc_version          integer     NOT NULL DEFAULT 0,
     categories_changed_at timestamptz,
-    uploads_changed_at    timestamptz,
     daily_recalc_due_at   timestamptz,
     created_at            timestamptz NOT NULL DEFAULT now()
 );
@@ -72,7 +76,6 @@ COMMENT ON COLUMN user_state.calc_version IS
     'ставит метрики в очередь на отправку в analytics.';
 COMMENT ON COLUMN user_state.categories_changed_at IS
     'Когда пользователь последний раз менял категорию операции или отмечал платёж как «не подписка».';
-COMMENT ON COLUMN user_state.uploads_changed_at IS 'Когда последний раз завершилась или была удалена загрузка выписки.';
 COMMENT ON COLUMN user_state.daily_recalc_due_at IS
     'Когда пересчитать текущие периоды в следующий раз: ближайшие 00:05 по поясу пользователя. Пусто, '
     'пока у пользователя нет данных.';
@@ -93,10 +96,9 @@ CREATE TABLE category (
     for_expense boolean     NOT NULL,
     for_income  boolean     NOT NULL,
     assignable  boolean     NOT NULL,
-    sort_order  integer     UNIQUE,
+    sort_order  smallint    UNIQUE,
     note        text,
-    created_at  timestamptz NOT NULL DEFAULT now(),
-    updated_at  timestamptz NOT NULL DEFAULT now()
+    created_at  timestamptz NOT NULL DEFAULT now()
 );
 
 COMMENT ON TABLE category IS
@@ -129,7 +131,6 @@ COMMENT ON COLUMN category.sort_order IS
 COMMENT ON COLUMN category.note IS
     'Короткое пояснение к системной категории, например «не в тратах». У остальных категорий поле пустое.';
 COMMENT ON COLUMN category.created_at IS 'Когда категория добавлена.';
-COMMENT ON COLUMN category.updated_at IS 'Когда категория последний раз менялась.';
 
 INSERT INTO category (id, name, bank_name, icon, is_system, is_known, for_expense, for_income, assignable, sort_order, note) VALUES
     ('cat_own_transfer',  'Между своими счетами', NULL,            'transfer', true, true, true,  true, true,  10, 'не в тратах'),
@@ -287,7 +288,6 @@ CREATE TABLE operation (
     is_split                  boolean     NOT NULL DEFAULT false,
     transfer_pair_id          uuid,
     created_at                timestamptz NOT NULL DEFAULT now(),
-    updated_at                timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (user_id, occurred_at, id),
     FOREIGN KEY (user_id, account_id) REFERENCES account ON DELETE CASCADE
 ) PARTITION BY RANGE (occurred_at);
@@ -331,7 +331,6 @@ COMMENT ON COLUMN operation.transfer_pair_id IS
     'Если операция не в паре, поле пустое. Что в паре ровно две операции, расход и доход, проверяет код '
     '(docs/schema.md).';
 COMMENT ON COLUMN operation.created_at IS 'Когда операция появилась при импорте.';
-COMMENT ON COLUMN operation.updated_at IS 'Когда операцию последний раз меняли правила или пользователь.';
 
 -- GetOperation and ChangeCategory by ID: one probe per yearly partition.
 CREATE INDEX operation_user_id_id_idx ON operation (user_id, id);
@@ -405,6 +404,7 @@ CREATE TABLE unread_line (
     external_id           text,
     resolved_by_upload_id uuid,
     resolution            text,
+    created_at            timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (user_id, upload_id, line_number),
     FOREIGN KEY (user_id, upload_id) REFERENCES upload ON DELETE CASCADE,
     FOREIGN KEY (user_id, resolved_by_upload_id) REFERENCES upload ON DELETE CASCADE,
@@ -433,6 +433,7 @@ COMMENT ON COLUMN unread_line.resolved_by_upload_id IS
 COMMENT ON COLUMN unread_line.resolution IS
     'Как закрыта строка: более поздняя загрузка её прочитала (read) или в ней эта строка снова не '
     'прочиталась и заменила старую (replaced). Заполняется вместе с закрывшей загрузкой.';
+COMMENT ON COLUMN unread_line.created_at IS 'Когда строка записана: в транзакции завершения импорта.';
 
 -- 3.6 by period and unread_lines_count of a month: open lines with a date.
 CREATE INDEX unread_line_open_date_idx ON unread_line (user_id, occurred_at)
@@ -495,10 +496,10 @@ COMMENT ON COLUMN merchant.created_at IS 'Когда получатель впе
 CREATE TABLE recalc_queue (
     user_id         uuid        NOT NULL REFERENCES user_state ON DELETE CASCADE,
     month           date        NOT NULL,
-    generation      integer     NOT NULL DEFAULT 1,
+    generation      smallint    NOT NULL DEFAULT 1,
     enqueued_at     timestamptz NOT NULL DEFAULT now(),
     next_attempt_at timestamptz NOT NULL DEFAULT now(),
-    attempts        integer     NOT NULL DEFAULT 0,
+    attempts        smallint    NOT NULL DEFAULT 0,
     last_error      text,
     PRIMARY KEY (user_id, month)
 );

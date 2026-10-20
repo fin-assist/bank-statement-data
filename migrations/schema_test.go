@@ -952,3 +952,45 @@ func TestStatementPeriodCoversLine(t *testing.T) {
 	want(10, both)
 	want(99, savings, both)
 }
+
+// No table keeps a general updated_at, and every table whose rows are inserted by events has
+// its creation time set by the database (docs/schema.md, «Время в строках»). A new table
+// without one, or an updated_at added back, fails here.
+func TestTimestampsFollowTheRule(t *testing.T) {
+	conn, _ := schema(t)
+	creation := map[string]string{"upload": "uploaded_at", "recalc_queue": "enqueued_at"}
+	optional := map[string]bool{"category": true} // reference data
+	rows, err := conn.Query(context.Background(), `
+		SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND NOT c.relispartition
+		  AND c.relname <> 'schema_migrations'
+		ORDER BY c.relname`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tables, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tables) == 0 {
+		t.Fatal("no tables found in schema public")
+	}
+	for _, table := range tables {
+		if n := count(t, conn, `SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = $1 AND column_name = 'updated_at'`, table); n != 0 {
+			t.Errorf("table %s has updated_at", table)
+		}
+		if optional[table] {
+			continue
+		}
+		column := creation[table]
+		if column == "" {
+			column = "created_at"
+		}
+		if n := count(t, conn, `SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2
+			  AND is_nullable = 'NO' AND column_default = 'now()'`, table, column); n != 1 {
+			t.Errorf("table %s has no %s NOT NULL DEFAULT now()", table, column)
+		}
+	}
+}
