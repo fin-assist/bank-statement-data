@@ -120,13 +120,12 @@ func seed(t *testing.T, conn *pgx.Conn, user string, hmacByte byte) fixture {
 		t.Fatal(err)
 	}
 	if err := conn.QueryRow(ctx, `INSERT INTO upload (user_id, source, file_name, size_bytes, content_sha256, object_key,
-			status, finished_at, operation_count, result)
-		VALUES ($1, 'tbank_ofx', 'operations.ofx', 100, $2, $3, 'done', now(), 1, '{}') RETURNING id`,
+			status, finished_at, operation_count, result, statement_from, statement_to)
+		VALUES ($1, 'tbank_ofx', 'operations.ofx', 100, $2, $3, 'done', now(), 1, '{}', '2026-09-01 00:00+03', '2026-09-25 00:00+03') RETURNING id`,
 		user, make([]byte, 32), user+"/seed").Scan(&f.upload); err != nil {
 		t.Fatal(err)
 	}
-	exec(t, conn, `INSERT INTO upload_account (user_id, upload_id, account_id, statement_start, statement_end)
-		VALUES ($1, $2, $3, '2026-09-01 00:00+03', '2026-09-25 00:00+03')`, user, f.upload, f.account)
+	exec(t, conn, `INSERT INTO upload_account (user_id, upload_id, account_id) VALUES ($1, $2, $3)`, user, f.upload, f.account)
 	if err := conn.QueryRow(ctx, `INSERT INTO operation (user_id, occurred_at, account_id, direction, amount_minor, currency,
 			status, description, bank_category_id, category_id)
 		VALUES ($1, $2, $3, 'expense', 234000, 'RUB', 'posted', 'Пятёрочка', $4, $4) RETURNING id`,
@@ -147,6 +146,18 @@ func TestSourceRecordDeduplication(t *testing.T) {
 	// The same FITID on the same account of the same user is one record.
 	fails(t, conn, uniqueViolation, `INSERT INTO source_record (user_id, account_id, external_id, operation_occurred_at, operation_id)
 		VALUES ($1, $2, '123456789012', $3, $4)`, a.user, a.account, a.at, a.operation)
+	// Also when the record would point at an operation of another date in another partition
+	// (a hold posted later, across a year boundary): the key has no date, so a key widened by
+	// operation_occurred_at would let this repeat in.
+	var later string
+	if err := conn.QueryRow(context.Background(), `INSERT INTO operation (user_id, occurred_at, account_id, direction, amount_minor, currency,
+			status, bank_category_id, category_id)
+		VALUES ($1, '2027-01-02 00:00:00+00', $2, 'expense', 1, 'RUB', 'posted', $3, $3) RETURNING id`,
+		a.user, a.account, bankCategory).Scan(&later); err != nil {
+		t.Fatal(err)
+	}
+	fails(t, conn, uniqueViolation, `INSERT INTO source_record (user_id, account_id, external_id, operation_occurred_at, operation_id)
+		VALUES ($1, $2, '123456789012', '2027-01-02 00:00:00+00', $3)`, a.user, a.account, later)
 	// Another user with the same account number (same HMAC input) and FITID is not a duplicate:
 	// seed(userB) already inserted it. Uniqueness never spans users.
 	if n := count(t, conn, `SELECT count(*) FROM source_record WHERE external_id = '123456789012'`); n != 2 {
@@ -818,5 +829,58 @@ func TestBankCategoriesInOrderOfFirstAppearance(t *testing.T) {
 	}
 	if got := strings.Join(order(b.user), ","); got != "cat_avia,cat_zoo" {
 		t.Fatalf("order of B: %s, want cat_avia,cat_zoo", got)
+	}
+}
+
+// Rule 2 of closing unread lines (api.md 3.6) reads the period of the file from upload and
+// the accounts of the upload from upload_account (docs/schema.md, «Период выписки и
+// закрытие строк»): a later upload closes a line of an account only if it contains that
+// account and its period covers the day of the line. The test compares instants; the code
+// compares days in the profile zone, where DTEND without a time covers its whole day.
+func TestStatementPeriodCoversLine(t *testing.T) {
+	conn, _ := schema(t)
+	ctx := context.Background()
+	seedCategories(t, conn)
+	a := seed(t, conn, userA, 1) // its upload covers 2026-09-01..2026-09-25 for its account
+
+	var otherAccount int64
+	if err := conn.QueryRow(ctx, `INSERT INTO account (user_id, source, ext_id_hmac, ext_id_key_version, type, is_other_bank)
+		VALUES ($1, 'tbank_ofx', $2, 1, 'savings', false) RETURNING id`, a.user, []byte{9}).Scan(&otherAccount); err != nil {
+		t.Fatal(err)
+	}
+	// A later upload of the same period, but with the other account only.
+	var later string
+	if err := conn.QueryRow(ctx, `INSERT INTO upload (user_id, source, file_name, size_bytes, content_sha256, object_key,
+			status, finished_at, operation_count, result, statement_from, statement_to, uploaded_at)
+		VALUES ($1, 'tbank_ofx', 'savings.ofx', 1, $2, $3, 'done', now(), 0, '{}', '2026-09-01 00:00+03', '2026-09-25 00:00+03', now() + interval '1 day')
+		RETURNING id`, a.user, make([]byte, 32), a.user+"/later").Scan(&later); err != nil {
+		t.Fatal(err)
+	}
+	exec(t, conn, `INSERT INTO upload_account (user_id, upload_id, account_id) VALUES ($1, $2, $3)`, a.user, later, otherAccount)
+
+	covering := func(account int64, day string) []string {
+		t.Helper()
+		rows, err := conn.Query(ctx, `SELECT u.id::text FROM upload u
+			JOIN upload_account ua ON ua.user_id = u.user_id AND ua.upload_id = u.id
+			WHERE u.user_id = $1 AND u.status = 'done' AND ua.account_id = $2
+			  AND u.statement_from <= $3::timestamptz AND u.statement_to >= $3::timestamptz
+			ORDER BY u.uploaded_at, u.id`, a.user, account, day)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ids
+	}
+	if got := covering(a.account, "2026-09-10 12:00+03"); len(got) != 1 || got[0] != a.upload {
+		t.Fatalf("uploads covering the day for the seeded account: %v, want only %s", got, a.upload)
+	}
+	if got := covering(otherAccount, "2026-09-10 12:00+03"); len(got) != 1 || got[0] != later {
+		t.Fatalf("uploads covering the day for the other account: %v, want only %s", got, later)
+	}
+	if got := covering(a.account, "2026-09-28 12:00+03"); len(got) != 0 {
+		t.Fatalf("uploads covering a day outside every period: %v, want none", got)
 	}
 }

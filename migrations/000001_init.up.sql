@@ -180,6 +180,8 @@ CREATE TABLE upload (
     operation_count    bigint,
     first_operation_at timestamptz,
     last_operation_at  timestamptz,
+    statement_from     timestamptz,
+    statement_to       timestamptz,
     result             jsonb,
     PRIMARY KEY (user_id, id),
     -- One file per upload: deleting the file of one upload never removes another's, even when
@@ -223,6 +225,14 @@ COMMENT ON COLUMN upload.first_operation_at IS
 COMMENT ON COLUMN upload.last_operation_at IS
     'Последняя операция файла (период в 3.4); задана у done (и остаётся у deleted), NULL — в файле нет '
     'операций или разбор не завершён.';
+COMMENT ON COLUMN upload.statement_from IS
+    'Начало периода выписки — DTSTART как в файле (у всех счетов файла период один, решение владельца в ревью '
+    'FIN-111); задаётся вместе с statement_to у done, NULL — в файле нет блока с обоими тегами или разбор не '
+    'завершён. Покрытые дни и закрытие непрочитанных строк считаются по нему в поясе профиля на момент '
+    'проверки (docs/calc.md 4, api.md 3.6).';
+COMMENT ON COLUMN upload.statement_to IS
+    'Конец периода выписки — DTEND как в файле; DTEND без времени покрывает свой день целиком. Задаётся '
+    'вместе с statement_from.';
 COMMENT ON COLUMN upload.result IS
     'Итог импорта (ImportResult) события complete (protojson), который повторяет WatchUpload; только у '
     'done.';
@@ -237,21 +247,18 @@ CREATE TABLE upload_account (
     user_id         uuid        NOT NULL,
     upload_id       uuid        NOT NULL,
     account_id      bigint      NOT NULL,
-    statement_start timestamptz,
-    statement_end   timestamptz,
     PRIMARY KEY (user_id, upload_id, account_id),
     FOREIGN KEY (user_id, upload_id) REFERENCES upload ON DELETE CASCADE,
     FOREIGN KEY (user_id, account_id) REFERENCES account ON DELETE CASCADE
 );
 
 COMMENT ON TABLE upload_account IS
-    'Счета загрузки с периодом выписки DTSTART..DTEND как в файле, ключ (user_id, upload_id, account_id). '
-    'По нему в зоне профиля на момент проверки считаются покрытые дни, пропуски и закрытие непрочитанных строк.';
+    'Счета загрузки — блоки STMTTRNRS файла, в том числе без операций; ключ (user_id, upload_id, account_id). '
+    'Правила 2–3 закрытия непрочитанных строк (api.md 3.6) требуют, чтобы новая загрузка содержала тот же '
+    'счёт; период выписки — upload.statement_from/statement_to, он один на файл.';
 COMMENT ON COLUMN upload_account.user_id IS 'Пользователь (user_state).';
 COMMENT ON COLUMN upload_account.upload_id IS 'Загрузка.';
 COMMENT ON COLUMN upload_account.account_id IS 'Счёт блока STMTTRNRS в файле загрузки.';
-COMMENT ON COLUMN upload_account.statement_start IS 'Начало периода выписки — DTSTART блока как в файле; NULL — тега нет.';
-COMMENT ON COLUMN upload_account.statement_end IS 'Конец периода выписки — DTEND блока как в файле; NULL — тега нет.';
 
 -- ---------------------------------------------------------------- operations
 
