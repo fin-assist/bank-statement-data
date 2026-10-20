@@ -2,12 +2,14 @@ package migrations_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"math"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -581,6 +583,215 @@ func TestTransferPairLookup(t *testing.T) {
 	if n := sides(b.user); n != 1 {
 		t.Fatal("clearing A's pair touched another user")
 	}
+}
+
+// The lookup of a record of GetOperation and ChangeCategory (api.md 4.2, 4.3; FIN-202,
+// docs/schema.md, «Запись по occurred_at и id»). The ID of a record is operation.id of a single
+// operation or transfer_pair_id of an own_transfer pair; a side of a pair is not a record.
+const (
+	recordByKey = `SELECT id, occurred_at FROM operation
+		WHERE user_id = $1 AND occurred_at = $2
+		  AND ((id = $3 AND transfer_pair_id IS NULL) OR transfer_pair_id = $3)
+		ORDER BY occurred_at, id`
+	recordByID = `SELECT id, occurred_at FROM operation
+		WHERE user_id = $1
+		  AND ((id = $2 AND transfer_pair_id IS NULL) OR transfer_pair_id = $2)
+		ORDER BY occurred_at, id`
+)
+
+// planNode is a node of EXPLAIN (FORMAT JSON).
+type planNode struct {
+	NodeType     string     `json:"Node Type"`
+	RelationName string     `json:"Relation Name"`
+	IndexName    string     `json:"Index Name"`
+	Plans        []planNode `json:"Plans"`
+}
+
+// scannedRelations runs EXPLAIN (FORMAT JSON) of sql and returns the relations its scan nodes
+// read and the indexes the plan uses, in plan order.
+func scannedRelations(t *testing.T, conn *pgx.Conn, sql string, args ...any) (relations, indexes []string) {
+	t.Helper()
+	var out []byte
+	if err := conn.QueryRow(context.Background(), `EXPLAIN (FORMAT JSON) `+sql, args...).Scan(&out); err != nil {
+		t.Fatalf("EXPLAIN %s: %v", sql, err)
+	}
+	var plans []struct {
+		Plan planNode `json:"Plan"`
+	}
+	if err := json.Unmarshal(out, &plans); err != nil || len(plans) != 1 {
+		t.Fatalf("EXPLAIN %s: %d plans, %v", sql, len(plans), err)
+	}
+	var walk func(n planNode)
+	walk = func(n planNode) {
+		if n.RelationName != "" && strings.HasSuffix(n.NodeType, "Scan") {
+			relations = append(relations, n.RelationName)
+		}
+		if n.IndexName != "" {
+			indexes = append(indexes, n.IndexName)
+		}
+		for _, c := range n.Plans {
+			walk(c)
+		}
+	}
+	walk(plans[0].Plan)
+	return relations, indexes
+}
+
+func TestOperationLookupByOccurredAtAndID(t *testing.T) {
+	conn, _ := schema(t)
+	ctx := context.Background()
+	a := seed(t, conn, userA, account1)
+	b := seed(t, conn, userB, account2)
+
+	type record struct {
+		id string
+		at time.Time
+	}
+	lookup := func(sql string, args ...any) []record {
+		t.Helper()
+		rows, err := conn.Query(ctx, sql, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (record, error) {
+			var rec record
+			return rec, r.Scan(&rec.id, &rec.at)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return found
+	}
+	byKey := func(user string, at time.Time, id string) []record {
+		t.Helper()
+		return lookup(recordByKey, user, at, id)
+	}
+	byID := func(user, id string) []record {
+		t.Helper()
+		return lookup(recordByID, user, id)
+	}
+	one := func(what string, got []record, id string, at time.Time) {
+		t.Helper()
+		if len(got) != 1 || got[0].id != id || !got[0].at.Equal(at) {
+			t.Fatalf("%s: %v, want one record %s at %s", what, got, id, at)
+		}
+	}
+	none := func(what string, got []record) {
+		t.Helper()
+		if len(got) != 0 {
+			t.Fatalf("%s: %v, want nothing", what, got)
+		}
+	}
+
+	// The fallback relies on the index (user_id, id): one probe per yearly partition.
+	if n := count(t, conn, `SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'operation'
+		AND indexname = 'operation_user_id_id_idx' AND indexdef LIKE '%(user_id, id)'`); n != 1 {
+		t.Fatalf("index on operation (user_id, id): %d, want 1", n)
+	}
+
+	// The key is the moment, not its text: the time the client got in +03:00 is the same key.
+	moscow := time.FixedZone("MSK", 3*60*60)
+	one("by key", byKey(a.user, a.at.In(moscow), a.operation), a.operation, a.at)
+	// The moment is compared exactly, to the microsecond PostgreSQL stores.
+	none("by key a microsecond off", byKey(a.user, a.at.Add(time.Microsecond), a.operation))
+	one("by ID", byID(a.user, a.operation), a.operation, a.at)
+
+	// The plans below are for a user with a year of history in every partition, so that the
+	// planner chooses as it will in production and not as on near-empty tables.
+	exec(t, conn, `INSERT INTO operation (user_id, occurred_at, account_id, direction, amount_minor, currency, status, bank_category_id, category_id)
+		SELECT $1, make_timestamptz(y, 1, 1, 0, 0, 0, 'UTC') + n * interval '8 hours', $2, 'expense', 1, 'RUB', 'posted', $3, $3
+		FROM generate_series(2010, 2027) AS y, generate_series(1, 1000) AS n`, a.user, a.account, bankCategory)
+	exec(t, conn, `ANALYZE operation`)
+
+	// The lookup by key reads one yearly partition: pruned at planning with the values (custom
+	// plan) and at executor start for a prepared statement with a generic plan, which pgx's
+	// statement cache may get after a few calls.
+	if rel, _ := scannedRelations(t, conn, recordByKey, a.user, a.at, a.operation); strings.Join(rel, ",") != "operation_y2026" {
+		t.Fatalf("lookup by key (custom plan) reads %v, want operation_y2026 only", rel)
+	}
+	exec(t, conn, `PREPARE record_by_key (uuid, timestamptz, uuid) AS `+recordByKey)
+	exec(t, conn, `SET plan_cache_mode = force_generic_plan`)
+	// EXECUTE takes no bind parameters: the fixture's own values are written in as literals.
+	rel, _ := scannedRelations(t, conn, fmt.Sprintf(`EXECUTE record_by_key ('%s', '%s', '%s')`,
+		a.user, a.at.Format(time.RFC3339Nano), a.operation))
+	exec(t, conn, `RESET plan_cache_mode`)
+	exec(t, conn, `DEALLOCATE record_by_key`)
+	if strings.Join(rel, ",") != "operation_y2026" {
+		t.Fatalf("lookup by key (generic plan) reads %v, want operation_y2026 only", rel)
+	}
+	// The fallback reads every partition, each through its parts of operation_user_id_id_idx
+	// and operation_transfer_pair_idx (the primary key would serve it too, by the prefix user_id
+	// alone: all the user's operations of the year).
+	parts, err := conn.Query(ctx, `SELECT inhrelid::regclass::text FROM pg_inherits
+		WHERE inhparent IN ('operation_user_id_id_idx'::regclass, 'operation_transfer_pair_idx'::regclass) ORDER BY 1`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byIDIndexes, err := pgx.CollectRows(parts, pgx.RowTo[string])
+	if err != nil {
+		t.Fatal(err)
+	}
+	partitions := count(t, conn, `SELECT count(*) FROM pg_inherits WHERE inhparent = 'operation'::regclass`)
+	if len(byIDIndexes) != 2*partitions {
+		t.Fatalf("parts of the two indexes: %d, want two per each of %d partitions", len(byIDIndexes), partitions)
+	}
+	rel, used := scannedRelations(t, conn, recordByID, a.user, a.operation)
+	if len(rel) != partitions {
+		t.Fatalf("lookup by ID reads %d partitions, want all %d: %v", len(rel), partitions, rel)
+	}
+	for _, idx := range byIDIndexes {
+		if !slices.Contains(used, idx) {
+			t.Fatalf("lookup by ID does not use %s; indexes used: %v", idx, used)
+		}
+	}
+
+	// Another user's ID: nothing in both queries, the same as an ID that does not exist.
+	none("B by A's key", byKey(b.user, a.at, a.operation))
+	none("B by A's ID", byID(b.user, a.operation))
+	none("A by B's key", byKey(a.user, b.at, b.operation))
+	none("A by B's ID", byID(a.user, b.operation))
+
+	// A hold posted later, across a year boundary: the time the client has misses, the fallback
+	// finds the record with its current time, in the partition of 2027.
+	posted := time.Date(2027, 1, 2, 0, 0, 0, 0, time.UTC)
+	exec(t, conn, `UPDATE operation SET occurred_at = $3 WHERE user_id = $1 AND id = $2`, a.user, a.operation, posted)
+	none("by the old key", byKey(a.user, a.at, a.operation))
+	one("by ID after the move", byID(a.user, a.operation), a.operation, posted)
+	one("by the current key", byKey(a.user, posted, a.operation), a.operation, posted)
+	if rel, _ := scannedRelations(t, conn, recordByKey, a.user, posted, a.operation); strings.Join(rel, ",") != "operation_y2027" {
+		t.Fatalf("lookup by the current key reads %v, want operation_y2027 only", rel)
+	}
+	// ChangeCategory writes the found row by its full primary key: one partition as well.
+	write := `UPDATE operation SET manual_category_id = 'cat_transfers', category_id = 'cat_transfers'
+		WHERE user_id = $1 AND occurred_at = $2 AND id = $3`
+	if rel, _ := scannedRelations(t, conn, write, a.user, posted, a.operation); strings.Join(rel, ",") != "operation_y2027" {
+		t.Fatalf("write by the primary key reads %v, want operation_y2027 only", rel)
+	}
+	// The other user is untouched by the move and still not reachable.
+	none("B by A's ID after the move", byID(b.user, a.operation))
+	one("B's own record", byID(b.user, b.operation), b.operation, b.at)
+
+	// An own_transfer pair: its ID is transfer_pair_id, its time is the debit's.
+	const pair = "01a10800-0000-7000-8000-0000000000bb"
+	debit, credit := newOp(t, conn, a, "expense", time.Minute), newOp(t, conn, a, "income", 2*time.Minute)
+	exec(t, conn, `UPDATE operation SET transfer_pair_id = $2 WHERE user_id = $1 AND id IN ($3, $4)`, a.user, pair, debit.id, credit.id)
+	// The key finds the debit; the code then reads the pair (TestTransferPairLookup).
+	one("pair by key", byKey(a.user, debit.at, pair), debit.id, debit.at)
+	// The fallback finds both sides.
+	if got := byID(a.user, pair); len(got) != 2 || got[0].id != debit.id || got[1].id != credit.id {
+		t.Fatalf("pair by ID: %v, want the debit %s and the credit %s", got, debit.id, credit.id)
+	}
+	// A side of a pair is not a record (api.md 4.2: «пара … собрана» is NOT_FOUND).
+	none("side by key", byKey(a.user, debit.at, debit.id))
+	none("side by ID", byID(a.user, debit.id))
+	none("B by A's pair key", byKey(b.user, debit.at, pair))
+	none("B by A's pair ID", byID(b.user, pair))
+	// A split pair (4.3) clears the value at both sides: the pair ID is gone, the sides are
+	// records again.
+	exec(t, conn, `UPDATE operation SET transfer_pair_id = NULL, is_split = true WHERE user_id = $1 AND transfer_pair_id = $2`, a.user, pair)
+	none("split pair by key", byKey(a.user, debit.at, pair))
+	none("split pair by ID", byID(a.user, pair))
+	one("split side by key", byKey(a.user, credit.at, credit.id), credit.id, credit.at)
 }
 
 func TestRegularPaymentIDIsStable(t *testing.T) {
