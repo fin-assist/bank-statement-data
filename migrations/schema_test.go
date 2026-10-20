@@ -831,6 +831,9 @@ func TestBankCategoriesInOrderOfFirstAppearance(t *testing.T) {
 	// The user meets cat_cafe last, after the new categories and cat_supermarkets: registry
 	// categories still go first and in registry order, not in the order of first appearance.
 	addRecord(a, "cat_cafe", "A4", 2*time.Hour)
+	// A line with an empty bank category: the system cat_uncategorized is also a bank category
+	// of the user's operation and is listed once.
+	addRecord(a, "cat_uncategorized", "A5", 3*time.Hour)
 	addRecord(b, "cat_avia", "B1", 0)
 	addRecord(b, "cat_zoo", "B2", 0)
 
