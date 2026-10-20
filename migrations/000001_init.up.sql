@@ -210,8 +210,12 @@ COMMENT ON COLUMN upload.uploaded_at IS
 COMMENT ON COLUMN upload.finished_at IS 'Когда загрузка вышла из processing (done или failed); NULL — ещё разбирается.';
 COMMENT ON COLUMN upload.deleted_at IS 'Когда загрузка удалена (3.5); задан только у deleted.';
 COMMENT ON COLUMN upload.operation_count IS 'Операций прочитано из файла, включая уже загруженные ранее.';
-COMMENT ON COLUMN upload.first_operation_at IS 'Первая операция файла (период в 3.4); NULL — в файле нет операций.';
-COMMENT ON COLUMN upload.last_operation_at IS 'Последняя операция файла (период в 3.4); NULL — в файле нет операций.';
+COMMENT ON COLUMN upload.first_operation_at IS
+    'Первая операция файла (период в 3.4); задана у done (и остаётся у deleted), NULL — в файле нет операций '
+    'или разбор не завершён.';
+COMMENT ON COLUMN upload.last_operation_at IS
+    'Последняя операция файла (период в 3.4); задана у done (и остаётся у deleted), NULL — в файле нет '
+    'операций или разбор не завершён.';
 COMMENT ON COLUMN upload.result IS
     'Итог импорта (ImportResult) события complete (protojson), который повторяет WatchUpload; только у '
     'done.';
