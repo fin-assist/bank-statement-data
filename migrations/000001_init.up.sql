@@ -25,6 +25,9 @@
 -- * Money is bigint minor units; operation amounts are unsigned, the direction is a column.
 -- * Instants are timestamptz. Calendar months are date (the 1st) in the user's time zone at
 --   calculation time; the zone they were computed in is stored next to them.
+-- * Every table has a COMMENT ON TABLE in Russian (owner's request in the review of FIN-111):
+--   what it holds, its key and its role. Partitions of operation have none; the parent
+--   describes them. Column comments stay in English.
 
 -- ---------------------------------------------------------------- user
 
@@ -40,11 +43,11 @@ CREATE TABLE user_state (
 );
 
 COMMENT ON TABLE user_state IS
-    'One row per user: settings from user (SetUserTimezone), counters, and the row every user '
-    'table references (ON DELETE CASCADE). Lock it with SELECT ... FOR NO KEY UPDATE to '
-    'serialise per-user steps (closing unread lines, calc_version): FOR UPDATE would also wait '
-    'for every open transaction that inserted rows referencing the user (their FK takes FOR KEY '
-    'SHARE) and two imports would deadlock.';
+    'Пользователь сервиса, одна строка на user_id (ключ): настройки из user (SetUserTimezone), версии и '
+    'отметки изменений. На неё ссылается каждая пользовательская таблица (ON DELETE CASCADE), PurgeUserData — '
+    'один DELETE этой строки. Шаги одного пользователя (закрытие непрочитанных строк, calc_version) '
+    'сериализуются блокировкой SELECT ... FOR NO KEY UPDATE: FOR UPDATE ждал бы каждую открытую транзакцию, '
+    'вставившую ссылающиеся строки (их FK берёт FOR KEY SHARE), и два импорта взаимно блокировались бы.';
 COMMENT ON COLUMN user_state.timezone IS
     'IANA zone of the profile; Europe/Moscow until the first SetUserTimezone arrives.';
 COMMENT ON COLUMN user_state.settings_version IS
@@ -68,7 +71,8 @@ CREATE TABLE source (
     name text NOT NULL
 );
 
-COMMENT ON TABLE source IS 'Data sources (statement formats, bank APIs); name is source_name of the API.';
+COMMENT ON TABLE source IS
+    'Справочник источников данных (форматы выписок, API банков), ключ — код источника; name — source_name в API.';
 
 INSERT INTO source (id, name) VALUES ('tbank_ofx', 'Выписка Т-Банка');
 
@@ -89,9 +93,9 @@ CREATE TABLE category (
 );
 
 COMMENT ON TABLE category IS
-    'Category dictionary shared by all users (5.1): system categories, the registry of known bank '
-    'categories (FIN-6) and bank categories met for the first time (is_known = false). Not user '
-    'data: names come from MEMO, which is the bank''s category.';
+    'Общий для всех пользователей справочник категорий (5.1), ключ — код категории: системные категории, '
+    'реестр известных категорий банка (FIN-6) и впервые встреченные категории банка (is_known = false). '
+    'Не персональные данные: названия берутся из MEMO — это категория банка.';
 COMMENT ON COLUMN category.bank_name IS
     'MEMO after trimming, cut to 64 characters: the bank category this row stands for.';
 COMMENT ON COLUMN category.sort_order IS
@@ -121,8 +125,9 @@ CREATE TABLE account (
 );
 
 COMMENT ON TABLE account IS
-    'Accounts met in statements. The full number (ACCTID) is never stored: only its HMAC with the '
-    'service key, the type and the last 4 characters.';
+    'Счета пользователя, встреченные в выписках; ключ (user_id, id), счёт источника однозначен по '
+    '(user_id, source_id, ext_id_hmac). Полный номер (ACCTID) не хранится: только его HMAC с ключом сервиса, '
+    'тип и последние 4 символа.';
 COMMENT ON COLUMN account.ext_id_hmac IS
     'HMAC-SHA-256 with the service key over user_id and ACCTID (or the source''s account ID): the '
     'same account of two users gives different values, so rows cannot be linked across users.';
@@ -160,9 +165,9 @@ CREATE TABLE upload (
 );
 
 COMMENT ON TABLE upload IS
-    'Statement uploads (3.2-3.5). A deleted or failed upload keeps its row: DELETE of an upload '
-    'that existed answers OK, NOT_FOUND only for an ID the user never had; WatchUpload replays the '
-    'outcome of a failed one.';
+    'Загрузки выписок (3.2-3.5), ключ (user_id, id). Удалённая или неудачная загрузка сохраняет строку: '
+    'DELETE существовавшей загрузки отвечает OK, NOT_FOUND — только для ID, которого у пользователя не было; '
+    'WatchUpload повторяет итог неудачной загрузки.';
 COMMENT ON COLUMN upload.content_sha256 IS
     'SHA-256 of the file: the request hash of the idempotency key (with file_name) and a hint for '
     'support. Not unique: the same file may be uploaded again (FIN-79).';
@@ -200,8 +205,8 @@ CREATE TABLE upload_account (
 );
 
 COMMENT ON TABLE upload_account IS
-    'Accounts of an upload with the statement period DTSTART..DTEND as given: covered days, gaps and '
-    'closing of unread lines are computed from it in the profile zone at check time.';
+    'Счета загрузки с периодом выписки DTSTART..DTEND как в файле, ключ (user_id, upload_id, account_id). '
+    'По нему в зоне профиля на момент проверки считаются покрытые дни, пропуски и закрытие непрочитанных строк.';
 
 -- ---------------------------------------------------------------- operations
 
@@ -230,8 +235,9 @@ CREATE TABLE operation (
 ) PARTITION BY RANGE (occurred_at);
 
 COMMENT ON TABLE operation IS
-    'Canonical operations, yearly partitions by occurred_at (UTC bounds). Rule columns (category_id, '
-    'refund_target_category_id, is_split) are recomputed after every import, deletion and manual change.';
+    'Канонические операции пользователя, ключ (user_id, occurred_at, id); секционирована по годам occurred_at '
+    '(границы в UTC), у партиций operation_yYYYY своих описаний нет. Столбцы правил (category_id, '
+    'refund_target_category_id, is_split) пересчитываются после каждого импорта, удаления и ручного изменения.';
 COMMENT ON COLUMN operation.direction IS 'expense | income.';
 COMMENT ON COLUMN operation.status IS 'posted | pending.';
 COMMENT ON COLUMN operation.occurred_at IS 'Time of the operation (OFX DTPOSTED); partition, sort and month key.';
@@ -274,8 +280,9 @@ CREATE TABLE source_record (
 );
 
 COMMENT ON TABLE source_record IS
-    'Deduplication registry, not partitioned: one row per (account, external ID) of a source, '
-    'linked to its canonical operation. Several records may point to one operation (several sources).';
+    'Реестр дедупликации, без секционирования: одна строка на (счёт, внешний ID) источника, уникальна по '
+    '(user_id, account_id, external_id), и ссылка на её каноническую операцию. На одну операцию могут '
+    'ссылаться несколько записей (несколько источников).';
 COMMENT ON COLUMN source_record.external_id IS 'ID of the operation in the source (OFX FITID), opaque.';
 
 -- Cascade from operation and the lookup of an operation's records.
@@ -291,8 +298,9 @@ CREATE TABLE upload_record (
 );
 
 COMMENT ON TABLE upload_record IS
-    'Which uploads contain a source record. An operation lives while some upload has its record '
-    '(docs/calc.md 2); FIN-79 closes a line by FITID only through an upload that contains it.';
+    'Какие загрузки содержат запись источника, ключ (user_id, upload_id, source_record_id). Операция живёт, '
+    'пока её запись есть хотя бы в одной загрузке (docs/calc.md 2); FIN-79 закрывает строку по FITID только '
+    'через загрузку, в которой она есть.';
 
 -- "Is the record in another upload?" when an upload is deleted; cascade from source_record.
 CREATE INDEX upload_record_source_record_idx ON upload_record (user_id, source_record_id);
@@ -311,9 +319,9 @@ CREATE TABLE transfer_pair_member (
 );
 
 COMMENT ON TABLE transfer_pair_member IS
-    'Operations that are sides of a transfer pair. The primary key keeps an operation in one pair '
-    'at most; deleting an operation deletes its member row and, through transfer_pair, the pair '
-    'and the other member.';
+    'Операции — стороны пары перевода между своими счетами. Ключ (user_id, operation_id) не даёт операции '
+    'попасть больше чем в одну пару; удаление операции удаляет её строку здесь, а через transfer_pair — пару '
+    'и вторую сторону.';
 
 CREATE TABLE transfer_pair (
     user_id             uuid        NOT NULL REFERENCES user_state ON DELETE CASCADE,
@@ -334,10 +342,10 @@ CREATE TABLE transfer_pair (
 ALTER TABLE transfer_pair_member ADD FOREIGN KEY (user_id, pair_id) REFERENCES transfer_pair ON DELETE CASCADE;
 
 COMMENT ON TABLE transfer_pair IS
-    'Pairs of transfers between the user''s own accounts, shown as one own_transfer record whose ID '
-    'is id. A pair survives later imports while both sides exist (docs/calc.md 3.2); losing a side '
-    'deletes the pair. That the debit is an expense, the credit an income and the two differ is '
-    'checked by the code (docs/schema.md).';
+    'Пары переводов между своими счетами пользователя, ключ (user_id, id); пара показывается одной записью '
+    'own_transfer с ID = id. Пара переживает следующие импорты, пока существуют обе стороны (docs/calc.md 3.2), '
+    'потеря стороны удаляет пару. Что дебет — расход, кредит — доход и это разные операции, проверяет код '
+    '(docs/schema.md).';
 
 CREATE TABLE unread_line (
     user_id               uuid        NOT NULL,
@@ -357,8 +365,9 @@ CREATE TABLE unread_line (
 
 COMMENT ON COLUMN unread_line.reason IS 'bad_amount | bad_date | no_date | truncated.';
 COMMENT ON TABLE unread_line IS
-    'Lines of a file that could not be counted (3.6). The content is not stored: only the line '
-    'number, the date, the reason and, when read, the account and FITID used to close the line.';
+    'Строки файла, которые не удалось учесть (3.6), ключ (user_id, upload_id, line_number). Содержимое не '
+    'хранится: только номер строки, дата, причина и, если прочитаны, счёт и FITID, по которым строку '
+    'закрывает более поздняя загрузка.';
 COMMENT ON COLUMN unread_line.occurred_at IS 'Date of the operation, when it was read.';
 COMMENT ON COLUMN unread_line.resolved_by_upload_id IS
     'The later upload that closed the line (FIN-79); NULL - open. Cleared and rechecked when that upload is deleted.';
@@ -385,8 +394,8 @@ CREATE TABLE user_bank_category (
 );
 
 COMMENT ON TABLE user_bank_category IS
-    'Bank categories the user met, with the first appearance: 5.1 lists categories outside the '
-    'registry in this order (docs/calc.md 10). Kept when the upload is deleted.';
+    'Категории банка, встреченные пользователем, с первым появлением; ключ (user_id, category_id). 5.1 выводит '
+    'категории вне реестра в этом порядке (docs/calc.md 10). Строка остаётся после удаления загрузки.';
 
 -- ---------------------------------------------------------------- regular payments, selections
 
@@ -402,9 +411,9 @@ CREATE TABLE regular_payment (
 );
 
 COMMENT ON TABLE regular_payment IS
-    'Key of a recognised regular payment (description + periodicity) and its stable ID (6.3). The '
-    'row is created on first recognition and kept, so the ID and the «не подписка» mark survive '
-    'recalculations and re-uploads.';
+    'Распознанные регулярные платежи: ключ платежа (описание + периодичность, уникален у пользователя) и его '
+    'стабильный ID (6.3), ключ (user_id, id). Строка создаётся при первом распознавании и не удаляется, '
+    'поэтому ID и отметка «не подписка» переживают пересчёты и повторные загрузки.';
 COMMENT ON COLUMN regular_payment.periodicity IS 'monthly (others later, FIN-127).';
 COMMENT ON COLUMN regular_payment.dismissed_at IS 'Marked «не подписка» (DismissRegularPayment); NULL - shown.';
 
@@ -418,8 +427,9 @@ CREATE TABLE merchant (
 );
 
 COMMENT ON TABLE merchant IS
-    'Merchants (normalised descriptions) behind selection tokens s_merchant_<id>: the token carries '
-    'no description (personal data in a query string) and stays valid while the row exists.';
+    'Получатели платежей (нормализованные описания) за токенами выборки s_merchant_<id>; ключ (user_id, id), '
+    'key уникален у пользователя. Токен не несёт описания (персональные данные в строке запроса) и действует, '
+    'пока строка существует.';
 
 -- ---------------------------------------------------------------- calculation
 
@@ -435,11 +445,11 @@ CREATE TABLE recalc_queue (
 );
 
 COMMENT ON TABLE recalc_queue IS
-    'Months to recalculate. Marking: INSERT ... ON CONFLICT DO UPDATE SET generation = generation + 1. '
-    'A worker claims rows (FOR UPDATE SKIP LOCKED, next_attempt_at moved forward as a lease), '
-    'recalculates outside that transaction, then in one transaction writes month_state/monthly_agg, '
-    'increments calc_version, adds the outbox row and deletes the queue row only if generation is '
-    'unchanged; a changed row stays and is picked again.';
+    'Очередь месяцев на пересчёт, ключ (user_id, month). Отметка: INSERT ... ON CONFLICT DO UPDATE SET '
+    'generation = generation + 1. Обработчик забирает строки (FOR UPDATE SKIP LOCKED, сдвигая next_attempt_at '
+    'как аренду), считает вне этой транзакции, затем одной транзакцией пишет month_state/monthly_agg, '
+    'увеличивает calc_version, добавляет строку outbox и удаляет строку очереди, только если generation не '
+    'изменился; изменившаяся строка остаётся и будет взята снова.';
 COMMENT ON COLUMN recalc_queue.month IS 'First day of the month in the user''s zone.';
 
 CREATE INDEX recalc_queue_next_attempt_at_idx ON recalc_queue (next_attempt_at);
@@ -458,8 +468,8 @@ CREATE TABLE month_state (
 );
 
 COMMENT ON TABLE month_state IS
-    'Months with at least one covered day. No row - no data for the month; a row without '
-    'monthly_agg rows - covered and zero. This is where «нет данных» differs from 0.';
+    'Месяцы пользователя хотя бы с одним покрытым днём, ключ (user_id, month). Нет строки — нет данных за '
+    'месяц; строка без строк monthly_agg — месяц покрыт и суммы нулевые. Здесь «нет данных» отличается от 0.';
 COMMENT ON COLUMN month_state.data_to IS 'DataBounds.data_to of the month (docs/api.md, «Формат»).';
 
 CREATE TABLE monthly_agg (
@@ -478,8 +488,9 @@ CREATE TABLE monthly_agg (
 
 COMMENT ON COLUMN monthly_agg.kind IS 'expense | income | refund.';
 COMMENT ON TABLE monthly_agg IS
-    'Background cache of sums per month, account, final category and kind, rebuilt with the whole '
-    'month. A refund is kind refund under its target category and reduces its expenses.';
+    'Фоновый кэш сумм по месяцу, счёту, итоговой категории и виду (ключ — эти столбцы с user_id и валютой), '
+    'перестраивается целиком вместе с месяцем. Возврат учитывается видом refund под целевой категорией и '
+    'уменьшает её расходы.';
 
 CREATE TABLE metric_definition (
     metric_id  text        NOT NULL,
@@ -491,8 +502,8 @@ CREATE TABLE metric_definition (
 );
 
 COMMENT ON TABLE metric_definition IS
-    'Registry of metric and rule definitions with versions (FIN-6): thresholds and parameters of '
-    'docs/calc.md 7. One current version per metric.';
+    'Реестр определений метрик и правил с версиями (FIN-6), ключ (metric_id, version): пороги и параметры '
+    'docs/calc.md 7. Текущая версия у метрики одна.';
 
 CREATE UNIQUE INDEX metric_definition_current_idx ON metric_definition (metric_id) WHERE is_current;
 
@@ -506,7 +517,8 @@ CREATE TABLE user_metric_version (
 );
 
 COMMENT ON TABLE user_metric_version IS
-    'Definition version a user''s metric was last computed with: the backfill job picks users behind '
-    'the current version; until then the metric is unavailable, not zero.';
+    'Версия определения, по которой метрика пользователя посчитана последней; ключ (user_id, metric_id). '
+    'Задание дозаполнения выбирает пользователей с версией ниже текущей; до пересчёта метрика недоступна, а не '
+    'равна нулю.';
 
 CREATE INDEX user_metric_version_metric_idx ON user_metric_version (metric_id, version);

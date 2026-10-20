@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -753,3 +755,44 @@ func TestUserLockDoesNotBlockChildInserts(t *testing.T) {
 	fails(t, other, lockNotAvailable, `SELECT 1 FROM user_state WHERE user_id = $1 FOR UPDATE`, a.user)
 	exec(t, other, `SELECT 1 FROM user_state WHERE user_id = $1 FOR NO KEY UPDATE`, a.user)
 }
+
+// Every table of the schema carries a description in Russian (COMMENT ON TABLE), so a table
+// added later without one fails here. Leaf partitions of operation are described by their
+// parent; schema_migrations belongs to golang-migrate.
+func TestEveryTableHasDescription(t *testing.T) {
+	conn, _ := schema(t)
+	rows, err := conn.Query(context.Background(), `
+		SELECT c.relname, coalesce(obj_description(c.oid, 'pg_class'), '')
+		FROM pg_class c
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = 'public'
+		  AND c.relkind IN ('r', 'p')
+		  AND NOT c.relispartition
+		  AND c.relname <> 'schema_migrations'
+		ORDER BY c.relname`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptions, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) ([2]string, error) {
+		var d [2]string
+		err := row.Scan(&d[0], &d[1])
+		return d, err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(descriptions) == 0 {
+		t.Fatal("no tables found in schema public")
+	}
+	for _, d := range descriptions {
+		table, description := d[0], strings.TrimSpace(d[1])
+		switch {
+		case description == "":
+			t.Errorf("table %s has no COMMENT ON TABLE", table)
+		case !cyrillic.MatchString(description):
+			t.Errorf("table %s: description is not in Russian: %q", table, description)
+		}
+	}
+}
+
+var cyrillic = regexp.MustCompile(`\p{Cyrillic}`)
