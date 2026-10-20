@@ -17,19 +17,22 @@
 -- * Arrays of IDs instead of link tables (owner's decisions in the review of FIN-111):
 --   source_record.upload_ids and upload.account_ids. No foreign keys on their elements: the
 --   code keeps them to the user's own uploads and accounts (docs/schema.md).
--- * IDs that leave the database (API, other services, support) are UUIDv7 (uuidv7() of
---   PostgreSQL 18 as the default; the service may pass its own). Internal IDs are bigint
---   identities.
+-- * IDs follow Confluence «Архитектура» → «Идентификаторы»: an ID that leaves the database
+--   (API, other services, support) is UUIDv7 (uuidv7() of PostgreSQL 18 as the default; the
+--   service may pass its own); an internal ID is an identity sized by the number of rows over
+--   the table's whole life. account.id and source_record.id are bigint for now (an open
+--   question in the PR).
 -- * Only keys, NOT NULL and DEFAULT live here (owner's decision of 19.10.2026): no CHECK,
 --   EXCLUDE, triggers or functions. Value sets, formats, status transitions and the other
 --   rules are checked by the service code (docs/schema.md, «Инварианты в коде сервиса»).
 --   Foreign key cascades and partitioning stay.
 -- * Codes are plain text (readable in psql); the allowed values are listed in the comments.
 -- * Money is bigint minor units; operation amounts are unsigned, the direction is a column.
--- * Integers are sized by their real bounds (owner's decision in the review of FIN-111): IDs,
---   money and the versions the contracts carry as int64 (settings_version, calc_version) are
---   bigint; counters and small quantities are integer (a file is at most 10 MB, a user never
---   has a million operations in one file) and the percent of parsing is smallint.
+-- * Integers are sized by their real bounds (owner's decision in the review of FIN-111): money
+--   is bigint; counters and small quantities are integer (a file is at most 10 MB, a user never
+--   has a million operations in one file, calc_version grows by a few per day); the percent
+--   of parsing and settings_version are smallint. The contracts carry the versions as int64:
+--   the code converts them and refuses a value out of range (docs/schema.md).
 --   squawk-ignore-file prefer-bigint-over-int, prefer-bigint-over-smallint
 -- * Instants are timestamptz. Calendar months are date (the 1st) in the user's time zone at
 --   calculation time (user_state.timezone); a zone change recalculates every month.
@@ -42,8 +45,8 @@
 CREATE TABLE user_state (
     user_id               uuid        PRIMARY KEY,
     timezone              text        NOT NULL DEFAULT 'Europe/Moscow',
-    settings_version      bigint      NOT NULL DEFAULT 0,
-    calc_version          bigint      NOT NULL DEFAULT 0,
+    settings_version      smallint    NOT NULL DEFAULT 0,
+    calc_version          integer     NOT NULL DEFAULT 0,
     registry_version      integer     NOT NULL DEFAULT 0,
     categories_changed_at timestamptz,
     uploads_changed_at    timestamptz,
