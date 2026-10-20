@@ -47,7 +47,6 @@ CREATE TABLE user_state (
     timezone              text        NOT NULL DEFAULT 'Europe/Moscow',
     settings_version      smallint    NOT NULL DEFAULT 0,
     calc_version          integer     NOT NULL DEFAULT 0,
-    registry_version      integer     NOT NULL DEFAULT 0,
     categories_changed_at timestamptz,
     uploads_changed_at    timestamptz,
     daily_recalc_due_at   timestamptz,
@@ -71,11 +70,6 @@ COMMENT ON COLUMN user_state.settings_version IS
 COMMENT ON COLUMN user_state.calc_version IS
     'Номер последнего расчёта метрик пользователя. Он растёт на единицу в той же транзакции, которая '
     'ставит метрики в очередь на отправку в analytics.';
-COMMENT ON COLUMN user_state.registry_version IS
-    'Версия реестра метрик, по которой пользователь был посчитан в последний раз. Сам реестр с версиями '
-    'хранится в коде. Фоновое задание пересчитывает пользователей с устаревшей версией, а до пересчёта '
-    'изменённые метрики считаются недоступными, а не нулевыми. Ноль значит, что пользователя ещё не '
-    'считали.';
 COMMENT ON COLUMN user_state.categories_changed_at IS
     'Когда пользователь последний раз менял категорию операции или отмечал платёж как «не подписка».';
 COMMENT ON COLUMN user_state.uploads_changed_at IS 'Когда последний раз завершилась или была удалена загрузка выписки.';
