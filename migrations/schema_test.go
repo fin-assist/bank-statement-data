@@ -199,11 +199,6 @@ func TestRowsCannotPointAtAnotherUser(t *testing.T) {
 		VALUES ($1, $2, 2, 'truncated', $3)`, b.user, b.upload, a.account)
 	// operation.transfer_pair_id has no foreign key: a pair is a value shared by the two sides,
 	// and every query by it is scoped by user_id (TestTransferPairLookup).
-	// B's covered month with A's account.
-	exec(t, conn, `INSERT INTO month_state (user_id, month, time_zone, covered_days, days_in_month, data_from, data_to, calc_version, calculated_at)
-		VALUES ($1, '2026-09-01', 'Europe/Moscow', 25, 30, now(), now(), 1, now())`, b.user)
-	fails(t, conn, foreignKeyViolation, `INSERT INTO monthly_agg (user_id, month, account_id, category_id, kind, currency, amount_minor, op_count)
-		VALUES ($1, '2026-09-01', $2, 'cat_supermarkets', 'expense', 'RUB', 1, 1)`, b.user, a.account)
 }
 
 // Every foreign key between two tables that both have user_id includes user_id and maps it
@@ -240,9 +235,9 @@ func TestForeignKeysBetweenUserTablesIncludeUserID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 12 references to user_state and 16 between user tables at the time of writing; a much
-	// smaller number means the query lost them.
-	if len(keys) < 20 {
+	// 7 references to user_state and 8 between user tables at the time of writing; a smaller
+	// number means the query lost them (or a key was dropped: update the number with it).
+	if len(keys) < 15 {
 		t.Fatalf("foreign keys between user tables: %d, the query is wrong", len(keys))
 	}
 	for _, k := range keys {
@@ -458,27 +453,6 @@ func TestRegularPaymentIDIsStable(t *testing.T) {
 	}
 }
 
-func TestNoDataIsNotZero(t *testing.T) {
-	conn, _ := schema(t)
-	seedCategories(t, conn)
-	a := seed(t, conn, userA, 1)
-	agg := `INSERT INTO monthly_agg (user_id, month, account_id, category_id, kind, currency, amount_minor, op_count)
-		VALUES ($1, '2026-09-01', $2, 'cat_supermarkets', 'expense', 'RUB', 234000, 1)`
-	// A sum needs a covered month: without month_state there is no data, not a zero.
-	fails(t, conn, foreignKeyViolation, agg, a.user, a.account)
-	exec(t, conn, `INSERT INTO month_state (user_id, month, time_zone, covered_days, days_in_month, data_from, data_to, calc_version, calculated_at)
-		VALUES ($1, '2026-09-01', 'Europe/Moscow', 25, 30, '2026-09-01 00:00+03', '2026-09-25 21:40+03', 1, now())`, a.user)
-	exec(t, conn, agg, a.user, a.account)
-	// One state per month.
-	fails(t, conn, uniqueViolation, `INSERT INTO month_state (user_id, month, time_zone, covered_days, days_in_month, data_from, data_to, calc_version, calculated_at)
-		VALUES ($1, '2026-09-01', 'Europe/Moscow', 25, 30, now(), now(), 2, now())`, a.user)
-	// Recalculating the month replaces it: deleting the month removes its sums.
-	exec(t, conn, `DELETE FROM month_state WHERE user_id = $1 AND month = '2026-09-01'`, a.user)
-	if n := count(t, conn, `SELECT count(*) FROM monthly_agg WHERE user_id = $1`, a.user); n != 0 {
-		t.Fatalf("sums left without their month: %d", n)
-	}
-}
-
 func TestRecalcQueueMarksAMonthOnce(t *testing.T) {
 	conn, _ := schema(t)
 	seedCategories(t, conn)
@@ -527,10 +501,6 @@ func TestPurgeUserRemovesEverything(t *testing.T) {
 	exec(t, conn, `INSERT INTO merchant (user_id, key) VALUES ($1, 'x')`, a.user)
 	exec(t, conn, `INSERT INTO recalc_queue (user_id, month) VALUES ($1, '2026-09-01')`, a.user)
 	exec(t, conn, `INSERT INTO user_bank_category (user_id, category_id, first_uploaded_at, first_line_number) VALUES ($1, 'cat_supermarkets', now(), 1)`, a.user)
-	exec(t, conn, `INSERT INTO month_state (user_id, month, time_zone, covered_days, days_in_month, data_from, data_to, calc_version, calculated_at)
-		VALUES ($1, '2026-09-01', 'Europe/Moscow', 25, 30, now(), now(), 1, now())`, a.user)
-	exec(t, conn, `INSERT INTO monthly_agg (user_id, month, account_id, category_id, kind, currency, amount_minor, op_count)
-		VALUES ($1, '2026-09-01', $2, 'cat_supermarkets', 'expense', 'RUB', 1, 1)`, a.user, a.account)
 	exec(t, conn, `INSERT INTO metric_definition (metric_id, version, is_current) VALUES ('tiles.expense', 1, true)`)
 	exec(t, conn, `INSERT INTO user_metric_version (user_id, metric_id, version) VALUES ($1, 'tiles.expense', 1), ($2, 'tiles.expense', 1)`, a.user, userB)
 	exec(t, conn, `UPDATE operation SET transfer_pair_id = '01a10800-0000-7000-8000-0000000000aa' WHERE user_id = $1 AND id IN ($2, $3)`,

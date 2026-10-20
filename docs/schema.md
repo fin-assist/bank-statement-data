@@ -25,7 +25,7 @@
 - Пара перевода — значение `operation.transfer_pair_id` у двух её сторон (решение владельца в ревью FIN-111, вместо таблиц `transfer_pair` и `transfer_pair_member`). «Одна операция — не больше одной пары» следует из того, что колонка одна; остальные правила пары держит код (ниже). Поиск сторон — по индексу `(user_id, transfer_pair_id)`.
 - Один файл — одна загрузка: `UNIQUE (user_id, object_key)`.
 - Стабильный id регулярного платежа: `regular_payment (user_id, periodicity, description)`. Продавец для токена выборки: `merchant (user_id, key)`.
-- «Нет данных» ≠ 0: `monthly_agg` ссылается на `month_state` — сумм за месяц без покрытых дней не бывает.
+- Помесячных сумм и состояний месяцев схема не хранит (решение владельца в ревью FIN-111: таблиц `month_state` и `monthly_agg` нет). Готовые метрики хранит `analytics`; сервис считает их из операций и периодов загрузок при пересчёте. «Нет данных» ≠ 0 — правило расчёта: месяц без покрытых дней (calc.md 4) — «нет данных», а не ноль.
 - Одна текущая версия определения метрики: частичный уникальный индекс `metric_definition_current_idx`.
 
 ## Ожидаемые запросы
@@ -103,15 +103,6 @@
 | `recalc_queue` | `month` | первое число месяца | тип `Month` (год и месяц) с переводом в `date` |
 | `recalc_queue` | `generation` | > 0 (стартует с 1, только растёт) | пометка месяца: `DEFAULT 1` и `generation + 1` в `ON CONFLICT` |
 | `recalc_queue` | `attempts` | ≥ 0 (стартует с 0, только растёт) | воркер очереди |
-| `month_state` | `month` | первое число месяца | тип `Month` |
-| `month_state` | `time_zone` | IANA-имя, 1–64 символа | пояс, в котором посчитан месяц (`user_state.timezone`) |
-| `month_state` | `days_in_month`, `covered_days` | `days_in_month` ∈ 28–31; 1 ≤ `covered_days` ≤ `days_in_month` (месяц без покрытых дней не пишется — «нет данных» ≠ 0) | расчёт месяца (`docs/calc.md` 4) |
-| `month_state` | `data_from`, `data_to` | `data_from ≤ data_to` | там же |
-| `month_state` | `calc_version` | > 0 (версия, которой посчитан месяц, — после первого инкремента) | пишется в той же транзакции, что инкремент `user_state.calc_version` |
-| `monthly_agg` | `kind` | ∈ {`expense`, `income`, `refund`} | перечисление домена |
-| `monthly_agg` | `currency` | `^[A-Z]{3}$` | тип `Currency` |
-| `monthly_agg` | `amount_minor` | ≥ 0 (знак применяет расчёт по `kind`) | агрегация месяца |
-| `monthly_agg` | `op_count` | > 0 (строки без операций не пишутся) | агрегация месяца |
 | `metric_definition` | `metric_id` | `^[a-z][a-z0-9_.]{0,63}$` | ID метрик — константы реестра (FIN-6) |
 | `metric_definition` | `version` | > 0 | реестр: версии с 1 |
 | `metric_definition` | `params` | JSON-объект | сериализация параметров реестра |

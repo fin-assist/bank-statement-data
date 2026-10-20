@@ -12,9 +12,8 @@
 -- * Foreign keys between user tables cascade. The purge deletes everything through them
 --   (with NO ACTION the cascade from user_state would fail on whichever table it reaches
 --   first); the service deletes operations physically when the last upload containing them
---   goes (their source records follow; the code clears transfer_pair_id of the partner)
---   and month_state when a month is rebuilt (its monthly_agg follows). Only upload itself is
---   deleted logically (status deleted).
+--   goes (their source records follow; the code clears transfer_pair_id of the partner).
+--   Only upload itself is deleted logically (status deleted).
 -- * source_record.upload_ids is the one array of IDs in the schema (owner's decision in the
 --   review of FIN-111): no foreign key, the code keeps it to the user's own uploads.
 -- * IDs that leave the database (API, other services, support) are UUIDv7 (uuidv7() of
@@ -492,9 +491,10 @@ CREATE TABLE recalc_queue (
 COMMENT ON TABLE recalc_queue IS
     'Очередь месяцев на пересчёт, ключ (user_id, month). Отметка: INSERT ... ON CONFLICT DO UPDATE SET '
     'generation = generation + 1. Обработчик забирает строки (FOR UPDATE SKIP LOCKED, сдвигая next_attempt_at '
-    'как аренду), считает вне этой транзакции, затем одной транзакцией пишет month_state/monthly_agg, '
-    'увеличивает calc_version, добавляет строку outbox и удаляет строку очереди, только если generation не '
-    'изменился; изменившаяся строка остаётся и будет взята снова.';
+    'как аренду), считает месяц из операций и периодов загрузок вне этой транзакции, затем одной '
+    'транзакцией увеличивает calc_version, добавляет строку outbox UpsertUserMetrics и удаляет строку '
+    'очереди, только если generation не изменился; изменившаяся строка остаётся и будет взята снова. '
+    'Посчитанные суммы здесь не хранятся: готовые метрики хранит analytics.';
 COMMENT ON COLUMN recalc_queue.user_id IS 'Пользователь (user_state).';
 COMMENT ON COLUMN recalc_queue.month IS 'Первое число месяца в поясе пользователя.';
 COMMENT ON COLUMN recalc_queue.generation IS
@@ -506,60 +506,6 @@ COMMENT ON COLUMN recalc_queue.attempts IS 'Неудачных попыток п
 COMMENT ON COLUMN recalc_queue.last_error IS 'Последняя ошибка пересчёта для диагностики; NULL — ошибок не было.';
 
 CREATE INDEX recalc_queue_next_attempt_at_idx ON recalc_queue (next_attempt_at);
-
-CREATE TABLE month_state (
-    user_id       uuid        NOT NULL REFERENCES user_state ON DELETE CASCADE,
-    month         date        NOT NULL,
-    time_zone     text        NOT NULL,
-    covered_days  bigint      NOT NULL,
-    days_in_month bigint      NOT NULL,
-    data_from     timestamptz NOT NULL,
-    data_to       timestamptz NOT NULL,
-    calc_version  bigint      NOT NULL,
-    calculated_at timestamptz NOT NULL,
-    PRIMARY KEY (user_id, month)
-);
-
-COMMENT ON TABLE month_state IS
-    'Месяцы пользователя хотя бы с одним покрытым днём, ключ (user_id, month). Нет строки — нет данных за '
-    'месяц; строка без строк monthly_agg — месяц покрыт и суммы нулевые. Здесь «нет данных» отличается от 0.';
-COMMENT ON COLUMN month_state.user_id IS 'Пользователь (user_state).';
-COMMENT ON COLUMN month_state.month IS 'Первое число месяца в поясе time_zone.';
-COMMENT ON COLUMN month_state.time_zone IS
-    'Часовой пояс (IANA), в котором посчитан месяц (user_state.timezone на момент расчёта).';
-COMMENT ON COLUMN month_state.covered_days IS 'Покрытых загрузками дней месяца (docs/calc.md 4), от 1.';
-COMMENT ON COLUMN month_state.days_in_month IS 'Дней в месяце, 28–31.';
-COMMENT ON COLUMN month_state.data_from IS 'Начало данных месяца — DataBounds.data_from (docs/api.md, «Формат»).';
-COMMENT ON COLUMN month_state.data_to IS 'Конец данных месяца — DataBounds.data_to (docs/api.md, «Формат»).';
-COMMENT ON COLUMN month_state.calc_version IS 'Версия расчёта (calc_version), с которой посчитан месяц.';
-COMMENT ON COLUMN month_state.calculated_at IS 'Когда месяц посчитан.';
-
-CREATE TABLE monthly_agg (
-    user_id      uuid   NOT NULL,
-    month        date   NOT NULL,
-    account_id   bigint NOT NULL,
-    category_id  text   NOT NULL REFERENCES category,
-    kind         text   NOT NULL,
-    currency     text   NOT NULL,
-    amount_minor bigint NOT NULL,
-    op_count     bigint NOT NULL,
-    PRIMARY KEY (user_id, month, account_id, category_id, kind, currency),
-    FOREIGN KEY (user_id, month) REFERENCES month_state ON DELETE CASCADE,
-    FOREIGN KEY (user_id, account_id) REFERENCES account ON DELETE CASCADE
-);
-
-COMMENT ON TABLE monthly_agg IS
-    'Фоновый кэш сумм по месяцу, счёту, итоговой категории и виду (ключ — эти столбцы с user_id и валютой), '
-    'перестраивается целиком вместе с месяцем. Возврат учитывается видом refund под целевой категорией и '
-    'уменьшает её расходы.';
-COMMENT ON COLUMN monthly_agg.user_id IS 'Пользователь (user_state).';
-COMMENT ON COLUMN monthly_agg.month IS 'Месяц (первое число) — ключ month_state.';
-COMMENT ON COLUMN monthly_agg.account_id IS 'Счёт операций.';
-COMMENT ON COLUMN monthly_agg.category_id IS 'Итоговая категория; у возврата — категория-цель.';
-COMMENT ON COLUMN monthly_agg.kind IS 'Вид суммы: expense | income | refund.';
-COMMENT ON COLUMN monthly_agg.currency IS 'Валюта сумм (ISO 4217).';
-COMMENT ON COLUMN monthly_agg.amount_minor IS 'Сумма без знака в минорных единицах; знак применяет расчёт по kind.';
-COMMENT ON COLUMN monthly_agg.op_count IS 'Операций в строке, от 1.';
 
 CREATE TABLE metric_definition (
     metric_id  text        NOT NULL,

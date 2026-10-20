@@ -2,8 +2,6 @@
 -- (docs/migrations.md, «Откат»). Reverse order of dependencies.
 DROP TABLE user_metric_version;
 DROP TABLE metric_definition;
-DROP TABLE monthly_agg;
-DROP TABLE month_state;
 DROP TABLE recalc_queue;
 DROP TABLE merchant;
 DROP TABLE regular_payment;
