@@ -12,8 +12,9 @@
 -- * Foreign keys between user tables cascade. The purge deletes everything through them
 --   (with NO ACTION the cascade from user_state would fail on whichever table it reaches
 --   first); the service deletes operations physically when the last upload containing them
---   goes (their source records and pairs follow) and month_state when a month is rebuilt
---   (its monthly_agg follows). Only upload itself is deleted logically (status deleted).
+--   goes (their source records follow; the code clears transfer_pair_id of the partner)
+--   and month_state when a month is rebuilt (its monthly_agg follows). Only upload itself is
+--   deleted logically (status deleted).
 -- * source_record.upload_ids is the one array of IDs in the schema (owner's decision in the
 --   review of FIN-111): no foreign key, the code keeps it to the user's own uploads.
 -- * IDs that leave the database (API, other services, support) are UUIDv7 (uuidv7() of
@@ -268,6 +269,7 @@ CREATE TABLE operation (
     manual_category_id        text        REFERENCES category,
     refund_target_category_id text        REFERENCES category,
     is_split                  boolean     NOT NULL DEFAULT false,
+    transfer_pair_id          uuid,
     created_at                timestamptz NOT NULL DEFAULT now(),
     updated_at                timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (user_id, occurred_at, id),
@@ -277,7 +279,8 @@ CREATE TABLE operation (
 COMMENT ON TABLE operation IS
     'Канонические операции пользователя, ключ (user_id, occurred_at, id); секционирована по годам occurred_at '
     '(границы в UTC), у партиций operation_yYYYY своих описаний нет. Столбцы правил (category_id, '
-    'refund_target_category_id, is_split) пересчитываются после каждого импорта, удаления и ручного изменения.';
+    'refund_target_category_id, is_split, transfer_pair_id) пересчитываются после каждого импорта, удаления и '
+    'ручного изменения.';
 COMMENT ON COLUMN operation.user_id IS 'Пользователь (user_state).';
 COMMENT ON COLUMN operation.occurred_at IS 'Время операции (OFX DTPOSTED); ключ партиции, сортировки и месяца.';
 COMMENT ON COLUMN operation.id IS 'Идентификатор операции (UUIDv7) — id в API.';
@@ -299,11 +302,19 @@ COMMENT ON COLUMN operation.manual_category_id IS
 COMMENT ON COLUMN operation.refund_target_category_id IS 'У возврата (категория cat_refund): категория, расходы которой он уменьшает.';
 COMMENT ON COLUMN operation.is_split IS
     'Пользователь разделил пару перевода, в которой была операция (docs/calc.md 3.2, 3.4).';
+COMMENT ON COLUMN operation.transfer_pair_id IS
+    'Пара перевода между своими счетами (docs/calc.md 3.2): одно значение (UUIDv7) у обеих сторон, оно же ID '
+    'записи own_transfer в API; время и сумма записи — у стороны списания. NULL — операция не в паре. Что '
+    'сторон ровно две, это расход и доход и при потере одной у другой значение очищается, держит код '
+    '(docs/schema.md).';
 COMMENT ON COLUMN operation.created_at IS 'Когда операция создана импортом.';
 COMMENT ON COLUMN operation.updated_at IS 'Когда строка последний раз изменена (правила, ручная категория).';
 
 -- GetOperation and ChangeCategory by ID: one probe per yearly partition.
 CREATE INDEX operation_user_id_id_idx ON operation (user_id, id);
+-- GetOperation and ChangeCategory by the ID of an own_transfer record: both sides of the pair.
+CREATE INDEX operation_transfer_pair_idx ON operation (user_id, transfer_pair_id)
+    WHERE transfer_pair_id IS NOT NULL;
 
 -- Yearly partitions with UTC bounds, 2010-2027: statements reach years back, and a partition
 -- must exist before an import writes into it. Later years: the partition job
@@ -358,58 +369,6 @@ CREATE INDEX source_record_operation_idx ON source_record (user_id, operation_id
 -- No index on upload_ids: deleting an upload filters the user's records (the PK prefix
 -- user_id, thousands of rows) by upload_ids @> ARRAY[$upload]; FIN-79 reads one record by
 -- its unique key and checks $upload = ANY(upload_ids). docs/schema.md, «Ожидаемые запросы».
-
-CREATE TABLE transfer_pair_member (
-    user_id               uuid        NOT NULL REFERENCES user_state ON DELETE CASCADE,
-    operation_id          uuid        NOT NULL,
-    operation_occurred_at timestamptz NOT NULL,
-    pair_id               uuid        NOT NULL,
-    -- An operation is in at most one pair, whichever side it takes (docs/calc.md 3.2).
-    PRIMARY KEY (user_id, operation_id),
-    -- Target of the side keys of transfer_pair.
-    UNIQUE (user_id, pair_id, operation_id),
-    FOREIGN KEY (user_id, operation_occurred_at, operation_id) REFERENCES operation
-        ON DELETE CASCADE ON UPDATE CASCADE
-);
-
-COMMENT ON TABLE transfer_pair_member IS
-    'Операции — стороны пары перевода между своими счетами. Ключ (user_id, operation_id) не даёт операции '
-    'попасть больше чем в одну пару; удаление операции удаляет её строку здесь, а через transfer_pair — пару '
-    'и вторую сторону.';
-COMMENT ON COLUMN transfer_pair_member.user_id IS 'Пользователь (user_state).';
-COMMENT ON COLUMN transfer_pair_member.operation_id IS 'Операция — сторона пары; первичный ключ держит её не больше чем в одной паре.';
-COMMENT ON COLUMN transfer_pair_member.operation_occurred_at IS
-    'Время операции (её occurred_at) — часть ключа для FK на секционированную operation.';
-COMMENT ON COLUMN transfer_pair_member.pair_id IS 'Пара, стороной которой является операция.';
-
-CREATE TABLE transfer_pair (
-    user_id             uuid        NOT NULL REFERENCES user_state ON DELETE CASCADE,
-    id                  uuid        NOT NULL DEFAULT uuidv7(),
-    debit_operation_id  uuid        NOT NULL,
-    credit_operation_id uuid        NOT NULL,
-    created_at          timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (user_id, id),
-    -- Both sides must be members of this very pair. The members are inserted in the same
-    -- transaction after the pair, hence DEFERRABLE INITIALLY DEFERRED; the cascade still fires
-    -- at once: losing a member deletes the pair (and with it the other member).
-    FOREIGN KEY (user_id, id, debit_operation_id) REFERENCES transfer_pair_member (user_id, pair_id, operation_id)
-        ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
-    FOREIGN KEY (user_id, id, credit_operation_id) REFERENCES transfer_pair_member (user_id, pair_id, operation_id)
-        ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
-);
-
-ALTER TABLE transfer_pair_member ADD FOREIGN KEY (user_id, pair_id) REFERENCES transfer_pair ON DELETE CASCADE;
-
-COMMENT ON TABLE transfer_pair IS
-    'Пары переводов между своими счетами пользователя, ключ (user_id, id); пара показывается одной записью '
-    'own_transfer с ID = id. Пара переживает следующие импорты, пока существуют обе стороны (docs/calc.md 3.2), '
-    'потеря стороны удаляет пару. Что дебет — расход, кредит — доход и это разные операции, проверяет код '
-    '(docs/schema.md).';
-COMMENT ON COLUMN transfer_pair.user_id IS 'Пользователь (user_state).';
-COMMENT ON COLUMN transfer_pair.id IS 'Идентификатор пары (UUIDv7) — ID записи own_transfer в API.';
-COMMENT ON COLUMN transfer_pair.debit_operation_id IS 'Сторона списания (расход); время и сумма записи own_transfer берутся у неё.';
-COMMENT ON COLUMN transfer_pair.credit_operation_id IS 'Сторона зачисления (доход).';
-COMMENT ON COLUMN transfer_pair.created_at IS 'Когда пара собрана.';
 
 CREATE TABLE unread_line (
     user_id               uuid        NOT NULL,

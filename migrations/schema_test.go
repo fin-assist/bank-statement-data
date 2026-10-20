@@ -197,26 +197,8 @@ func TestRowsCannotPointAtAnotherUser(t *testing.T) {
 	// B's line on A's account.
 	fails(t, conn, foreignKeyViolation, `INSERT INTO unread_line (user_id, upload_id, line_number, reason, account_id)
 		VALUES ($1, $2, 2, 'truncated', $3)`, b.user, b.upload, a.account)
-	// B's pair member on A's operation: the only reason to refuse is the foreign user (the pair
-	// of B exists, the operation exists, it is in no pair).
-	pairB := newPair(t, conn, b.user)
-	fails(t, conn, foreignKeyViolation, `INSERT INTO transfer_pair_member (user_id, operation_id, operation_occurred_at, pair_id)
-		VALUES ($1, $2, $3, $4)`, b.user, a.operation, a.at, pairB)
-	// A's member row in B's pair.
-	fails(t, conn, foreignKeyViolation, `INSERT INTO transfer_pair_member (user_id, operation_id, operation_occurred_at, pair_id)
-		VALUES ($1, $2, $3, $4)`, a.user, a.operation, a.at, pairB)
-	// B's pair whose sides are A's members: the side keys reach members of another user.
-	aDebit, aCredit := newOp(t, conn, a, "expense", time.Minute), newOp(t, conn, a, "income", 2*time.Minute)
-	pairA := pairOf(t, conn, a.user, aDebit, aCredit)
-	tx, err := conn.Begin(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tx.Exec(context.Background(), `INSERT INTO transfer_pair (user_id, id, debit_operation_id, credit_operation_id) VALUES ($1, $2, $3, $4)`,
-		b.user, pairA, aDebit.id, aCredit.id); err != nil {
-		t.Fatal(err)
-	}
-	failsCommit(t, tx, foreignKeyViolation)
+	// operation.transfer_pair_id has no foreign key: a pair is a value shared by the two sides,
+	// and every query by it is scoped by user_id (TestTransferPairLookup).
 	// B's covered month with A's account.
 	exec(t, conn, `INSERT INTO month_state (user_id, month, time_zone, covered_days, days_in_month, data_from, data_to, calc_version, calculated_at)
 		VALUES ($1, '2026-09-01', 'Europe/Moscow', 25, 30, now(), now(), 1, now())`, b.user)
@@ -294,7 +276,7 @@ func TestOperationPartitions(t *testing.T) {
 	fails(t, conn, checkViolation, `INSERT INTO operation (user_id, occurred_at, account_id, direction, amount_minor, currency, status, bank_category_id, category_id)
 		VALUES ($1, '2009-06-01 00:00:00+00', $2, 'expense', 1, 'RUB', 'posted', $3, $3)`, a.user, a.account, bankCategory)
 
-	// Moving an operation to another year moves its source record and pair references with it.
+	// Moving an operation to another year moves its source record with it.
 	exec(t, conn, `UPDATE operation SET occurred_at = '2027-01-02 00:00:00+00' WHERE user_id = $1 AND id = $2`, a.user, a.operation)
 	if n := count(t, conn, `SELECT count(*) FROM source_record WHERE user_id = $1 AND operation_occurred_at = '2027-01-02 00:00:00+00'`, a.user); n != 1 {
 		t.Fatalf("source record did not follow the operation: %d", n)
@@ -402,169 +384,45 @@ type op struct {
 	at time.Time
 }
 
-// newPair returns the ID of a committed pair of the user with two fresh sides.
-func newPair(t *testing.T, conn *pgx.Conn, user string) string {
-	t.Helper()
-	f := fixture{user: user, at: time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC)}
-	if err := conn.QueryRow(context.Background(), `SELECT id FROM account WHERE user_id = $1 LIMIT 1`, user).Scan(&f.account); err != nil {
-		t.Fatal(err)
-	}
-	return pairOf(t, conn, user, newOp(t, conn, f, "expense", 0), newOp(t, conn, f, "income", time.Minute))
-}
-
-// pairOf writes a pair the way the service does: the pair and both members in one transaction.
-func pairOf(t *testing.T, conn *pgx.Conn, user string, debit, credit op) string {
-	t.Helper()
-	id, err := insertPair(conn, user, debit, credit)
-	if err != nil {
-		t.Fatalf("pair %s/%s: %v", debit.id, credit.id, err)
-	}
-	return id
-}
-
-func insertPair(conn *pgx.Conn, user string, debit, credit op) (string, error) {
-	ctx := context.Background()
-	tx, err := conn.Begin(ctx)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	var id string
-	if err := tx.QueryRow(ctx, `INSERT INTO transfer_pair (user_id, debit_operation_id, credit_operation_id) VALUES ($1, $2, $3) RETURNING id`,
-		user, debit.id, credit.id).Scan(&id); err != nil {
-		return "", err
-	}
-	for _, side := range []op{debit, credit} {
-		if _, err := tx.Exec(ctx, `INSERT INTO transfer_pair_member (user_id, operation_id, operation_occurred_at, pair_id) VALUES ($1, $2, $3, $4)`,
-			user, side.id, side.at, id); err != nil {
-			return "", err
-		}
-	}
-	return id, tx.Commit(ctx)
-}
-
-// failsCommit commits tx and expects the deferred constraint check to fail with code.
-func failsCommit(t *testing.T, tx pgx.Tx, code string) {
-	t.Helper()
-	err := tx.Commit(context.Background())
-	var pg *pgconn.PgError
-	if !errors.As(err, &pg) || pg.Code != code {
-		t.Fatalf("commit: want SQLSTATE %s, got %v", code, err)
-	}
-}
-
-func wantCode(t *testing.T, err error, code string) {
-	t.Helper()
-	var pg *pgconn.PgError
-	if !errors.As(err, &pg) || pg.Code != code {
-		t.Fatalf("want SQLSTATE %s, got %v", code, err)
-	}
-}
-
-func TestTransferPairInvariants(t *testing.T) {
+// A pair is the value of operation.transfer_pair_id shared by its two sides (docs/calc.md
+// 3.2). The lookup by the ID of an own_transfer record finds both sides of the user's pair
+// only; that a pair has exactly two sides, an expense and an income, and that losing one
+// clears the other is the code's (docs/schema.md), tested with the pairing code.
+func TestTransferPairLookup(t *testing.T) {
 	conn, _ := schema(t)
 	seedCategories(t, conn)
 	a := seed(t, conn, userA, 1)
+	b := seed(t, conn, userB, 2)
+	const pair = "01a10800-0000-7000-8000-0000000000aa"
+
 	debit, credit := newOp(t, conn, a, "expense", time.Minute), newOp(t, conn, a, "income", 2*time.Minute)
-	debit2, credit2 := newOp(t, conn, a, "expense", 3*time.Minute), newOp(t, conn, a, "income", 4*time.Minute)
-	pair := pairOf(t, conn, a.user, debit, credit)
+	exec(t, conn, `UPDATE operation SET transfer_pair_id = $2 WHERE user_id = $1 AND id IN ($3, $4)`, a.user, pair, debit.id, credit.id)
+	// The same value at another user (a bug or a forged ID) must not join A's pair.
+	exec(t, conn, `UPDATE operation SET transfer_pair_id = $2 WHERE user_id = $1 AND id = $3`, b.user, pair, b.operation)
 
-	// An operation is in at most one pair (docs/calc.md 3.2), in any role: the member key is
-	// the operation alone, whichever side and whichever pair.
-	cases := map[string][2]op{
-		"debit again as a debit":   {debit, credit2},
-		"credit again as a credit": {debit2, credit},
-		"debit as a credit":        {debit2, debit},
-		"credit as a debit":        {credit, credit2},
+	sides := func(user string) int {
+		t.Helper()
+		return count(t, conn, `SELECT count(*) FROM operation WHERE user_id = $1 AND transfer_pair_id = $2`, user, pair)
 	}
-	for name, sides := range cases {
-		t.Run(name, func(t *testing.T) {
-			_, err := insertPair(conn, a.user, sides[0], sides[1])
-			wantCode(t, err, uniqueViolation)
-		})
+	if n := sides(a.user); n != 2 {
+		t.Fatalf("sides of A's pair: %d, want 2", n)
 	}
-	// A pair cannot name sides that are not its members: no member rows, the deferred side
-	// keys fail at commit.
-	ctx := context.Background()
-	tx, err := conn.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
+	if n := sides(b.user); n != 1 {
+		t.Fatalf("rows of B with the value: %d, want 1", n)
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO transfer_pair (user_id, debit_operation_id, credit_operation_id) VALUES ($1, $2, $3)`,
-		a.user, debit2.id, credit2.id); err != nil {
-		t.Fatal(err)
-	}
-	failsCommit(t, tx, foreignKeyViolation)
-	// Nor name a member of another pair as its side: one case per side key, the other side
-	// being a proper member of the new pair, so only that key can refuse.
-	for name, sides := range map[string][3]op{
-		"debit from another pair":  {debit, credit2, credit2}, // debit, credit, member of the new pair
-		"credit from another pair": {debit2, credit, debit2},
-	} {
-		t.Run(name, func(t *testing.T) {
-			tx, err := conn.Begin(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer func() { _ = tx.Rollback(ctx) }()
-			var other string
-			if err := tx.QueryRow(ctx, `INSERT INTO transfer_pair (user_id, debit_operation_id, credit_operation_id) VALUES ($1, $2, $3) RETURNING id`,
-				a.user, sides[0].id, sides[1].id).Scan(&other); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := tx.Exec(ctx, `INSERT INTO transfer_pair_member (user_id, operation_id, operation_occurred_at, pair_id) VALUES ($1, $2, $3, $4)`,
-				a.user, sides[2].id, sides[2].at, other); err != nil {
-				t.Fatal(err)
-			}
-			failsCommit(t, tx, foreignKeyViolation)
-		})
-	}
-
-	// Moving a side to another year moves its member row with it.
+	// Moving a side to another year keeps it in the pair: the value moves with the row.
 	exec(t, conn, `UPDATE operation SET occurred_at = '2027-01-02 00:00:00+00' WHERE user_id = $1 AND id = $2`, a.user, credit.id)
-	if c := count(t, conn, `SELECT count(*) FROM transfer_pair_member WHERE user_id = $1 AND operation_occurred_at = '2027-01-02 00:00:00+00'`, a.user); c != 1 {
-		t.Fatalf("member did not follow its operation: %d", c)
+	if n := sides(a.user); n != 2 {
+		t.Fatalf("sides after moving one to 2027: %d, want 2", n)
 	}
-	_ = pair
-}
-
-// Losing either side of a pair deletes the pair and both member rows, and the remaining
-// operation can enter a new pair. Each side is checked on its own pair: the two sides go
-// through different foreign keys of transfer_pair.
-func TestTransferPairLosesASide(t *testing.T) {
-	for _, lost := range []string{"debit", "credit"} {
-		t.Run(lost, func(t *testing.T) {
-			conn, _ := schema(t)
-			seedCategories(t, conn)
-			a := seed(t, conn, userA, 1)
-			debit, credit := newOp(t, conn, a, "expense", time.Minute), newOp(t, conn, a, "income", 2*time.Minute)
-			pair := pairOf(t, conn, a.user, debit, credit)
-			// An unrelated pair stays.
-			other := pairOf(t, conn, a.user, newOp(t, conn, a, "expense", 3*time.Minute), newOp(t, conn, a, "income", 4*time.Minute))
-
-			gone, kept := debit, credit
-			if lost == "credit" {
-				gone, kept = credit, debit
-			}
-			exec(t, conn, `DELETE FROM operation WHERE user_id = $1 AND id = $2`, a.user, gone.id)
-
-			if c := count(t, conn, `SELECT count(*) FROM transfer_pair WHERE user_id = $1 AND id = $2`, a.user, pair); c != 0 {
-				t.Fatalf("pair after its %s was deleted: %d", lost, c)
-			}
-			if c := count(t, conn, `SELECT count(*) FROM transfer_pair_member WHERE user_id = $1 AND pair_id = $2`, a.user, pair); c != 0 {
-				t.Fatalf("members of the pair after its %s was deleted: %d, want 0", lost, c)
-			}
-			if c := count(t, conn, `SELECT count(*) FROM transfer_pair_member WHERE user_id = $1 AND pair_id = $2`, a.user, other); c != 2 {
-				t.Fatalf("members of an unrelated pair: %d, want 2", c)
-			}
-			// The remaining side is free for a new pair.
-			partner := newOp(t, conn, a, "income", 5*time.Minute)
-			if lost == "credit" {
-				pairOf(t, conn, a.user, kept, partner)
-			} else {
-				pairOf(t, conn, a.user, newOp(t, conn, a, "expense", 5*time.Minute), kept)
-			}
-		})
+	// Losing a side: the code deletes the operation and clears the partner in one transaction.
+	exec(t, conn, `DELETE FROM operation WHERE user_id = $1 AND id = $2`, a.user, debit.id)
+	exec(t, conn, `UPDATE operation SET transfer_pair_id = NULL WHERE user_id = $1 AND transfer_pair_id = $2`, a.user, pair)
+	if n := sides(a.user); n != 0 {
+		t.Fatalf("sides after losing the debit: %d, want 0", n)
+	}
+	if n := sides(b.user); n != 1 {
+		t.Fatal("clearing A's pair touched another user")
 	}
 }
 
@@ -675,7 +533,8 @@ func TestPurgeUserRemovesEverything(t *testing.T) {
 		VALUES ($1, '2026-09-01', $2, 'cat_supermarkets', 'expense', 'RUB', 1, 1)`, a.user, a.account)
 	exec(t, conn, `INSERT INTO metric_definition (metric_id, version, is_current) VALUES ('tiles.expense', 1, true)`)
 	exec(t, conn, `INSERT INTO user_metric_version (user_id, metric_id, version) VALUES ($1, 'tiles.expense', 1), ($2, 'tiles.expense', 1)`, a.user, userB)
-	pairOf(t, conn, a.user, op{id: a.operation, at: a.at}, newOp(t, conn, a, "income", time.Minute))
+	exec(t, conn, `UPDATE operation SET transfer_pair_id = '01a10800-0000-7000-8000-0000000000aa' WHERE user_id = $1 AND id IN ($2, $3)`,
+		a.user, a.operation, newOp(t, conn, a, "income", time.Minute).id)
 
 	rows, err := conn.Query(ctx, `SELECT c.relname FROM pg_attribute a
 		JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -688,7 +547,7 @@ func TestPurgeUserRemovesEverything(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tables) < 15 {
+	if len(tables) < 10 {
 		t.Fatalf("user tables found: %d, the query is wrong", len(tables))
 	}
 	// The fixture has rows in every user table: a zero after the purge then proves the
