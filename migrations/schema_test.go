@@ -37,6 +37,13 @@ const (
 	userB = "01a10800-0000-7000-8000-00000000000b"
 )
 
+// Account numbers (ACCTID) of the fixtures, stored as is; not real numbers.
+const (
+	account1 = "40817810000000004821"
+	account2 = "40817810000000005512"
+	account7 = "40817810000000007777"
+)
+
 // schema returns a connection to a fresh database with the service migrations applied.
 func schema(t *testing.T) (*pgx.Conn, string) {
 	t.Helper()
@@ -108,24 +115,21 @@ func seedCategories(t *testing.T, conn *pgx.Conn) {
 		       ('cat_transfers', 'Переводы', 'Переводы', 'users', true, true, true, true, 110)`)
 }
 
-func seed(t *testing.T, conn *pgx.Conn, user string, hmacByte byte) fixture {
+func seed(t *testing.T, conn *pgx.Conn, user string, accountNumber string) fixture {
 	t.Helper()
 	ctx := context.Background()
 	f := fixture{user: user, at: time.Date(2026, 9, 25, 16, 11, 0, 0, time.UTC)}
 	exec(t, conn, `INSERT INTO user_state (user_id) VALUES ($1)`, user)
-	hmac := make([]byte, 32)
-	hmac[0] = hmacByte
-	if err := conn.QueryRow(ctx, `INSERT INTO account (user_id, source, ext_id_hmac, ext_id_key_version, type, mask, is_other_bank)
-		VALUES ($1, 'tbank_ofx', $2, 1, 'checking', '4821', false) RETURNING id`, user, hmac).Scan(&f.account); err != nil {
+	if err := conn.QueryRow(ctx, `INSERT INTO account (user_id, source, ext_id, type, mask, is_other_bank)
+		VALUES ($1, 'tbank_ofx', $2, 'checking', right($2, 4), false) RETURNING id`, user, accountNumber).Scan(&f.account); err != nil {
 		t.Fatal(err)
 	}
 	if err := conn.QueryRow(ctx, `INSERT INTO upload (user_id, source, file_name, size_bytes, content_sha256, object_key,
-			status, finished_at, operation_count, result, statement_from, statement_to)
-		VALUES ($1, 'tbank_ofx', 'operations.ofx', 100, $2, $3, 'done', now(), 1, '{}', '2026-09-01', '2026-09-25') RETURNING id`,
-		user, make([]byte, 32), user+"/seed").Scan(&f.upload); err != nil {
+			status, finished_at, operation_count, result, statement_from, statement_to, account_ids)
+		VALUES ($1, 'tbank_ofx', 'operations.ofx', 100, $2, $3, 'done', now(), 1, '{}', '2026-09-01', '2026-09-25', ARRAY[$4::bigint]) RETURNING id`,
+		user, make([]byte, 32), user+"/seed", f.account).Scan(&f.upload); err != nil {
 		t.Fatal(err)
 	}
-	exec(t, conn, `INSERT INTO upload_account (user_id, upload_id, account_id) VALUES ($1, $2, $3)`, user, f.upload, f.account)
 	if err := conn.QueryRow(ctx, `INSERT INTO operation (user_id, occurred_at, account_id, direction, amount_minor, currency,
 			status, description, bank_category_id, category_id)
 		VALUES ($1, $2, $3, 'expense', 234000, 'RUB', 'posted', 'Пятёрочка', $4, $4) RETURNING id`,
@@ -140,8 +144,8 @@ func seed(t *testing.T, conn *pgx.Conn, user string, hmacByte byte) fixture {
 func TestSourceRecordDeduplication(t *testing.T) {
 	conn, _ := schema(t)
 	seedCategories(t, conn)
-	a := seed(t, conn, userA, 1)
-	seed(t, conn, userB, 1)
+	a := seed(t, conn, userA, account1)
+	seed(t, conn, userB, account1)
 
 	// The same FITID on the same account of the same user is one record.
 	fails(t, conn, uniqueViolation, `INSERT INTO source_record (user_id, account_id, external_id, operation_occurred_at, operation_id)
@@ -158,7 +162,7 @@ func TestSourceRecordDeduplication(t *testing.T) {
 	}
 	fails(t, conn, uniqueViolation, `INSERT INTO source_record (user_id, account_id, external_id, operation_occurred_at, operation_id)
 		VALUES ($1, $2, '123456789012', '2027-01-02 00:00:00+00', $3)`, a.user, a.account, later)
-	// Another user with the same account number (same HMAC input) and FITID is not a duplicate:
+	// Another user with the same account number and FITID is not a duplicate:
 	// seed(userB) already inserted it. Uniqueness never spans users.
 	if n := count(t, conn, `SELECT count(*) FROM source_record WHERE external_id = '123456789012'`); n != 2 {
 		t.Fatalf("records with the FITID: %d, want 2 (one per user)", n)
@@ -168,30 +172,28 @@ func TestSourceRecordDeduplication(t *testing.T) {
 func TestAccountIsUniquePerUser(t *testing.T) {
 	conn, _ := schema(t)
 	seedCategories(t, conn)
-	a := seed(t, conn, userA, 7)
-	seed(t, conn, userB, 7) // the same HMAC for another user is allowed
+	a := seed(t, conn, userA, account7)
+	seed(t, conn, userB, account7) // the same number for another user is allowed
 
-	hmac := make([]byte, 32)
-	hmac[0] = 7
-	fails(t, conn, uniqueViolation, `INSERT INTO account (user_id, source, ext_id_hmac, ext_id_key_version, type, is_other_bank)
-		VALUES ($1, 'tbank_ofx', $2, 1, 'savings', false)`, a.user, hmac)
-	// The source is part of the key: the same HMAC from another source of the same user is
-	// another account (a key of (user_id, ext_id_hmac) alone would refuse it).
-	exec(t, conn, `INSERT INTO account (user_id, source, ext_id_hmac, ext_id_key_version, type, is_other_bank)
-		VALUES ($1, 'other_bank_api', $2, 1, 'checking', false)`, a.user, hmac)
-	if n := count(t, conn, `SELECT count(*) FROM account WHERE user_id = $1 AND ext_id_hmac = $2`, a.user, hmac); n != 2 {
-		t.Fatalf("accounts with the HMAC: %d, want 2 (one per source)", n)
+	fails(t, conn, uniqueViolation, `INSERT INTO account (user_id, source, ext_id, type, is_other_bank)
+		VALUES ($1, 'tbank_ofx', $2, 'savings', false)`, a.user, account7)
+	// The source is part of the key: the same number from another source of the same user is
+	// another account (a key of (user_id, ext_id) alone would refuse it).
+	exec(t, conn, `INSERT INTO account (user_id, source, ext_id, type, is_other_bank)
+		VALUES ($1, 'other_bank_api', $2, 'checking', false)`, a.user, account7)
+	if n := count(t, conn, `SELECT count(*) FROM account WHERE user_id = $1 AND ext_id = $2`, a.user, account7); n != 2 {
+		t.Fatalf("accounts with the number: %d, want 2 (one per source)", n)
 	}
-	// The HMAC is required; its length and the mask rule are the code's (docs/schema.md).
-	fails(t, conn, notNullViolation, `INSERT INTO account (user_id, source, ext_id_key_version, type, is_other_bank)
-		VALUES ($1, 'tbank_ofx', 1, 'checking', false)`, a.user)
+	// The number is required; its format and the mask rule are the code's (docs/schema.md).
+	fails(t, conn, notNullViolation, `INSERT INTO account (user_id, source, type, is_other_bank)
+		VALUES ($1, 'tbank_ofx', 'checking', false)`, a.user)
 }
 
 func TestRowsCannotPointAtAnotherUser(t *testing.T) {
 	conn, _ := schema(t)
 	seedCategories(t, conn)
-	a := seed(t, conn, userA, 1)
-	b := seed(t, conn, userB, 2)
+	a := seed(t, conn, userA, account1)
+	b := seed(t, conn, userB, account2)
 
 	fails(t, conn, foreignKeyViolation, `INSERT INTO operation (user_id, occurred_at, account_id, direction, amount_minor, currency,
 			status, bank_category_id, category_id)
@@ -200,11 +202,8 @@ func TestRowsCannotPointAtAnotherUser(t *testing.T) {
 		VALUES ($1, $2, 'x', $3, $4)`, b.user, b.account, a.at, a.operation)
 	fails(t, conn, foreignKeyViolation, `INSERT INTO unread_line (user_id, upload_id, line_number, reason, resolved_by_upload_id, resolution)
 		VALUES ($1, $2, 1, 'truncated', $3, 'read')`, b.user, b.upload, a.upload)
-	// source_record.upload_ids has no foreign key: that its uploads are the user's own is the
-	// code's rule (docs/schema.md), tested with the import code.
-	// B's upload with A's account.
-	fails(t, conn, foreignKeyViolation, `INSERT INTO upload_account (user_id, upload_id, account_id) VALUES ($1, $2, $3)`,
-		b.user, b.upload, a.account)
+	// source_record.upload_ids and upload.account_ids have no foreign keys: that their elements
+	// are the user's own is the code's rule (docs/schema.md), tested with the import code.
 	// B's line on A's account.
 	fails(t, conn, foreignKeyViolation, `INSERT INTO unread_line (user_id, upload_id, line_number, reason, account_id)
 		VALUES ($1, $2, 2, 'truncated', $3)`, b.user, b.upload, a.account)
@@ -246,9 +245,9 @@ func TestForeignKeysBetweenUserTablesIncludeUserID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 7 references to user_state and 8 between user tables at the time of writing; a smaller
+	// 7 references to user_state and 6 between user tables at the time of writing; a smaller
 	// number means the query lost them (or a key was dropped: update the number with it).
-	if len(keys) < 15 {
+	if len(keys) < 13 {
 		t.Fatalf("foreign keys between user tables: %d, the query is wrong", len(keys))
 	}
 	for _, k := range keys {
@@ -261,7 +260,7 @@ func TestForeignKeysBetweenUserTablesIncludeUserID(t *testing.T) {
 func TestOperationPartitions(t *testing.T) {
 	conn, _ := schema(t)
 	seedCategories(t, conn)
-	a := seed(t, conn, userA, 1)
+	a := seed(t, conn, userA, account1)
 
 	var part string
 	if err := conn.QueryRow(context.Background(),
@@ -292,7 +291,7 @@ func TestOperationPartitions(t *testing.T) {
 func TestOperationReferences(t *testing.T) {
 	conn, _ := schema(t)
 	seedCategories(t, conn)
-	a := seed(t, conn, userA, 1)
+	a := seed(t, conn, userA, account1)
 	op := `UPDATE operation SET %s WHERE user_id = '` + a.user + `' AND id = '` + a.operation + `'`
 	set := func(s string) string { return fmt.Sprintf(op, s) }
 
@@ -325,8 +324,8 @@ func TestCategoryKeys(t *testing.T) {
 func TestUploadKeys(t *testing.T) {
 	conn, _ := schema(t)
 	seedCategories(t, conn)
-	a := seed(t, conn, userA, 1)
-	b := seed(t, conn, userB, 2)
+	a := seed(t, conn, userA, account1)
+	b := seed(t, conn, userB, account2)
 	insert := `INSERT INTO upload (user_id, source, file_name, size_bytes, content_sha256, object_key) VALUES ($1, 'tbank_ofx', 'f.ofx', 1, $2, $3)`
 	sha := make([]byte, 32)
 
@@ -350,7 +349,7 @@ func TestUploadKeys(t *testing.T) {
 func TestUnreadLineKeys(t *testing.T) {
 	conn, _ := schema(t)
 	seedCategories(t, conn)
-	a := seed(t, conn, userA, 1)
+	a := seed(t, conn, userA, account1)
 	var later string
 	if err := conn.QueryRow(context.Background(), `INSERT INTO upload (user_id, source, file_name, size_bytes, content_sha256, object_key, status, finished_at, operation_count, result)
 		VALUES ($1, 'tbank_ofx', 'fixed.ofx', 1, $2, $3, 'done', now(), 1, '{}') RETURNING id`, a.user, make([]byte, 32), a.user+"/fixed").Scan(&later); err != nil {
@@ -397,8 +396,8 @@ type op struct {
 func TestTransferPairLookup(t *testing.T) {
 	conn, _ := schema(t)
 	seedCategories(t, conn)
-	a := seed(t, conn, userA, 1)
-	b := seed(t, conn, userB, 2)
+	a := seed(t, conn, userA, account1)
+	b := seed(t, conn, userB, account2)
 	const pair = "01a10800-0000-7000-8000-0000000000aa"
 
 	debit, credit := newOp(t, conn, a, "expense", time.Minute), newOp(t, conn, a, "income", 2*time.Minute)
@@ -442,8 +441,8 @@ func TestTransferPairLookup(t *testing.T) {
 func TestRegularPaymentIDIsStable(t *testing.T) {
 	conn, _ := schema(t)
 	seedCategories(t, conn)
-	seed(t, conn, userA, 1)
-	seed(t, conn, userB, 2)
+	seed(t, conn, userA, account1)
+	seed(t, conn, userB, account2)
 	upsert := `INSERT INTO regular_payment (user_id, periodicity, description) VALUES ($1, 'monthly', $2)
 		ON CONFLICT (user_id, periodicity, description) DO UPDATE SET description = EXCLUDED.description RETURNING id`
 	get := func(user string) string {
@@ -474,7 +473,7 @@ func TestRegularPaymentIDIsStable(t *testing.T) {
 func TestRecalcQueueMarksAMonthOnce(t *testing.T) {
 	conn, _ := schema(t)
 	seedCategories(t, conn)
-	a := seed(t, conn, userA, 1)
+	a := seed(t, conn, userA, account1)
 	mark := `INSERT INTO recalc_queue (user_id, month) VALUES ($1, '2026-09-01')
 		ON CONFLICT (user_id, month) DO UPDATE SET generation = recalc_queue.generation + 1, next_attempt_at = now()`
 	exec(t, conn, mark, a.user)
@@ -494,8 +493,8 @@ func TestRecalcQueueMarksAMonthOnce(t *testing.T) {
 func TestPurgeUserRemovesEverything(t *testing.T) {
 	conn, _ := schema(t)
 	seedCategories(t, conn)
-	a := seed(t, conn, userA, 1)
-	seed(t, conn, userB, 1)
+	a := seed(t, conn, userA, account1)
+	seed(t, conn, userB, account1)
 	ctx := context.Background()
 	exec(t, conn, `INSERT INTO unread_line (user_id, upload_id, line_number, reason) VALUES ($1, $2, 1, 'truncated')`, a.user, a.upload)
 	exec(t, conn, `INSERT INTO regular_payment (user_id, periodicity, description) VALUES ($1, 'monthly', 'x')`, a.user)
@@ -515,7 +514,7 @@ func TestPurgeUserRemovesEverything(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tables) < 10 {
+	if len(tables) < 9 {
 		t.Fatalf("user tables found: %d, the query is wrong", len(tables))
 	}
 	// The fixture has rows in every user table: a zero after the purge then proves the
@@ -545,7 +544,7 @@ func TestPurgeUserRemovesEverything(t *testing.T) {
 func TestUserLockDoesNotBlockChildInserts(t *testing.T) {
 	conn, dsn := schema(t)
 	seedCategories(t, conn)
-	a := seed(t, conn, userA, 1)
+	a := seed(t, conn, userA, account1)
 	ctx := context.Background()
 
 	holder := connect(t, dsn)
@@ -657,8 +656,8 @@ func TestUploadDeletionByUploadIDs(t *testing.T) {
 	conn, _ := schema(t)
 	ctx := context.Background()
 	seedCategories(t, conn)
-	a := seed(t, conn, userA, 1) // operation 1 is in upload 1 only
-	b := seed(t, conn, userB, 2) // another user's data must stay untouched
+	a := seed(t, conn, userA, account1) // operation 1 is in upload 1 only
+	b := seed(t, conn, userB, account2) // another user's data must stay untouched
 
 	var second string
 	if err := conn.QueryRow(ctx, `INSERT INTO upload (user_id, source, file_name, size_bytes, content_sha256, object_key)
@@ -680,8 +679,8 @@ func TestUploadDeletionByUploadIDs(t *testing.T) {
 	// Deleting the first upload empties one record only; the operation and the other record
 	// stay, the emptied record goes.
 	var otherAccount int64
-	if err := conn.QueryRow(ctx, `INSERT INTO account (user_id, source, ext_id_hmac, ext_id_key_version, type, is_other_bank)
-		VALUES ($1, 'other_bank_api', $2, 1, 'checking', false) RETURNING id`, a.user, make([]byte, 32)).Scan(&otherAccount); err != nil {
+	if err := conn.QueryRow(ctx, `INSERT INTO account (user_id, source, ext_id, type, is_other_bank)
+		VALUES ($1, 'other_bank_api', $2, 'checking', false) RETURNING id`, a.user, account1).Scan(&otherAccount); err != nil {
 		t.Fatal(err)
 	}
 	var multi string
@@ -780,8 +779,8 @@ func TestBankCategoriesInOrderOfFirstAppearance(t *testing.T) {
 	conn, _ := schema(t)
 	ctx := context.Background()
 	seedCategories(t, conn)
-	a := seed(t, conn, userA, 1) // its operation is in the registry category cat_supermarkets
-	b := seed(t, conn, userB, 2) // another user meets the categories in the opposite order
+	a := seed(t, conn, userA, account1) // its operation is in the registry category cat_supermarkets
+	b := seed(t, conn, userB, account2) // another user meets the categories in the opposite order
 	exec(t, conn, `INSERT INTO category (id, name, bank_name, icon, for_expense, for_income, assignable)
 		VALUES ('cat_zoo', 'Зоотовары', 'Зоотовары', 'tag', true, true, true),
 		       ('cat_avia', 'Авиабилеты', 'Авиабилеты', 'tag', true, true, true)`)
@@ -833,7 +832,7 @@ func TestBankCategoriesInOrderOfFirstAppearance(t *testing.T) {
 }
 
 // Rule 2 of closing unread lines (api.md 3.6) reads the period of the file from upload and
-// the accounts of the upload from upload_account (docs/schema.md, «Период выписки и
+// the accounts of the upload from upload.account_ids (docs/schema.md, «Период выписки и
 // закрытие строк»): a line without a FITID is closed only by a later finished upload that
 // contains the line's account and whose period covers the day of the line. The day of the line
 // is taken in the user's profile zone; the bounds are the dates written in the file, and the
@@ -842,13 +841,13 @@ func TestStatementPeriodCoversLine(t *testing.T) {
 	conn, _ := schema(t)
 	ctx := context.Background()
 	seedCategories(t, conn)
-	a := seed(t, conn, userA, 1) // its upload covers 2026-09-01..2026-09-25 for its account
+	a := seed(t, conn, userA, account1) // its upload covers 2026-09-01..2026-09-25 for its account
 	// The session is UTC; the user's zone is set per pass below.
 	exec(t, conn, `SET TIME ZONE 'UTC'`)
 
 	var otherAccount int64
-	if err := conn.QueryRow(ctx, `INSERT INTO account (user_id, source, ext_id_hmac, ext_id_key_version, type, is_other_bank)
-		VALUES ($1, 'tbank_ofx', $2, 1, 'savings', false) RETURNING id`, a.user, []byte{9}).Scan(&otherAccount); err != nil {
+	if err := conn.QueryRow(ctx, `INSERT INTO account (user_id, source, ext_id, type, mask, is_other_bank)
+		VALUES ($1, 'tbank_ofx', '42301810400000000734', 'savings', '0734', false) RETURNING id`, a.user).Scan(&otherAccount); err != nil {
 		t.Fatal(err)
 	}
 	// Lines of the seeded upload: inside its period, after it, before it, and on the other account.
@@ -871,12 +870,11 @@ func TestStatementPeriodCoversLine(t *testing.T) {
 		t.Helper()
 		var id string
 		if err := conn.QueryRow(ctx, `INSERT INTO upload (user_id, source, file_name, size_bytes, content_sha256, object_key,
-				status, finished_at, operation_count, result, statement_from, statement_to, uploaded_at)
-			VALUES ($1, 'tbank_ofx', $2, 1, $3, $4, 'done', now(), 0, '{}', '2026-09-01', '2026-09-25', now() + $5::interval)
-			RETURNING id`, a.user, name, make([]byte, 32), a.user+"/"+name, after).Scan(&id); err != nil {
+				status, finished_at, operation_count, result, statement_from, statement_to, uploaded_at, account_ids)
+			VALUES ($1, 'tbank_ofx', $2, 1, $3, $4, 'done', now(), 0, '{}', '2026-09-01', '2026-09-25', now() + $5::interval, ARRAY[$6::bigint])
+			RETURNING id`, a.user, name, make([]byte, 32), a.user+"/"+name, after, account).Scan(&id); err != nil {
 			t.Fatal(err)
 		}
-		exec(t, conn, `INSERT INTO upload_account (user_id, upload_id, account_id) VALUES ($1, $2, $3)`, a.user, id, account)
 		return id
 	}
 	// closers returns the uploads that may close the line of the seeded upload, earliest first.
@@ -885,8 +883,7 @@ func TestStatementPeriodCoversLine(t *testing.T) {
 		rows, err := conn.Query(ctx, `SELECT u.id::text
 			FROM unread_line l
 			JOIN upload lu ON lu.user_id = l.user_id AND lu.id = l.upload_id
-			JOIN upload_account ua ON ua.user_id = l.user_id AND ua.account_id = l.account_id
-			JOIN upload u ON u.user_id = ua.user_id AND u.id = ua.upload_id
+			JOIN upload u ON u.user_id = l.user_id AND l.account_id = ANY(u.account_ids)
 			JOIN user_state us ON us.user_id = l.user_id
 			WHERE l.user_id = $1 AND l.upload_id = $2 AND l.line_number = $3 AND l.external_id IS NULL
 			  AND u.status = 'done'

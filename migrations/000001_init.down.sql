@@ -6,7 +6,6 @@ DROP TABLE regular_payment;
 DROP TABLE unread_line;
 DROP TABLE source_record;
 DROP TABLE operation;
-DROP TABLE upload_account;
 DROP TABLE upload;
 DROP TABLE account;
 DROP TABLE category;

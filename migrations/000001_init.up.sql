@@ -14,8 +14,9 @@
 --   first); the service deletes operations physically when the last upload containing them
 --   goes (their source records follow; the code clears transfer_pair_id of the partner).
 --   Only upload itself is deleted logically (status deleted).
--- * source_record.upload_ids is the one array of IDs in the schema (owner's decision in the
---   review of FIN-111): no foreign key, the code keeps it to the user's own uploads.
+-- * Arrays of IDs instead of link tables (owner's decisions in the review of FIN-111):
+--   source_record.upload_ids and upload.account_ids. No foreign keys on their elements: the
+--   code keeps them to the user's own uploads and accounts (docs/schema.md).
 -- * IDs that leave the database (API, other services, support) are UUIDv7 (uuidv7() of
 --   PostgreSQL 18 as the default; the service may pass its own). Internal IDs are bigint
 --   identities.
@@ -129,30 +130,27 @@ CREATE TABLE account (
     user_id            uuid        NOT NULL REFERENCES user_state ON DELETE CASCADE,
     id                 bigint      GENERATED ALWAYS AS IDENTITY,
     source             text        NOT NULL,
-    ext_id_hmac        bytea       NOT NULL,
-    ext_id_key_version bigint      NOT NULL,
+    ext_id             text        NOT NULL,
     type               text        NOT NULL,
     mask               text,
     is_other_bank      boolean     NOT NULL,
     currency           text,
     created_at         timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (user_id, id),
-    UNIQUE (user_id, source, ext_id_hmac)
+    UNIQUE (user_id, source, ext_id)
 );
 
 COMMENT ON TABLE account IS
     'Счета пользователя, встреченные в выписках; ключ (user_id, id), счёт источника однозначен по '
-    '(user_id, source, ext_id_hmac). Полный номер (ACCTID) не хранится: только его HMAC с ключом сервиса, '
-    'тип и последние 4 символа.';
+    '(user_id, source, ext_id). Номер счёта (ACCTID) хранится как есть (решение владельца в ревью FIN-111): '
+    'по нему же упорядочиваются операции с равным временем (docs/calc.md 10).';
 COMMENT ON COLUMN account.user_id IS 'Пользователь (user_state).';
 COMMENT ON COLUMN account.id IS 'Внутренний ID счёта; наружу не уходит.';
 COMMENT ON COLUMN account.source IS
     'Источник, из которого пришёл счёт: код из констант сервиса (tbank_ofx), там же его название (source_name).';
-COMMENT ON COLUMN account.ext_id_hmac IS
-    'Хеш номера счёта — HMAC-SHA-256 с ключом сервиса по user_id и ACCTID (или ID счёта в источнике): '
-    'один и тот же счёт двух пользователей даёт разные значения, строки разных пользователей не связать.';
-COMMENT ON COLUMN account.ext_id_key_version IS
-    'Версия ключа HMAC, которым посчитано значение; ротация переписывает строки на новый ключ.';
+COMMENT ON COLUMN account.ext_id IS
+    'Номер счёта в источнике как есть: ACCTID из OFX (20 цифр у счетов Т-Банка, OB$… у счёта другого банка). '
+    'Персональные данные: наружу не отдаётся, в логи не пишется; в API — только маска и тип.';
 COMMENT ON COLUMN account.type IS 'Код типа счёта из источника (checking, savings, …); type_name строит сервис.';
 COMMENT ON COLUMN account.mask IS 'Последние 4 символа номера; NULL у счёта другого банка (OB$…).';
 COMMENT ON COLUMN account.is_other_bank IS
@@ -182,6 +180,7 @@ CREATE TABLE upload (
     last_operation_at  timestamptz,
     statement_from     date,
     statement_to       date,
+    account_ids        bigint[]    NOT NULL DEFAULT '{}',
     result             jsonb,
     PRIMARY KEY (user_id, id),
     -- One file per upload: deleting the file of one upload never removes another's, even when
@@ -233,6 +232,11 @@ COMMENT ON COLUMN upload.statement_from IS
 COMMENT ON COLUMN upload.statement_to IS
     'Последний день периода выписки — календарная дата DTEND, как она записана в файле; этот день покрыт '
     'целиком. Задаётся вместе с statement_from.';
+COMMENT ON COLUMN upload.account_ids IS
+    'Счета загрузки — блоки STMTTRNRS файла, в том числе без операций (решение владельца в ревью FIN-111, '
+    'вместо таблицы связи). Правила 2–3 закрытия непрочитанных строк (api.md 3.6) требуют, чтобы новая '
+    'загрузка содержала счёт строки: account_id = ANY(account_ids). FK нет: что в массиве только счета '
+    'этого пользователя, держит код (docs/schema.md).';
 COMMENT ON COLUMN upload.result IS
     'Итог импорта (ImportResult) события complete (protojson), который повторяет WatchUpload; только у '
     'done.';
@@ -242,23 +246,6 @@ CREATE INDEX upload_processing_idx ON upload (uploaded_at) WHERE status = 'proce
 -- Files still to remove from Object Storage.
 CREATE INDEX upload_file_pending_idx ON upload (finished_at)
     WHERE status IN ('failed', 'deleted') AND file_deleted_at IS NULL;
-
-CREATE TABLE upload_account (
-    user_id         uuid        NOT NULL,
-    upload_id       uuid        NOT NULL,
-    account_id      bigint      NOT NULL,
-    PRIMARY KEY (user_id, upload_id, account_id),
-    FOREIGN KEY (user_id, upload_id) REFERENCES upload ON DELETE CASCADE,
-    FOREIGN KEY (user_id, account_id) REFERENCES account ON DELETE CASCADE
-);
-
-COMMENT ON TABLE upload_account IS
-    'Счета загрузки — блоки STMTTRNRS файла, в том числе без операций; ключ (user_id, upload_id, account_id). '
-    'Правила 2–3 закрытия непрочитанных строк (api.md 3.6) требуют, чтобы новая загрузка содержала тот же '
-    'счёт; период выписки — upload.statement_from/statement_to, он один на файл.';
-COMMENT ON COLUMN upload_account.user_id IS 'Пользователь (user_state).';
-COMMENT ON COLUMN upload_account.upload_id IS 'Загрузка.';
-COMMENT ON COLUMN upload_account.account_id IS 'Счёт блока STMTTRNRS в файле загрузки.';
 
 -- ---------------------------------------------------------------- operations
 
