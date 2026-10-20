@@ -166,7 +166,6 @@ CREATE TABLE upload (
     file_deleted_at    timestamptz,
     status             text        NOT NULL DEFAULT 'processing',
     error_code         text,
-    stage              text,
     percent            bigint      NOT NULL DEFAULT 0,
     uploaded_at        timestamptz NOT NULL DEFAULT now(),
     finished_at        timestamptz,
@@ -202,11 +201,9 @@ COMMENT ON COLUMN upload.file_deleted_at IS
 COMMENT ON COLUMN upload.status IS
     'Статус: processing -> done | failed (error_code); done -> deleted. 3.4 показывает processing и done.';
 COMMENT ON COLUMN upload.error_code IS 'Только у failed: processing_failed | cancelled.';
-COMMENT ON COLUMN upload.stage IS
-    'Текущий этап разбора при processing (parsing | dedup | rules) для первого события WatchUpload; при '
-    'выходе из processing очищается.';
 COMMENT ON COLUMN upload.percent IS
-    'Общий прогресс разбора 0–100 для события progress WatchUpload; обновляется по ходу разбора.';
+    'Общий прогресс разбора 0–100 для события progress WatchUpload; обновляется по ходу разбора. Этап '
+    '(stage) не хранится: код выводит его из percent (docs/schema.md).';
 COMMENT ON COLUMN upload.uploaded_at IS
     'Создание загрузки; упорядочивает загрузки при закрытии непрочитанных строк (при равенстве — по id) и '
     'в 3.4.';

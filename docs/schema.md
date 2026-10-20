@@ -55,10 +55,9 @@
 | `upload` | `size_bytes` | > 0 | приём файла: пустой поток — ошибка формата, загрузка не создаётся |
 | `upload` | `content_sha256` | ровно 32 байта | SHA-256 считается при приёме (`[32]byte` в типе) |
 | `upload` | `object_key` | 1–1024 символа, `<user_id>/<upload id>` | ключ строит одна функция из пары (пользователь, загрузка); purge удаляет файлы **листингом префикса `<user_id>/` в хранилище**, а не по строкам `upload`: только так находится файл без строки (сбой между PUT и INSERT) |
-| `upload` | `status`, `error_code`, `stage` | `status` ∈ {`processing`, `done`, `failed`, `deleted`}; `error_code` ∈ {`processing_failed`, `cancelled`}; `stage` ∈ {`parsing`, `dedup`, `rules`} | перечисления домена; неизвестное значение при чтении — ошибка данных |
+| `upload` | `status`, `error_code` | `status` ∈ {`processing`, `done`, `failed`, `deleted`}; `error_code` ∈ {`processing_failed`, `cancelled`} | перечисления домена; неизвестное значение при чтении — ошибка данных |
 | `upload` | переходы | `processing → done / failed`, `done → deleted` | методы агрегата загрузки (`Finish`, `Fail`, `Delete`) меняют связанные поля вместе; репозиторий пишет агрегат одним `UPDATE` с условием на прежний статус (`WHERE status = 'processing'` и т. п.): гонка двух переходов даёт 0 строк, а не смешанное состояние |
 | `upload` | `finished_at` | задан ⇔ статус не `processing` | там же |
-| `upload` | `stage` | **задан только при `processing`** (текущий этап для первого события `WatchUpload`, меняется по ходу разбора) и **очищается при выходе из `processing`** (в `done`, `failed`) | там же: `Finish` и `Fail` обнуляют `stage` |
 | `upload` | `file_deleted_at` | пусто при `processing` (файл удаляется только у завершённой загрузки) | задание добора файлов выбирает только `failed` и `deleted` |
 | `upload` | `error_code` | задан ⇔ `failed` | `Fail(code)` |
 | `upload` | `deleted_at` | задан ⇔ `deleted` | `Delete` |
@@ -66,6 +65,7 @@
 | `upload` | `operation_count` | ≥ 0; задан у `done` и `deleted` | `Finish` |
 | `upload` | `first_operation_at`, `last_operation_at` | оба или ни одного; `first ≤ last` | `Finish`: границы по операциям файла, пустой файл — оба пусты |
 | `upload` | `percent` | 0–100 | расчёт прогресса ограничивает значение |
+| `upload` | этап разбора (`stage` события `progress` `WatchUpload`) | не хранится (решение владельца в ревью FIN-111); выводится из `percent`: 0–59 — `parsing`, 60–79 — `dedup`, 80–100 — `rules` | одна функция домена `StageOf(percent)`; разбор выставляет `percent` в диапазоне своего этапа (начало этапа — его нижняя граница), поэтому этап, который видит клиент после переподключения, совпадает с текущим |
 | `upload_account` | `statement_start`, `statement_end` | `start ≤ end` | адаптер OFX при чтении `DTSTART`/`DTEND`; блок с обратным порядком — ошибка разбора файла |
 | `operation` | `direction`, `status` | `direction` ∈ {`expense`, `income`}; `status` ∈ {`posted`, `pending`} | перечисления домена; адаптер (`docs/calc.md` 2) |
 | `operation` | `amount_minor` | ≥ 0 (направление — в `direction`) | адаптер: \|`TRNAMT`\| × 100 |
