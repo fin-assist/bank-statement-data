@@ -789,10 +789,12 @@ func TestEveryTableHasDescription(t *testing.T) {
 		switch {
 		case description == "":
 			t.Errorf("table %s has no COMMENT ON TABLE", table)
-		case !cyrillic.MatchString(description):
-			t.Errorf("table %s: description is not in Russian: %q", table, description)
+		case !startsInRussian.MatchString(description):
+			t.Errorf("table %s: description does not start in Russian: %q", table, description)
 		}
 	}
 }
 
-var cyrillic = regexp.MustCompile(`\p{Cyrillic}`)
+// startsInRussian accepts a description whose first letter is Cyrillic. Checking for any
+// Cyrillic letter would pass an English text that quotes a Russian term («не подписка»).
+var startsInRussian = regexp.MustCompile(`^\p{Cyrillic}`)
