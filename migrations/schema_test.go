@@ -483,7 +483,6 @@ func TestPurgeUserRemovesEverything(t *testing.T) {
 	exec(t, conn, `INSERT INTO regular_payment (user_id, periodicity, description) VALUES ($1, 'monthly', 'x')`, a.user)
 	exec(t, conn, `INSERT INTO merchant (user_id, key) VALUES ($1, 'x')`, a.user)
 	exec(t, conn, `INSERT INTO recalc_queue (user_id, month) VALUES ($1, '2026-09-01')`, a.user)
-	exec(t, conn, `INSERT INTO user_bank_category (user_id, category_id, first_uploaded_at, first_line_number) VALUES ($1, 'cat_supermarkets', now(), 1)`, a.user)
 	exec(t, conn, `UPDATE operation SET transfer_pair_id = '01a10800-0000-7000-8000-0000000000aa' WHERE user_id = $1 AND id IN ($2, $3)`,
 		a.user, a.operation, newOp(t, conn, a, "income", time.Minute).id)
 
@@ -724,5 +723,65 @@ func TestUploadDeletionByUploadIDs(t *testing.T) {
 	}
 	if n := count(t, conn, `SELECT count(*) FROM operation WHERE user_id = $1 AND id = $2`, b.user, b.operation); n != 1 {
 		t.Fatal("another user's operation was touched")
+	}
+}
+
+// 5.1 lists the bank categories outside the registry that the user met, in the order of
+// first appearance (docs/calc.md 10). Without a table of its own the order comes from the
+// identity of source_record: the import inserts records in the order of the file lines,
+// and imports of one user commit one after another (docs/schema.md, «Ожидаемые запросы»).
+func TestBankCategoriesInOrderOfFirstAppearance(t *testing.T) {
+	conn, _ := schema(t)
+	ctx := context.Background()
+	seedCategories(t, conn)
+	a := seed(t, conn, userA, 1) // its operation is in the registry category cat_supermarkets
+	b := seed(t, conn, userB, 2) // another user meets the categories in the opposite order
+	exec(t, conn, `INSERT INTO category (id, name, bank_name, icon, for_expense, for_income, assignable)
+		VALUES ('cat_zoo', 'Зоотовары', 'Зоотовары', 'tag', true, true, true),
+		       ('cat_avia', 'Авиабилеты', 'Авиабилеты', 'tag', true, true, true)`)
+
+	// addRecord imports one line: an operation of the category and its source record.
+	addRecord := func(f fixture, category, fitid string, after time.Duration) string {
+		t.Helper()
+		var id string
+		if err := conn.QueryRow(ctx, `INSERT INTO operation (user_id, occurred_at, account_id, direction, amount_minor, currency,
+				status, bank_category_id, category_id)
+			VALUES ($1, $2, $3, 'expense', 1, 'RUB', 'posted', $4, $4) RETURNING id`, f.user, f.at.Add(after), f.account, category).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		exec(t, conn, `INSERT INTO source_record (user_id, account_id, external_id, operation_occurred_at, operation_id, upload_ids)
+			VALUES ($1, $2, $3, $4, $5, ARRAY[$6::uuid])`, f.user, f.account, fitid, f.at.Add(after), id, f.upload)
+		return id
+	}
+	// File order is not date order: cat_zoo is on an earlier line with a later date.
+	addRecord(a, "cat_zoo", "A1", 48*time.Hour)
+	addRecord(a, "cat_avia", "A2", -48*time.Hour)
+	addRecord(a, "cat_zoo", "A3", time.Hour)
+	addRecord(b, "cat_avia", "B1", 0)
+	addRecord(b, "cat_zoo", "B2", 0)
+
+	order := func(user string) []string {
+		t.Helper()
+		rows, err := conn.Query(ctx, `SELECT o.bank_category_id
+			FROM source_record r
+			JOIN operation o ON o.user_id = r.user_id AND o.occurred_at = r.operation_occurred_at AND o.id = r.operation_id
+			JOIN category c ON c.id = o.bank_category_id
+			WHERE r.user_id = $1 AND c.sort_order IS NULL
+			GROUP BY o.bank_category_id
+			ORDER BY min(r.id)`, user)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ids
+	}
+	if got := strings.Join(order(a.user), ","); got != "cat_zoo,cat_avia" {
+		t.Fatalf("order of A: %s, want cat_zoo,cat_avia", got)
+	}
+	if got := strings.Join(order(b.user), ","); got != "cat_avia,cat_zoo" {
+		t.Fatalf("order of B: %s, want cat_avia,cat_zoo", got)
 	}
 }

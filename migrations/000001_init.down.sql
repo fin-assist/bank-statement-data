@@ -3,7 +3,6 @@
 DROP TABLE recalc_queue;
 DROP TABLE merchant;
 DROP TABLE regular_payment;
-DROP TABLE user_bank_category;
 DROP TABLE unread_line;
 DROP TABLE source_record;
 DROP TABLE operation;

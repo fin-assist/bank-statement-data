@@ -113,7 +113,7 @@ COMMENT ON COLUMN category.for_income IS 'Категорию можно дать
 COMMENT ON COLUMN category.assignable IS 'Пользователь может выбрать категорию вручную (4.3); у «Без категории» — нет.';
 COMMENT ON COLUMN category.sort_order IS
     'Порядок показа системных категорий и категорий реестра; NULL — после них, по первому появлению у '
-    'пользователя (user_bank_category).';
+    'пользователя: по наименьшему source_record.id среди его операций с этой категорией банка (docs/schema.md).';
 COMMENT ON COLUMN category.note IS 'Пояснение к системной категории («не в тратах»); у остальных NULL.';
 COMMENT ON COLUMN category.created_at IS 'Когда строка создана.';
 COMMENT ON COLUMN category.updated_at IS 'Когда строка последний раз изменена (синхронизация с реестром FIN-6).';
@@ -418,25 +418,6 @@ CREATE INDEX unread_line_external_id_idx ON unread_line (user_id, account_id, ex
 -- Lines closed by an upload: recheck when it is deleted, resolved_unread_count of 3.4.
 CREATE INDEX unread_line_resolved_by_idx ON unread_line (user_id, resolved_by_upload_id)
     WHERE resolved_by_upload_id IS NOT NULL;
-
--- ---------------------------------------------------------------- categories per user
-
-CREATE TABLE user_bank_category (
-    user_id             uuid        NOT NULL REFERENCES user_state ON DELETE CASCADE,
-    category_id         text        NOT NULL REFERENCES category,
-    first_uploaded_at   timestamptz NOT NULL,
-    first_line_number   bigint      NOT NULL,
-    PRIMARY KEY (user_id, category_id)
-);
-
-COMMENT ON TABLE user_bank_category IS
-    'Категории банка, встреченные пользователем, с первым появлением; ключ (user_id, category_id). 5.1 выводит '
-    'категории вне реестра в этом порядке (docs/calc.md 10). Строка остаётся после удаления загрузки.';
-COMMENT ON COLUMN user_bank_category.user_id IS 'Пользователь (user_state).';
-COMMENT ON COLUMN user_bank_category.category_id IS 'Категория банка (строка справочника category).';
-COMMENT ON COLUMN user_bank_category.first_uploaded_at IS 'Время загрузки (uploaded_at), в которой категория встретилась впервые.';
-COMMENT ON COLUMN user_bank_category.first_line_number IS
-    'Номер строки первого появления в том файле; вместе с first_uploaded_at задаёт порядок в 5.1.';
 
 -- ---------------------------------------------------------------- regular payments, selections
 
