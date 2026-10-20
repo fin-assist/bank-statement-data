@@ -184,6 +184,10 @@ func TestAccountIsUniquePerUser(t *testing.T) {
 	if n := count(t, conn, `SELECT count(*) FROM account WHERE user_id = $1 AND ext_id = $2`, a.user, account7); n != 2 {
 		t.Fatalf("accounts with the number: %d, want 2 (one per source)", n)
 	}
+	// Another number of the same user and source is another account (a key of
+	// (user_id, source) alone would refuse it).
+	exec(t, conn, `INSERT INTO account (user_id, source, ext_id, type, is_other_bank)
+		VALUES ($1, 'tbank_ofx', '42301810400000000734', 'savings', false)`, a.user)
 	// The number is required; its format and the mask rule are the code's (docs/schema.md).
 	fails(t, conn, notNullViolation, `INSERT INTO account (user_id, source, type, is_other_bank)
 		VALUES ($1, 'tbank_ofx', 'checking', false)`, a.user)
@@ -865,14 +869,17 @@ func TestStatementPeriodCoversLine(t *testing.T) {
 		VALUES ($1, $2, 77, 'bad_amount', '2026-09-10 12:00+03', $3, 'FIT77')`, a.user, a.upload, a.account)
 
 	// laterUpload adds a finished upload of the same period, uploaded after the seeded one,
-	// containing the given account only.
-	laterUpload := func(name string, after string, account int64) string {
+	// containing the given accounts.
+	laterUpload := func(name string, after string, accounts ...int64) string {
 		t.Helper()
+		if accounts == nil {
+			accounts = []int64{} // an empty array, not NULL
+		}
 		var id string
 		if err := conn.QueryRow(ctx, `INSERT INTO upload (user_id, source, file_name, size_bytes, content_sha256, object_key,
 				status, finished_at, operation_count, result, statement_from, statement_to, uploaded_at, account_ids)
-			VALUES ($1, 'tbank_ofx', $2, 1, $3, $4, 'done', now(), 0, '{}', '2026-09-01', '2026-09-25', now() + $5::interval, ARRAY[$6::bigint])
-			RETURNING id`, a.user, name, make([]byte, 32), a.user+"/"+name, after, account).Scan(&id); err != nil {
+			VALUES ($1, 'tbank_ofx', $2, 1, $3, $4, 'done', now(), 0, '{}', '2026-09-01', '2026-09-25', now() + $5::interval, $6::bigint[])
+			RETURNING id`, a.user, name, make([]byte, 32), a.user+"/"+name, after, accounts).Scan(&id); err != nil {
 			t.Fatal(err)
 		}
 		return id
@@ -936,4 +943,12 @@ func TestStatementPeriodCoversLine(t *testing.T) {
 	// A deleted upload keeps its period and accounts but closes nothing any more.
 	exec(t, conn, `UPDATE upload SET status = 'deleted', deleted_at = now(), result = NULL WHERE user_id = $1 AND id = $2`, a.user, checking)
 	want(10)
+	// A file with two accounts closes the lines of both, whatever their place in the array.
+	both := laterUpload("both.ofx", "3 days", otherAccount, a.account)
+	want(10, both)
+	want(99, savings, both)
+	// A finished upload without accounts closes nothing, though its period covers the day.
+	laterUpload("none.ofx", "4 days")
+	want(10, both)
+	want(99, savings, both)
 }
