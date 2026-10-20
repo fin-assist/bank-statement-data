@@ -471,23 +471,6 @@ func TestRecalcQueueMarksAMonthOnce(t *testing.T) {
 	}
 }
 
-func TestOneCurrentMetricDefinition(t *testing.T) {
-	conn, _ := schema(t)
-	exec(t, conn, `INSERT INTO metric_definition (metric_id, version, is_current) VALUES ('insights.regular_payments', 1, true)`)
-	fails(t, conn, uniqueViolation, `INSERT INTO metric_definition (metric_id, version, is_current) VALUES ('insights.regular_payments', 2, true)`)
-	exec(t, conn, `INSERT INTO metric_definition (metric_id, version) VALUES ('insights.regular_payments', 2)`)
-
-	// The user exists, so a refusal below can only come from the (metric_id, version) key.
-	exec(t, conn, `INSERT INTO user_state (user_id) VALUES ($1)`, userA)
-	exec(t, conn, `INSERT INTO user_metric_version (user_id, metric_id, version) VALUES ($1, 'insights.regular_payments', 2)`, userA)
-	_, err := conn.Exec(context.Background(),
-		`UPDATE user_metric_version SET version = 3 WHERE user_id = $1 AND metric_id = 'insights.regular_payments'`, userA)
-	var pg *pgconn.PgError
-	if !errors.As(err, &pg) || pg.Code != foreignKeyViolation || pg.ConstraintName != "user_metric_version_metric_id_version_fkey" {
-		t.Fatalf("version 3 of the metric: want a violation of user_metric_version_metric_id_version_fkey, got %v", err)
-	}
-}
-
 // PurgeUserData is one DELETE of the user's row: nothing of the user is left, the other user
 // is untouched.
 func TestPurgeUserRemovesEverything(t *testing.T) {
@@ -501,8 +484,6 @@ func TestPurgeUserRemovesEverything(t *testing.T) {
 	exec(t, conn, `INSERT INTO merchant (user_id, key) VALUES ($1, 'x')`, a.user)
 	exec(t, conn, `INSERT INTO recalc_queue (user_id, month) VALUES ($1, '2026-09-01')`, a.user)
 	exec(t, conn, `INSERT INTO user_bank_category (user_id, category_id, first_uploaded_at, first_line_number) VALUES ($1, 'cat_supermarkets', now(), 1)`, a.user)
-	exec(t, conn, `INSERT INTO metric_definition (metric_id, version, is_current) VALUES ('tiles.expense', 1, true)`)
-	exec(t, conn, `INSERT INTO user_metric_version (user_id, metric_id, version) VALUES ($1, 'tiles.expense', 1), ($2, 'tiles.expense', 1)`, a.user, userB)
 	exec(t, conn, `UPDATE operation SET transfer_pair_id = '01a10800-0000-7000-8000-0000000000aa' WHERE user_id = $1 AND id IN ($2, $3)`,
 		a.user, a.operation, newOp(t, conn, a, "income", time.Minute).id)
 
@@ -537,9 +518,6 @@ func TestPurgeUserRemovesEverything(t *testing.T) {
 	}
 	if n := count(t, conn, `SELECT count(*) FROM operation WHERE user_id = $1`, userB); n != 1 {
 		t.Errorf("the other user lost operations: %d", n)
-	}
-	if n := count(t, conn, `SELECT count(*) FROM user_metric_version WHERE user_id = $1`, userB); n != 1 {
-		t.Errorf("the other user lost metric versions: %d", n)
 	}
 }
 

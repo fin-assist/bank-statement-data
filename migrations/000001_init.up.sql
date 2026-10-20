@@ -38,6 +38,7 @@ CREATE TABLE user_state (
     timezone              text        NOT NULL DEFAULT 'Europe/Moscow',
     settings_version      bigint      NOT NULL DEFAULT 0,
     calc_version          bigint      NOT NULL DEFAULT 0,
+    registry_version      bigint      NOT NULL DEFAULT 0,
     categories_changed_at timestamptz,
     uploads_changed_at    timestamptz,
     daily_recalc_due_at   timestamptz,
@@ -58,6 +59,10 @@ COMMENT ON COLUMN user_state.settings_version IS
     'игнорируется.';
 COMMENT ON COLUMN user_state.calc_version IS
     'Монотонна у пользователя: увеличивается в транзакции, которая пишет строку outbox UpsertUserMetrics.';
+COMMENT ON COLUMN user_state.registry_version IS
+    'Версия реестра метрик и правил (FIN-6, docs/calc.md 7), с которой пользователь посчитан последний раз; '
+    'реестр с версиями — в коде. Задание дозаполнения берёт пользователей с версией ниже текущей; до '
+    'пересчёта метрики с изменённым определением недоступны, а не равны нулю. 0 — ещё не считался.';
 COMMENT ON COLUMN user_state.categories_changed_at IS
     'Последняя ручная смена категории, перекатегоризация или отметка «не подписка» '
     '(DataVersion.categories_changed_at).';
@@ -506,43 +511,3 @@ COMMENT ON COLUMN recalc_queue.attempts IS 'Неудачных попыток п
 COMMENT ON COLUMN recalc_queue.last_error IS 'Последняя ошибка пересчёта для диагностики; NULL — ошибок не было.';
 
 CREATE INDEX recalc_queue_next_attempt_at_idx ON recalc_queue (next_attempt_at);
-
-CREATE TABLE metric_definition (
-    metric_id  text        NOT NULL,
-    version    bigint      NOT NULL,
-    params     jsonb       NOT NULL DEFAULT '{}',
-    is_current boolean     NOT NULL DEFAULT false,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (metric_id, version)
-);
-
-COMMENT ON TABLE metric_definition IS
-    'Реестр определений метрик и правил с версиями (FIN-6), ключ (metric_id, version): пороги и параметры '
-    'docs/calc.md 7. Текущая версия у метрики одна.';
-COMMENT ON COLUMN metric_definition.metric_id IS 'Идентификатор метрики или правила из реестра (FIN-6).';
-COMMENT ON COLUMN metric_definition.version IS 'Версия определения, с 1.';
-COMMENT ON COLUMN metric_definition.params IS 'Пороги и параметры версии (JSON-объект).';
-COMMENT ON COLUMN metric_definition.is_current IS 'Текущая версия метрики; у метрики она одна (metric_definition_current_idx).';
-COMMENT ON COLUMN metric_definition.created_at IS 'Когда версия добавлена.';
-
-CREATE UNIQUE INDEX metric_definition_current_idx ON metric_definition (metric_id) WHERE is_current;
-
-CREATE TABLE user_metric_version (
-    user_id     uuid        NOT NULL REFERENCES user_state ON DELETE CASCADE,
-    metric_id   text        NOT NULL,
-    version     bigint      NOT NULL,
-    computed_at timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (user_id, metric_id),
-    FOREIGN KEY (metric_id, version) REFERENCES metric_definition
-);
-
-COMMENT ON TABLE user_metric_version IS
-    'Версия определения, по которой метрика пользователя посчитана последней; ключ (user_id, metric_id). '
-    'Задание дозаполнения выбирает пользователей с версией ниже текущей; до пересчёта метрика недоступна, а не '
-    'равна нулю.';
-COMMENT ON COLUMN user_metric_version.user_id IS 'Пользователь (user_state).';
-COMMENT ON COLUMN user_metric_version.metric_id IS 'Метрика.';
-COMMENT ON COLUMN user_metric_version.version IS 'Версия определения, которой метрика посчитана последней.';
-COMMENT ON COLUMN user_metric_version.computed_at IS 'Когда метрика посчитана.';
-
-CREATE INDEX user_metric_version_metric_idx ON user_metric_version (metric_id, version);
