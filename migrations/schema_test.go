@@ -107,14 +107,9 @@ type fixture struct {
 	at        time.Time
 }
 
+// bankCategory and cat_transfers, which the tests also use, are known categories inserted by
+// migration 000002 (FIN-200).
 const bankCategory = "cat_supermarkets"
-
-func seedCategories(t *testing.T, conn *pgx.Conn) {
-	t.Helper()
-	exec(t, conn, `INSERT INTO category (id, name, bank_name, icon, is_known, for_expense, for_income, assignable, sort_order)
-		VALUES ('cat_supermarkets', 'Супермаркеты', 'Супермаркеты', 'cart', true, true, false, true, 100),
-		       ('cat_transfers', 'Переводы', 'Переводы', 'users', true, true, true, true, 110)`)
-}
 
 func seed(t *testing.T, conn *pgx.Conn, user string, accountNumber string) fixture {
 	t.Helper()
@@ -144,7 +139,6 @@ func seed(t *testing.T, conn *pgx.Conn, user string, accountNumber string) fixtu
 
 func TestSourceRecordDeduplication(t *testing.T) {
 	conn, _ := schema(t)
-	seedCategories(t, conn)
 	a := seed(t, conn, userA, account1)
 	seed(t, conn, userB, account1)
 
@@ -172,7 +166,6 @@ func TestSourceRecordDeduplication(t *testing.T) {
 
 func TestAccountIsUniquePerUser(t *testing.T) {
 	conn, _ := schema(t)
-	seedCategories(t, conn)
 	a := seed(t, conn, userA, account7)
 	seed(t, conn, userB, account7) // the same number for another user is allowed
 
@@ -196,7 +189,6 @@ func TestAccountIsUniquePerUser(t *testing.T) {
 
 func TestRowsCannotPointAtAnotherUser(t *testing.T) {
 	conn, _ := schema(t)
-	seedCategories(t, conn)
 	a := seed(t, conn, userA, account1)
 	b := seed(t, conn, userB, account2)
 
@@ -264,7 +256,6 @@ func TestForeignKeysBetweenUserTablesIncludeUserID(t *testing.T) {
 
 func TestOperationPartitions(t *testing.T) {
 	conn, _ := schema(t)
-	seedCategories(t, conn)
 	a := seed(t, conn, userA, account1)
 
 	var part string
@@ -295,7 +286,6 @@ func TestOperationPartitions(t *testing.T) {
 
 func TestOperationReferences(t *testing.T) {
 	conn, _ := schema(t)
-	seedCategories(t, conn)
 	a := seed(t, conn, userA, account1)
 	op := `UPDATE operation SET %s WHERE user_id = '` + a.user + `' AND id = '` + a.operation + `'`
 	set := func(s string) string { return fmt.Sprintf(op, s) }
@@ -320,15 +310,101 @@ func TestCategoryKeys(t *testing.T) {
 		VALUES ('cat_kripto_2', 'Крипто', 'Крипто', 'tag', true, true, true)`)
 	// One position per display slot.
 	fails(t, conn, uniqueViolation, `INSERT INTO category (id, name, bank_name, icon, for_expense, for_income, assignable, sort_order)
-		VALUES ('cat_other', 'Другое', 'Другое', 'tag', true, true, true, 10)`)
+		VALUES ('cat_kripto_birzhi', 'Криптобиржи', 'Криптобиржи', 'tag', true, true, true, 10)`)
 	if n := count(t, conn, `SELECT count(*) FROM category WHERE is_system`); n != 3 {
 		t.Fatalf("system categories: %d, want 3", n)
 	}
 }
 
+// Migration 000002 inserts the 51 known bank categories of fixtures/calc/categories.json in
+// fin-assist/contracts (FIN-200) with the directions of docs/calc.md 3.1: income only, both,
+// and expense for the rest.
+func TestKnownCategories(t *testing.T) {
+	conn, dsn := schema(t)
+	ctx := context.Background()
+	if n := count(t, conn, `SELECT count(*) FROM category WHERE is_known AND NOT is_system`); n != 51 {
+		t.Fatalf("known bank categories: %d, want 51", n)
+	}
+	// Every known category is found by its name in the statement, is assignable, has no note and
+	// a place after the system categories.
+	if n := count(t, conn, `SELECT count(*) FROM category WHERE is_known AND NOT is_system
+		AND bank_name = name AND assignable AND note IS NULL AND sort_order > 30`); n != 51 {
+		t.Fatalf("known bank categories with bank_name = name, assignable, no note, after the system ones: %d, want 51", n)
+	}
+
+	rows, err := conn.Query(ctx, `SELECT id FROM category WHERE is_known AND NOT is_system AND for_income AND NOT for_expense ORDER BY sort_order`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	incomeOnly, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(incomeOnly, ","), "cat_dividends,cat_bonuses,cat_salary,cat_interest,cat_top_ups,cat_deposits,cat_other"; got != want {
+		t.Fatalf("income-only known categories: %s, want %s", got, want)
+	}
+	rows, err = conn.Query(ctx, `SELECT id FROM category WHERE is_known AND NOT is_system AND for_income AND for_expense ORDER BY sort_order`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	both, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(both, ","), "cat_transfers,cat_finance,cat_cash"; got != want {
+		t.Fatalf("known categories with both directions: %s, want %s", got, want)
+	}
+	if n := count(t, conn, `SELECT count(*) FROM category WHERE is_known AND NOT is_system AND for_expense AND NOT for_income`); n != 41 {
+		t.Fatalf("expense-only known categories: %d, want 41", n)
+	}
+
+	// Spot checks of single rows: order of the file, icon, the name as the bank writes it.
+	type known struct {
+		name, icon      string
+		expense, income bool
+		sortOrder       int
+	}
+	for id, want := range map[string]known{
+		"cat_supermarkets": {"Супермаркеты", "cart", true, false, 40},
+		"cat_transfers":    {"Переводы", "users", true, true, 50},
+		"cat_salary":       {"Зарплата", "briefcase", false, true, 200},
+		"cat_repair":       {"Ремонт и мебель", "hammer", true, false, 420}, // no-break space, as in MEMO
+		"cat_internet":     {"Интернет", "wifi", true, false, 540},
+	} {
+		var got known
+		if err := conn.QueryRow(ctx, `SELECT bank_name, icon, for_expense, for_income, sort_order FROM category WHERE id = $1`, id).
+			Scan(&got.name, &got.icon, &got.expense, &got.income, &got.sortOrder); err != nil {
+			t.Fatalf("%s: %v", id, err)
+		}
+		if got != want {
+			t.Fatalf("%s: %+v, want %+v", id, got, want)
+		}
+	}
+
+	// The down step removes exactly the rows it inserted: the system categories and a bank
+	// category first met in a statement stay.
+	exec(t, conn, `INSERT INTO category (id, name, bank_name, icon, for_expense, for_income, assignable)
+		VALUES ('cat_zoo', 'Зоотовары', 'Зоотовары', 'tag', true, true, true)`)
+	c := migrate.DefaultConfig(dsn)
+	c.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	if err := migrate.Down(ctx, c, migrate.Source{Name: "service", Table: "schema_migrations", FS: migrations.FS}, 1); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = conn.Query(ctx, `SELECT id FROM category ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(left, ","), "cat_own_transfer,cat_refund,cat_uncategorized,cat_zoo"; got != want {
+		t.Fatalf("categories after the down step: %s, want %s", got, want)
+	}
+}
+
 func TestUploadKeys(t *testing.T) {
 	conn, _ := schema(t)
-	seedCategories(t, conn)
 	a := seed(t, conn, userA, account1)
 	b := seed(t, conn, userB, account2)
 	insert := `INSERT INTO upload (user_id, source, file_name, size_bytes, content_sha256, object_key) VALUES ($1, 'tbank_ofx', 'f.ofx', 1, $2, $3)`
@@ -353,7 +429,6 @@ func TestUploadKeys(t *testing.T) {
 
 func TestUnreadLineKeys(t *testing.T) {
 	conn, _ := schema(t)
-	seedCategories(t, conn)
 	a := seed(t, conn, userA, account1)
 	var later string
 	if err := conn.QueryRow(context.Background(), `INSERT INTO upload (user_id, source, file_name, size_bytes, content_sha256, object_key, status, finished_at, operation_count, result)
@@ -400,7 +475,6 @@ type op struct {
 // clears the other is the code's (docs/schema.md), tested with the pairing code.
 func TestTransferPairLookup(t *testing.T) {
 	conn, _ := schema(t)
-	seedCategories(t, conn)
 	a := seed(t, conn, userA, account1)
 	b := seed(t, conn, userB, account2)
 	const pair = "01a10800-0000-7000-8000-0000000000aa"
@@ -445,7 +519,6 @@ func TestTransferPairLookup(t *testing.T) {
 
 func TestRegularPaymentIDIsStable(t *testing.T) {
 	conn, _ := schema(t)
-	seedCategories(t, conn)
 	seed(t, conn, userA, account1)
 	seed(t, conn, userB, account2)
 	upsert := `INSERT INTO regular_payment (user_id, periodicity, description) VALUES ($1, 'monthly', $2)
@@ -477,7 +550,6 @@ func TestRegularPaymentIDIsStable(t *testing.T) {
 
 func TestRecalcQueueMarksAMonthOnce(t *testing.T) {
 	conn, _ := schema(t)
-	seedCategories(t, conn)
 	a := seed(t, conn, userA, account1)
 	// generation is smallint and wraps around instead of stopping at its limit, so every mark
 	// changes it (docs/schema.md).
@@ -513,7 +585,6 @@ func TestRecalcQueueMarksAMonthOnce(t *testing.T) {
 // is untouched.
 func TestPurgeUserRemovesEverything(t *testing.T) {
 	conn, _ := schema(t)
-	seedCategories(t, conn)
 	a := seed(t, conn, userA, account1)
 	seed(t, conn, userB, account1)
 	ctx := context.Background()
@@ -564,7 +635,6 @@ func TestPurgeUserRemovesEverything(t *testing.T) {
 // transaction writing rows of the same user do not wait for each other. FOR UPDATE would.
 func TestUserLockDoesNotBlockChildInserts(t *testing.T) {
 	conn, dsn := schema(t)
-	seedCategories(t, conn)
 	a := seed(t, conn, userA, account1)
 	ctx := context.Background()
 
@@ -676,7 +746,6 @@ var startsInRussian = regexp.MustCompile(`^\p{Cyrillic}`)
 func TestUploadDeletionByUploadIDs(t *testing.T) {
 	conn, _ := schema(t)
 	ctx := context.Background()
-	seedCategories(t, conn)
 	a := seed(t, conn, userA, account1) // operation 1 is in upload 1 only
 	b := seed(t, conn, userB, account2) // another user's data must stay untouched
 
@@ -793,23 +862,20 @@ func TestUploadDeletionByUploadIDs(t *testing.T) {
 }
 
 // 5.1 lists the system categories and only the bank categories of the user's own operations:
-// registry ones by sort_order, then new ones in the order of first appearance (docs/calc.md 10).
-// A registry category the user never met is not listed. Without a table of its own the order
+// known ones by sort_order, then new ones in the order of first appearance (docs/calc.md 10).
+// A known category the user never met is not listed. Without a table of its own the order
 // of new categories comes from the identity of source_record: the import inserts records in the
 // order of the file lines, and imports of one user commit one after another (docs/schema.md,
 // «Ожидаемые запросы»).
 func TestBankCategoriesInOrderOfFirstAppearance(t *testing.T) {
 	conn, _ := schema(t)
 	ctx := context.Background()
-	seedCategories(t, conn)
-	a := seed(t, conn, userA, account1) // its operation is in the registry category cat_supermarkets
+	a := seed(t, conn, userA, account1) // its operation is in the known category cat_supermarkets
 	b := seed(t, conn, userB, account2) // another user meets the categories in the opposite order
+	// New bank categories, not in the known list of migration 000002.
 	exec(t, conn, `INSERT INTO category (id, name, bank_name, icon, for_expense, for_income, assignable)
 		VALUES ('cat_zoo', 'Зоотовары', 'Зоотовары', 'tag', true, true, true),
-		       ('cat_avia', 'Авиабилеты', 'Авиабилеты', 'tag', true, true, true)`)
-	// A registry category earlier in the registry than cat_supermarkets.
-	exec(t, conn, `INSERT INTO category (id, name, bank_name, icon, is_known, for_expense, for_income, assignable, sort_order)
-		VALUES ('cat_cafe', 'Кафе', 'Кафе', 'tag', true, true, false, true, 50)`)
+		       ('cat_books', 'Книги', 'Книги', 'tag', true, true, true)`)
 
 	// addRecord imports one line: an operation of the category and its source record.
 	addRecord := func(f fixture, category, fitid string, after time.Duration) string {
@@ -824,17 +890,20 @@ func TestBankCategoriesInOrderOfFirstAppearance(t *testing.T) {
 			VALUES ($1, $2, $3, $4, $5, ARRAY[$6::uuid])`, f.user, f.account, fitid, f.at.Add(after), id, f.upload)
 		return id
 	}
+	// Known categories of migration 000002: cat_restaurants (sort_order 70) is met before
+	// cat_fastfood (60).
+	addRecord(a, "cat_restaurants", "A0", 4*time.Hour)
 	// File order is not date order: cat_zoo is on an earlier line with a later date.
 	addRecord(a, "cat_zoo", "A1", 48*time.Hour)
-	addRecord(a, "cat_avia", "A2", -48*time.Hour)
+	addRecord(a, "cat_books", "A2", -48*time.Hour)
 	addRecord(a, "cat_zoo", "A3", time.Hour)
-	// The user meets cat_cafe last, after the new categories and cat_supermarkets: registry
-	// categories still go first and in registry order, not in the order of first appearance.
-	addRecord(a, "cat_cafe", "A4", 2*time.Hour)
+	// The user meets cat_fastfood last, after the new categories and cat_restaurants: known
+	// categories still go first and by sort_order, not in the order of first appearance.
+	addRecord(a, "cat_fastfood", "A4", 2*time.Hour)
 	// A line with an empty bank category: the system cat_uncategorized is also a bank category
 	// of the user's operation and is listed once.
 	addRecord(a, "cat_uncategorized", "A5", 3*time.Hour)
-	addRecord(b, "cat_avia", "B1", 0)
+	addRecord(b, "cat_books", "B1", 0)
 	addRecord(b, "cat_zoo", "B2", 0)
 
 	order := func(user string) []string {
@@ -859,12 +928,13 @@ func TestBankCategoriesInOrderOfFirstAppearance(t *testing.T) {
 		}
 		return ids
 	}
-	// cat_transfers is in the registry, but neither user has it in a statement.
+	// cat_transfers and the other known categories are in the list, but neither user has them in
+	// a statement.
 	const system = "cat_own_transfer,cat_refund,cat_uncategorized,"
-	if got, want := strings.Join(order(a.user), ","), system+"cat_cafe,cat_supermarkets,cat_zoo,cat_avia"; got != want {
+	if got, want := strings.Join(order(a.user), ","), system+"cat_supermarkets,cat_fastfood,cat_restaurants,cat_zoo,cat_books"; got != want {
 		t.Fatalf("categories of A: %s, want %s", got, want)
 	}
-	if got, want := strings.Join(order(b.user), ","), system+"cat_supermarkets,cat_avia,cat_zoo"; got != want {
+	if got, want := strings.Join(order(b.user), ","), system+"cat_supermarkets,cat_books,cat_zoo"; got != want {
 		t.Fatalf("categories of B: %s, want %s", got, want)
 	}
 	// A user without uploads sees only the system categories.
@@ -883,7 +953,6 @@ func TestBankCategoriesInOrderOfFirstAppearance(t *testing.T) {
 func TestStatementPeriodCoversLine(t *testing.T) {
 	conn, _ := schema(t)
 	ctx := context.Background()
-	seedCategories(t, conn)
 	a := seed(t, conn, userA, account1) // its upload covers 2026-09-01..2026-09-25 for its account
 	// The session is UTC; the user's zone is set per pass below.
 	exec(t, conn, `SET TIME ZONE 'UTC'`)
