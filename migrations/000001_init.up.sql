@@ -11,9 +11,11 @@
 --   user's account, upload or operation.
 -- * Foreign keys between user tables cascade. The purge deletes everything through them
 --   (with NO ACTION the cascade from user_state would fail on whichever table it reaches
---   first); the service deletes operations physically when an upload goes (their source
---   records, upload membership and pairs follow) and month_state when a month is rebuilt
+--   first); the service deletes operations physically when the last upload containing them
+--   goes (their source records and pairs follow) and month_state when a month is rebuilt
 --   (its monthly_agg follows). Only upload itself is deleted logically (status deleted).
+-- * source_record.upload_ids is the one array of IDs in the schema (owner's decision in the
+--   review of FIN-111): no foreign key, the code keeps it to the user's own uploads.
 -- * IDs that leave the database (API, other services, support) are UUIDv7 (uuidv7() of
 --   PostgreSQL 18 as the default; the service may pass its own). Internal IDs are bigint
 --   identities.
@@ -322,6 +324,7 @@ CREATE TABLE source_record (
     external_id           text        NOT NULL,
     operation_occurred_at timestamptz NOT NULL,
     operation_id          uuid        NOT NULL,
+    upload_ids            uuid[]      NOT NULL DEFAULT '{}',
     created_at            timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (user_id, id),
     UNIQUE (user_id, account_id, external_id),
@@ -333,7 +336,8 @@ CREATE TABLE source_record (
 COMMENT ON TABLE source_record IS
     'Реестр дедупликации, без секционирования: одна строка на (счёт, внешний ID) источника, уникальна по '
     '(user_id, account_id, external_id), и ссылка на её каноническую операцию. На одну операцию могут '
-    'ссылаться несколько записей (несколько источников).';
+    'ссылаться несколько записей (несколько источников). upload_ids — загрузки, в файлах которых есть '
+    'запись: операция живёт, пока хотя бы у одной её записи массив не пуст (docs/calc.md 2, api.md 3.5).';
 COMMENT ON COLUMN source_record.user_id IS 'Пользователь (user_state).';
 COMMENT ON COLUMN source_record.id IS 'Внутренний ID записи; наружу не уходит.';
 COMMENT ON COLUMN source_record.account_id IS 'Счёт, в рамках которого уникален external_id.';
@@ -342,30 +346,18 @@ COMMENT ON COLUMN source_record.operation_occurred_at IS
     'Время канонической операции (её occurred_at) — часть её ключа (партиция); следует за операцией через '
     'ON UPDATE CASCADE.';
 COMMENT ON COLUMN source_record.operation_id IS 'Каноническая операция, которую представляет запись.';
+COMMENT ON COLUMN source_record.upload_ids IS
+    'Загрузки этого пользователя, в файлах которых есть запись, без повторов. Удаление загрузки убирает её '
+    'из массива; запись с пустым массивом удаляется вместе с операцией, если у той не осталось других '
+    'записей. По FIN-79 строку по FITID закрывает только загрузка из этого массива. FK нет: '
+    'принадлежность загрузок пользователю проверяет код (docs/schema.md).';
 COMMENT ON COLUMN source_record.created_at IS 'Когда запись впервые встретилась в загрузке.';
 
 -- Cascade from operation and the lookup of an operation's records.
 CREATE INDEX source_record_operation_idx ON source_record (user_id, operation_id);
-
-CREATE TABLE upload_record (
-    user_id          uuid   NOT NULL,
-    upload_id        uuid   NOT NULL,
-    source_record_id bigint NOT NULL,
-    PRIMARY KEY (user_id, upload_id, source_record_id),
-    FOREIGN KEY (user_id, upload_id) REFERENCES upload ON DELETE CASCADE,
-    FOREIGN KEY (user_id, source_record_id) REFERENCES source_record ON DELETE CASCADE
-);
-
-COMMENT ON TABLE upload_record IS
-    'Какие загрузки содержат запись источника, ключ (user_id, upload_id, source_record_id). Операция живёт, '
-    'пока её запись есть хотя бы в одной загрузке (docs/calc.md 2); FIN-79 закрывает строку по FITID только '
-    'через загрузку, в которой она есть.';
-COMMENT ON COLUMN upload_record.user_id IS 'Пользователь (user_state).';
-COMMENT ON COLUMN upload_record.upload_id IS 'Загрузка, в файле которой есть запись.';
-COMMENT ON COLUMN upload_record.source_record_id IS 'Запись источника.';
-
--- "Is the record in another upload?" when an upload is deleted; cascade from source_record.
-CREATE INDEX upload_record_source_record_idx ON upload_record (user_id, source_record_id);
+-- No index on upload_ids: deleting an upload filters the user's records (the PK prefix
+-- user_id, thousands of rows) by upload_ids @> ARRAY[$upload]; FIN-79 reads one record by
+-- its unique key and checks $upload = ANY(upload_ids). docs/schema.md, «Ожидаемые запросы».
 
 CREATE TABLE transfer_pair_member (
     user_id               uuid        NOT NULL REFERENCES user_state ON DELETE CASCADE,

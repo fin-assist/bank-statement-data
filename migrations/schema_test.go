@@ -133,12 +133,8 @@ func seed(t *testing.T, conn *pgx.Conn, user string, hmacByte byte) fixture {
 		user, f.at, f.account, bankCategory).Scan(&f.operation); err != nil {
 		t.Fatal(err)
 	}
-	var record int64
-	if err := conn.QueryRow(ctx, `INSERT INTO source_record (user_id, account_id, external_id, operation_occurred_at, operation_id)
-		VALUES ($1, $2, '123456789012', $3, $4) RETURNING id`, user, f.account, f.at, f.operation).Scan(&record); err != nil {
-		t.Fatal(err)
-	}
-	exec(t, conn, `INSERT INTO upload_record (user_id, upload_id, source_record_id) VALUES ($1, $2, $3)`, user, f.upload, record)
+	exec(t, conn, `INSERT INTO source_record (user_id, account_id, external_id, operation_occurred_at, operation_id, upload_ids)
+		VALUES ($1, $2, '123456789012', $3, $4, ARRAY[$5::uuid])`, user, f.account, f.at, f.operation, f.upload)
 	return f
 }
 
@@ -168,6 +164,13 @@ func TestAccountIsUniquePerUser(t *testing.T) {
 	hmac[0] = 7
 	fails(t, conn, uniqueViolation, `INSERT INTO account (user_id, source, ext_id_hmac, ext_id_key_version, type, is_other_bank)
 		VALUES ($1, 'tbank_ofx', $2, 1, 'savings', false)`, a.user, hmac)
+	// The source is part of the key: the same HMAC from another source of the same user is
+	// another account (a key of (user_id, ext_id_hmac) alone would refuse it).
+	exec(t, conn, `INSERT INTO account (user_id, source, ext_id_hmac, ext_id_key_version, type, is_other_bank)
+		VALUES ($1, 'other_bank_api', $2, 1, 'checking', false)`, a.user, hmac)
+	if n := count(t, conn, `SELECT count(*) FROM account WHERE user_id = $1 AND ext_id_hmac = $2`, a.user, hmac); n != 2 {
+		t.Fatalf("accounts with the HMAC: %d, want 2 (one per source)", n)
+	}
 	// The HMAC is required; its length and the mask rule are the code's (docs/schema.md).
 	fails(t, conn, notNullViolation, `INSERT INTO account (user_id, source, ext_id_key_version, type, is_other_bank)
 		VALUES ($1, 'tbank_ofx', 1, 'checking', false)`, a.user)
@@ -186,8 +189,8 @@ func TestRowsCannotPointAtAnotherUser(t *testing.T) {
 		VALUES ($1, $2, 'x', $3, $4)`, b.user, b.account, a.at, a.operation)
 	fails(t, conn, foreignKeyViolation, `INSERT INTO unread_line (user_id, upload_id, line_number, reason, resolved_by_upload_id, resolution)
 		VALUES ($1, $2, 1, 'truncated', $3, 'read')`, b.user, b.upload, a.upload)
-	fails(t, conn, foreignKeyViolation, `INSERT INTO upload_record (user_id, upload_id, source_record_id)
-		SELECT $1, $2, id FROM source_record WHERE user_id = $3`, b.user, b.upload, a.user)
+	// source_record.upload_ids has no foreign key: that its uploads are the user's own is the
+	// code's rule (docs/schema.md), tested with the import code.
 	// B's upload with A's account.
 	fails(t, conn, foreignKeyViolation, `INSERT INTO upload_account (user_id, upload_id, account_id) VALUES ($1, $2, $3)`,
 		b.user, b.upload, a.account)
@@ -821,3 +824,98 @@ func TestEveryTableAndColumnHasDescription(t *testing.T) {
 // startsInRussian accepts a description whose first letter is Cyrillic. Checking for any
 // Cyrillic letter would pass an English text that quotes a Russian term («не подписка»).
 var startsInRussian = regexp.MustCompile(`^\p{Cyrillic}`)
+
+// The expected queries on source_record.upload_ids (docs/schema.md, «Ожидаемые запросы»):
+// deleting an upload keeps an operation another upload still contains and deletes the one
+// no upload contains any more; a line is closed by FITID only through an upload that
+// contains the record.
+func TestUploadDeletionByUploadIDs(t *testing.T) {
+	conn, _ := schema(t)
+	ctx := context.Background()
+	seedCategories(t, conn)
+	a := seed(t, conn, userA, 1) // operation 1 is in upload 1 only
+	b := seed(t, conn, userB, 2) // another user's data must stay untouched
+
+	var second string
+	if err := conn.QueryRow(ctx, `INSERT INTO upload (user_id, source, file_name, size_bytes, content_sha256, object_key)
+		VALUES ($1, 'tbank_ofx', 'g.ofx', 1, $2, $3) RETURNING id`, a.user, make([]byte, 32), a.user+"/second").Scan(&second); err != nil {
+		t.Fatal(err)
+	}
+	// A second operation is in both uploads: deleting the first upload must remove the
+	// seeded operation and keep this one.
+	var shared string
+	if err := conn.QueryRow(ctx, `INSERT INTO operation (user_id, occurred_at, account_id, direction, amount_minor, currency,
+			status, bank_category_id, category_id)
+		VALUES ($1, $2, $3, 'expense', 1, 'RUB', 'posted', $4, $4) RETURNING id`,
+		a.user, a.at.Add(time.Hour), a.account, bankCategory).Scan(&shared); err != nil {
+		t.Fatal(err)
+	}
+	exec(t, conn, `INSERT INTO source_record (user_id, account_id, external_id, operation_occurred_at, operation_id, upload_ids)
+		VALUES ($1, $2, 'shared', $3, $4, ARRAY[$5::uuid, $6::uuid])`, a.user, a.account, a.at.Add(time.Hour), shared, a.upload, second)
+
+	// FIN-79: the record closes a line only through an upload in its array.
+	contains := func(upload string) bool {
+		t.Helper()
+		var ok bool
+		if err := conn.QueryRow(ctx, `SELECT $4::uuid = ANY(upload_ids) FROM source_record
+			WHERE user_id = $1 AND account_id = $2 AND external_id = $3`, a.user, a.account, "123456789012", upload).Scan(&ok); err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	if !contains(a.upload) || contains(second) {
+		t.Fatal("operation 1 must be contained by upload 1 only")
+	}
+
+	deleteUpload := func(upload string) {
+		t.Helper()
+		tx, err := conn.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		if _, err := tx.Exec(ctx, `UPDATE source_record SET upload_ids = array_remove(upload_ids, $2::uuid)
+			WHERE user_id = $1 AND upload_ids @> ARRAY[$2::uuid]`, a.user, upload); err != nil {
+			t.Fatal(err)
+		}
+		// An operation goes when none of its records is in an upload any more.
+		if _, err := tx.Exec(ctx, `DELETE FROM operation o WHERE o.user_id = $1
+			AND EXISTS (SELECT 1 FROM source_record r WHERE r.user_id = $1 AND r.operation_id = o.id AND r.upload_ids = '{}')
+			AND NOT EXISTS (SELECT 1 FROM source_record r WHERE r.user_id = $1 AND r.operation_id = o.id AND r.upload_ids <> '{}')`,
+			a.user); err != nil {
+			t.Fatal(err)
+		}
+		// Records of a surviving operation that no upload contains (another source).
+		if _, err := tx.Exec(ctx, `DELETE FROM source_record WHERE user_id = $1 AND upload_ids = '{}'`, a.user); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	deleteUpload(a.upload)
+	if n := count(t, conn, `SELECT count(*) FROM operation WHERE user_id = $1 AND id = $2`, a.user, a.operation); n != 0 {
+		t.Fatal("operation of the deleted upload only is still there")
+	}
+	if n := count(t, conn, `SELECT count(*) FROM source_record WHERE user_id = $1 AND external_id = '123456789012'`, a.user); n != 0 {
+		t.Fatal("its record is still there")
+	}
+	if n := count(t, conn, `SELECT count(*) FROM source_record WHERE user_id = $1 AND external_id = 'shared' AND upload_ids = ARRAY[$2::uuid]`, a.user, second); n != 1 {
+		t.Fatal("shared operation lost its record or kept the deleted upload")
+	}
+	if n := count(t, conn, `SELECT count(*) FROM operation WHERE user_id = $1 AND id = $2`, a.user, shared); n != 1 {
+		t.Fatal("operation still contained by another upload was deleted")
+	}
+
+	deleteUpload(second)
+	if n := count(t, conn, `SELECT count(*) FROM operation WHERE user_id = $1`, a.user); n != 0 {
+		t.Fatalf("operations left after deleting every upload: %d", n)
+	}
+	if n := count(t, conn, `SELECT count(*) FROM source_record WHERE user_id = $1`, b.user); n != 1 {
+		t.Fatal("another user's record was touched")
+	}
+	if n := count(t, conn, `SELECT count(*) FROM operation WHERE user_id = $1 AND id = $2`, b.user, b.operation); n != 1 {
+		t.Fatal("another user's operation was touched")
+	}
+}
