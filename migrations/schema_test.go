@@ -478,8 +478,12 @@ func TestRecalcQueueMarksAMonthOnce(t *testing.T) {
 	conn, _ := schema(t)
 	seedCategories(t, conn)
 	a := seed(t, conn, userA, account1)
+	// generation is smallint and wraps around instead of stopping at its limit, so every mark
+	// changes it (docs/schema.md).
 	mark := `INSERT INTO recalc_queue (user_id, month) VALUES ($1, '2026-09-01')
-		ON CONFLICT (user_id, month) DO UPDATE SET generation = recalc_queue.generation + 1, next_attempt_at = now()`
+		ON CONFLICT (user_id, month) DO UPDATE SET
+			generation = CASE WHEN recalc_queue.generation = 32767 THEN 1 ELSE recalc_queue.generation + 1 END,
+			next_attempt_at = now()`
 	exec(t, conn, mark, a.user)
 	exec(t, conn, mark, a.user)
 	if n := count(t, conn, `SELECT generation FROM recalc_queue WHERE user_id = $1`, a.user); n != 2 {
@@ -489,6 +493,18 @@ func TestRecalcQueueMarksAMonthOnce(t *testing.T) {
 	tag, err := conn.Exec(context.Background(), `DELETE FROM recalc_queue WHERE user_id = $1 AND month = '2026-09-01' AND generation = 1`, a.user)
 	if err != nil || tag.RowsAffected() != 0 {
 		t.Fatalf("stale worker deleted a re-marked month: %v %d", err, tag.RowsAffected())
+	}
+
+	// At the limit: a worker read 32767, the month is marked again (generation wraps to 1),
+	// and the stale delete still removes nothing.
+	exec(t, conn, `UPDATE recalc_queue SET generation = 32767 WHERE user_id = $1`, a.user)
+	exec(t, conn, mark, a.user)
+	if n := count(t, conn, `SELECT generation FROM recalc_queue WHERE user_id = $1`, a.user); n != 1 {
+		t.Fatalf("generation after a mark at 32767: %d, want 1", n)
+	}
+	tag, err = conn.Exec(context.Background(), `DELETE FROM recalc_queue WHERE user_id = $1 AND month = '2026-09-01' AND generation = 32767`, a.user)
+	if err != nil || tag.RowsAffected() != 0 {
+		t.Fatalf("stale worker at the limit deleted a re-marked month: %v %d", err, tag.RowsAffected())
 	}
 }
 
