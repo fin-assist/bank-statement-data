@@ -26,7 +26,7 @@
 -- * Codes are plain text (readable in psql); the allowed values are listed in the comments.
 -- * Money is bigint minor units; operation amounts are unsigned, the direction is a column.
 -- * Instants are timestamptz. Calendar months are date (the 1st) in the user's time zone at
---   calculation time; the zone they were computed in is stored next to them.
+--   calculation time (user_state.timezone); a zone change recalculates every month.
 -- * Every table and every column has a COMMENT ON in Russian (owner's request in the review
 --   of FIN-111): for a table what it holds, its key and its role, for a column its meaning.
 --   Partitions of operation have none; the parent describes them.

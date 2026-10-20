@@ -399,6 +399,13 @@ func TestTransferPairLookup(t *testing.T) {
 		t.Helper()
 		return count(t, conn, `SELECT count(*) FROM operation WHERE user_id = $1 AND transfer_pair_id = $2`, user, pair)
 	}
+	// The lookup by the ID of an own_transfer record relies on the partial index; without it
+	// every GetOperation by a pair ID scans all yearly partitions.
+	if n := count(t, conn, `SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'operation'
+		AND indexname = 'operation_transfer_pair_idx' AND indexdef LIKE '%(user_id, transfer_pair_id)%'
+		AND indexdef LIKE '%WHERE (transfer_pair_id IS NOT NULL)%'`); n != 1 {
+		t.Fatalf("partial index on operation (user_id, transfer_pair_id): %d, want 1", n)
+	}
 	if n := sides(a.user); n != 2 {
 		t.Fatalf("sides of A's pair: %d, want 2", n)
 	}
@@ -658,6 +665,25 @@ func TestUploadDeletionByUploadIDs(t *testing.T) {
 	}
 	exec(t, conn, `INSERT INTO source_record (user_id, account_id, external_id, operation_occurred_at, operation_id, upload_ids)
 		VALUES ($1, $2, 'shared', $3, $4, ARRAY[$5::uuid, $6::uuid])`, a.user, a.account, a.at.Add(time.Hour), shared, a.upload, second)
+	// A third operation came from two sources: one record per source, each in its own upload.
+	// Deleting the first upload empties one record only; the operation and the other record
+	// stay, the emptied record goes.
+	var otherAccount int64
+	if err := conn.QueryRow(ctx, `INSERT INTO account (user_id, source, ext_id_hmac, ext_id_key_version, type, is_other_bank)
+		VALUES ($1, 'other_bank_api', $2, 1, 'checking', false) RETURNING id`, a.user, make([]byte, 32)).Scan(&otherAccount); err != nil {
+		t.Fatal(err)
+	}
+	var multi string
+	if err := conn.QueryRow(ctx, `INSERT INTO operation (user_id, occurred_at, account_id, direction, amount_minor, currency,
+			status, bank_category_id, category_id)
+		VALUES ($1, $2, $3, 'expense', 1, 'RUB', 'posted', $4, $4) RETURNING id`,
+		a.user, a.at.Add(2*time.Hour), a.account, bankCategory).Scan(&multi); err != nil {
+		t.Fatal(err)
+	}
+	exec(t, conn, `INSERT INTO source_record (user_id, account_id, external_id, operation_occurred_at, operation_id, upload_ids)
+		VALUES ($1, $2, 'multi-ofx', $3, $4, ARRAY[$5::uuid]),
+		       ($1, $6, 'multi-api', $3, $4, ARRAY[$7::uuid])`,
+		a.user, a.account, a.at.Add(2*time.Hour), multi, a.upload, otherAccount, second)
 
 	// FIN-79: the record closes a line only through an upload in its array.
 	contains := func(upload string) bool {
@@ -712,6 +738,15 @@ func TestUploadDeletionByUploadIDs(t *testing.T) {
 	}
 	if n := count(t, conn, `SELECT count(*) FROM operation WHERE user_id = $1 AND id = $2`, a.user, shared); n != 1 {
 		t.Fatal("operation still contained by another upload was deleted")
+	}
+	if n := count(t, conn, `SELECT count(*) FROM operation WHERE user_id = $1 AND id = $2`, a.user, multi); n != 1 {
+		t.Fatal("operation with a record in another upload was deleted with its emptied record")
+	}
+	if n := count(t, conn, `SELECT count(*) FROM source_record WHERE user_id = $1 AND external_id = 'multi-ofx'`, a.user); n != 0 {
+		t.Fatal("the emptied record of the two-source operation is still there")
+	}
+	if n := count(t, conn, `SELECT count(*) FROM source_record WHERE user_id = $1 AND external_id = 'multi-api' AND upload_ids = ARRAY[$2::uuid]`, a.user, second); n != 1 {
+		t.Fatal("the other record of the two-source operation was lost")
 	}
 
 	deleteUpload(second)
