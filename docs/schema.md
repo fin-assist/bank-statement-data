@@ -111,8 +111,10 @@ ID записи — `operation.id` одиночной операции или `t
    ```sql
    SELECT … FROM operation
    WHERE user_id = $1
-     AND ((id = $3 AND transfer_pair_id IS NULL) OR transfer_pair_id = $3)
+     AND ((id = $2 AND transfer_pair_id IS NULL) OR transfer_pair_id = $2)
    ```
+
+   Параметры свои: `$2` — ID записи. Номера параметров не переносятся из запроса 1, потому что PostgreSQL не подготовит запрос с пропущенным `$2`, тип которого не выводится.
 
    Каждая секция проверяется по своим частям `operation_user_id_id_idx (user_id, id)` и `operation_transfer_pair_idx (user_id, transfer_pair_id)`: по одной пробе на секцию (сейчас 18). В ответе — текущий `occurred_at` найденной записи, клиент обновляет по нему строку ленты.
 3. **0 строк и здесь** — `NOT_FOUND`.
