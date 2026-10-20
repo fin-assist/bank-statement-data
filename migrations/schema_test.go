@@ -834,9 +834,9 @@ func TestBankCategoriesInOrderOfFirstAppearance(t *testing.T) {
 
 // Rule 2 of closing unread lines (api.md 3.6) reads the period of the file from upload and
 // the accounts of the upload from upload_account (docs/schema.md, «Период выписки и
-// закрытие строк»): a later upload closes a line of an account only if it contains that
-// account and its period covers the day of the line. The test compares instants; the code
-// compares days in the profile zone, where DTEND without a time covers its whole day.
+// закрытие строк»): a line is closed only by a later upload that contains the line's account
+// and whose period covers the day of the line. The test compares instants; the code compares
+// days in the profile zone, where DTEND without a time covers its whole day.
 func TestStatementPeriodCoversLine(t *testing.T) {
 	conn, _ := schema(t)
 	ctx := context.Background()
@@ -848,23 +848,39 @@ func TestStatementPeriodCoversLine(t *testing.T) {
 		VALUES ($1, 'tbank_ofx', $2, 1, 'savings', false) RETURNING id`, a.user, []byte{9}).Scan(&otherAccount); err != nil {
 		t.Fatal(err)
 	}
-	// A later upload of the same period, but with the other account only.
-	var later string
-	if err := conn.QueryRow(ctx, `INSERT INTO upload (user_id, source, file_name, size_bytes, content_sha256, object_key,
-			status, finished_at, operation_count, result, statement_from, statement_to, uploaded_at)
-		VALUES ($1, 'tbank_ofx', 'savings.ofx', 1, $2, $3, 'done', now(), 0, '{}', '2026-09-01 00:00+03', '2026-09-25 00:00+03', now() + interval '1 day')
-		RETURNING id`, a.user, make([]byte, 32), a.user+"/later").Scan(&later); err != nil {
-		t.Fatal(err)
-	}
-	exec(t, conn, `INSERT INTO upload_account (user_id, upload_id, account_id) VALUES ($1, $2, $3)`, a.user, later, otherAccount)
+	// Lines of the seeded upload: inside its period, after it, before it, and on the other account.
+	line := `INSERT INTO unread_line (user_id, upload_id, line_number, reason, occurred_at, account_id) VALUES ($1, $2, $3, 'bad_amount', $4, $5)`
+	exec(t, conn, line, a.user, a.upload, 10, "2026-09-10 12:00+03", a.account)
+	exec(t, conn, line, a.user, a.upload, 28, "2026-09-28 12:00+03", a.account)
+	exec(t, conn, line, a.user, a.upload, 31, "2026-08-31 12:00+03", a.account)
+	exec(t, conn, line, a.user, a.upload, 99, "2026-09-10 12:00+03", otherAccount)
 
-	covering := func(account int64, day string) []string {
+	// laterUpload adds a finished upload of the same period, uploaded after the seeded one,
+	// containing the given account only.
+	laterUpload := func(name string, after string, account int64) string {
 		t.Helper()
-		rows, err := conn.Query(ctx, `SELECT u.id::text FROM upload u
-			JOIN upload_account ua ON ua.user_id = u.user_id AND ua.upload_id = u.id
-			WHERE u.user_id = $1 AND u.status = 'done' AND ua.account_id = $2
-			  AND u.statement_from <= $3::timestamptz AND u.statement_to >= $3::timestamptz
-			ORDER BY u.uploaded_at, u.id`, a.user, account, day)
+		var id string
+		if err := conn.QueryRow(ctx, `INSERT INTO upload (user_id, source, file_name, size_bytes, content_sha256, object_key,
+				status, finished_at, operation_count, result, statement_from, statement_to, uploaded_at)
+			VALUES ($1, 'tbank_ofx', $2, 1, $3, $4, 'done', now(), 0, '{}', '2026-09-01 00:00+03', '2026-09-25 00:00+03', now() + $5::interval)
+			RETURNING id`, a.user, name, make([]byte, 32), a.user+"/"+name, after).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		exec(t, conn, `INSERT INTO upload_account (user_id, upload_id, account_id) VALUES ($1, $2, $3)`, a.user, id, account)
+		return id
+	}
+	// closers returns the uploads that may close the line of the seeded upload, earliest first.
+	closers := func(lineNumber int) []string {
+		t.Helper()
+		rows, err := conn.Query(ctx, `SELECT u.id::text
+			FROM unread_line l
+			JOIN upload lu ON lu.user_id = l.user_id AND lu.id = l.upload_id
+			JOIN upload_account ua ON ua.user_id = l.user_id AND ua.account_id = l.account_id
+			JOIN upload u ON u.user_id = ua.user_id AND u.id = ua.upload_id
+			WHERE l.user_id = $1 AND l.upload_id = $2 AND l.line_number = $3 AND u.status = 'done'
+			  AND (u.uploaded_at, u.id) > (lu.uploaded_at, lu.id)
+			  AND u.statement_from <= l.occurred_at AND u.statement_to >= l.occurred_at
+			ORDER BY u.uploaded_at, u.id`, a.user, a.upload, lineNumber)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -874,13 +890,22 @@ func TestStatementPeriodCoversLine(t *testing.T) {
 		}
 		return ids
 	}
-	if got := covering(a.account, "2026-09-10 12:00+03"); len(got) != 1 || got[0] != a.upload {
-		t.Fatalf("uploads covering the day for the seeded account: %v, want only %s", got, a.upload)
+	want := func(lineNumber int, ids ...string) {
+		t.Helper()
+		if got := strings.Join(closers(lineNumber), ","); got != strings.Join(ids, ",") {
+			t.Fatalf("closers of line %d: [%s], want [%s]", lineNumber, got, strings.Join(ids, ","))
+		}
 	}
-	if got := covering(otherAccount, "2026-09-10 12:00+03"); len(got) != 1 || got[0] != later {
-		t.Fatalf("uploads covering the day for the other account: %v, want only %s", got, later)
-	}
-	if got := covering(a.account, "2026-09-28 12:00+03"); len(got) != 0 {
-		t.Fatalf("uploads covering a day outside every period: %v, want none", got)
-	}
+
+	// The upload of the line never closes it, though its period covers the day.
+	want(10)
+	// A later upload of the same period with the other account only closes that account's line.
+	savings := laterUpload("savings.ofx", "1 day", otherAccount)
+	want(10)
+	want(99, savings)
+	// A later upload with the line's account closes the line inside the period only.
+	checking := laterUpload("checking.ofx", "2 days", a.account)
+	want(10, checking)
+	want(28)
+	want(31)
 }
