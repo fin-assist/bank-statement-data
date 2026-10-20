@@ -451,7 +451,8 @@ func TestKnownCategories(t *testing.T) {
 		VALUES ('cat_zoo', 'Зоотовары', 'Зоотовары', 'tag', true, true, true)`)
 	c := migrate.DefaultConfig(dsn)
 	c.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
-	if err := migrate.Down(ctx, c, migrate.Source{Name: "service", Table: "schema_migrations", FS: migrations.FS}, 1); err != nil {
+	// Back to 000001, whatever migrations follow 000002.
+	if err := migrate.Down(ctx, c, migrate.Source{Name: "service", Table: "schema_migrations", FS: migrations.FS}, stepsAbove(t, 1)); err != nil {
 		t.Fatal(err)
 	}
 	rows, err = conn.Query(ctx, `SELECT id FROM category ORDER BY id`)
@@ -1165,4 +1166,96 @@ func TestTimestampsFollowTheRule(t *testing.T) {
 			t.Errorf("table %s has no %s NOT NULL DEFAULT now()", table, column)
 		}
 	}
+}
+
+const numericValueOutOfRange = "22003"
+
+// settings_version is integer since 000003 (FIN-207), as in user and assistant: a user may
+// change the time zone more than 32 767 times, and every version up to the int32 limit of the
+// contract fits.
+func TestSettingsVersionHoldsInt32(t *testing.T) {
+	conn, _ := schema(t)
+	exec(t, conn, `INSERT INTO user_state (user_id) VALUES ($1)`, userA)
+	if n := count(t, conn, `SELECT settings_version FROM user_state WHERE user_id = $1`, userA); n != 0 {
+		t.Fatalf("default settings_version: %d, want 0", n)
+	}
+	for _, v := range []int64{32768, 2147483647} {
+		exec(t, conn, `UPDATE user_state SET settings_version = $2 WHERE user_id = $1`, userA, v)
+		var got int64
+		if err := conn.QueryRow(context.Background(), `SELECT settings_version FROM user_state WHERE user_id = $1`, userA).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != v {
+			t.Fatalf("settings_version: %d, want %d", got, v)
+		}
+	}
+	fails(t, conn, numericValueOutOfRange, `UPDATE user_state SET settings_version = $2::bigint WHERE user_id = $1`, userA, int64(2147483648))
+}
+
+// Rolling back 000003 refuses while a version does not fit smallint, instead of losing it, and
+// leaves the column integer; once every version fits, it returns the column to smallint.
+func TestSettingsVersionRollbackRefusesLargeVersions(t *testing.T) {
+	conn, dsn := schema(t)
+	ctx := context.Background()
+	c := migrate.DefaultConfig(dsn)
+	c.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	src := migrate.Source{Name: "service", Table: "schema_migrations", FS: migrations.FS}
+	steps := stepsAbove(t, 2) // back to 000002, whatever migrations follow 000003
+	columnType := func() string {
+		var typ string
+		if err := conn.QueryRow(ctx, `SELECT format_type(atttypid, atttypmod) FROM pg_attribute
+			WHERE attrelid = 'user_state'::regclass AND attname = 'settings_version'`).Scan(&typ); err != nil {
+			t.Fatal(err)
+		}
+		return typ
+	}
+	if typ := columnType(); typ != "integer" {
+		t.Fatalf("settings_version type after up: %s, want integer", typ)
+	}
+
+	exec(t, conn, `INSERT INTO user_state (user_id, settings_version) VALUES ($1, 32768)`, userA)
+	if err := migrate.Down(ctx, c, src, steps); err == nil {
+		t.Fatal("rollback with settings_version 32768 succeeded, want a refusal")
+	}
+	if typ := columnType(); typ != "integer" {
+		t.Fatalf("settings_version type after a refused rollback: %s, want integer", typ)
+	}
+	if n := count(t, conn, `SELECT settings_version FROM user_state WHERE user_id = $1`, userA); n != 32768 {
+		t.Fatalf("settings_version after a refused rollback: %d, want 32768", n)
+	}
+
+	// The refused file left the source dirty; the schema is still that of 000003
+	// (docs/migrations.md, «"Грязное" состояние»).
+	if err := migrate.Force(ctx, c, src, 3); err != nil {
+		t.Fatal(err)
+	}
+	exec(t, conn, `UPDATE user_state SET settings_version = 32767 WHERE user_id = $1`, userA)
+	if err := migrate.Down(ctx, c, src, 1); err != nil {
+		t.Fatal(err)
+	}
+	// The column type changed under the prepared statements of conn.
+	conn = connect(t, dsn)
+	if typ := columnType(); typ != "smallint" {
+		t.Fatalf("settings_version type after rollback: %s, want smallint", typ)
+	}
+	if n := count(t, conn, `SELECT settings_version FROM user_state WHERE user_id = $1`, userA); n != 32767 {
+		t.Fatalf("settings_version after rollback: %d, want 32767", n)
+	}
+}
+
+// stepsAbove counts the service migrations with a version above v.
+func stepsAbove(t *testing.T, v int) int {
+	t.Helper()
+	entries, err := migrations.FS.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, e := range entries {
+		var version int
+		if _, err := fmt.Sscanf(e.Name(), "%06d_", &version); err == nil && strings.HasSuffix(e.Name(), ".up.sql") && version > v {
+			n++
+		}
+	}
+	return n
 }

@@ -1,0 +1,12 @@
+-- settings_version becomes integer (FIN-207, owner's decision of 20.10.2026), as in the producer
+-- user (app_user.settings_version integer) and in assistant. With smallint, after 32 767 time
+-- zone changes of one user every later SetUserTimezone event from user would be refused for
+-- good. The contract (fin-assist/contracts#28) makes settings_version int32 and has producers and
+-- receivers store versions in integer, not narrower.
+-- Changing the type rewrites user_state under an ACCESS EXCLUSIVE lock. The service is not in
+-- production and the table holds one row per user, so the rewrite is short; a separate column
+-- in two releases (docs/migrations.md, «Изменение схемы без простоя») is not worth it here.
+-- integer, not bigint: the contract field is int32, and a wider column would hold versions no
+-- peer can send or store. The column comment does not name the type and stays as is.
+-- squawk-ignore changing-column-type, prefer-bigint-over-int
+ALTER TABLE user_state ALTER COLUMN settings_version TYPE integer;
