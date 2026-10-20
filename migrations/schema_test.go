@@ -358,26 +358,90 @@ func TestKnownCategories(t *testing.T) {
 		t.Fatalf("expense-only known categories: %d, want 41", n)
 	}
 
-	// Spot checks of single rows: order of the file, icon, the name as the bank writes it.
+	// Every row against fixtures/calc/categories.json of fin-assist/contracts (commit e82d2f3),
+	// in the order of the file: id, the name as the bank writes it (name and bank_name), icon,
+	// kinds as for_expense / for_income, sort_order 40, 50, ... after the system categories.
 	type known struct {
-		name, icon      string
+		id, name, icon  string
 		expense, income bool
-		sortOrder       int
 	}
-	for id, want := range map[string]known{
-		"cat_supermarkets": {"Супермаркеты", "cart", true, false, 40},
-		"cat_transfers":    {"Переводы", "users", true, true, 50},
-		"cat_salary":       {"Зарплата", "briefcase", false, true, 200},
-		"cat_repair":       {"Ремонт и мебель", "hammer", true, false, 420}, // no-break space, as in MEMO
-		"cat_internet":     {"Интернет", "wifi", true, false, 540},
-	} {
-		var got known
-		if err := conn.QueryRow(ctx, `SELECT bank_name, icon, for_expense, for_income, sort_order FROM category WHERE id = $1`, id).
-			Scan(&got.name, &got.icon, &got.expense, &got.income, &got.sortOrder); err != nil {
-			t.Fatalf("%s: %v", id, err)
-		}
-		if got != want {
-			t.Fatalf("%s: %+v, want %+v", id, got, want)
+	want := []known{
+		{"cat_supermarkets", "Супермаркеты", "cart", true, false},
+		{"cat_transfers", "Переводы", "users", true, true},
+		{"cat_fastfood", "Фастфуд", "coffee", true, false},
+		{"cat_restaurants", "Рестораны", "utensils", true, false},
+		{"cat_taxi", "Такси", "car", true, false},
+		{"cat_digital", "Цифровые товары", "smartphone", true, false},
+		{"cat_finance", "Финансы", "landmark", true, true},
+		{"cat_transport", "Местный транспорт", "bus", true, false},
+		{"cat_mobile", "Мобильная связь", "phone", true, false},
+		{"cat_pharmacy", "Аптеки", "pill", true, false},
+		{"cat_fuel", "Заправки", "car", true, false},
+		{"cat_charity", "Благотворительность", "heart", true, false},
+		{"cat_dividends", "Дивиденды и купоны", "trending-up", false, true},
+		{"cat_marketplaces", "Маркетплейсы", "package", true, false},
+		{"cat_bonuses", "Бонусы", "gift", false, true},
+		{"cat_cash", "Наличные", "banknote", true, true},
+		{"cat_salary", "Зарплата", "briefcase", false, true},
+		{"cat_services", "Различные услуги", "wrench", true, false},
+		{"cat_rail", "Ж/д билеты", "train", true, false},
+		{"cat_service", "Сервис", "wrench", true, false},
+		{"cat_telecom", "Связь", "wifi", true, false},
+		{"cat_nko", "НКО", "heart", true, false},
+		{"cat_bank_fees", "Услуги банка", "landmark", true, false},
+		{"cat_utilities", "ЖКХ", "home", true, false},
+		{"cat_interest", "Проценты", "percent", false, true},
+		{"cat_pets", "Животные", "paw", true, false},
+		{"cat_medicine", "Медицина", "stethoscope", true, false},
+		{"cat_flights", "Авиабилеты", "plane", true, false},
+		{"cat_streaming", "Онлайн-кинотеатры", "film", true, false},
+		{"cat_toll_roads", "Платные дороги", "road", true, false},
+		{"cat_art", "Искусство", "palette", true, false},
+		{"cat_gifts", "Подарки и творчество", "gift", true, false},
+		{"cat_top_ups", "Пополнения", "plus-circle", false, true},
+		{"cat_beauty", "Красота", "scissors", true, false},
+		{"cat_flowers", "Цветы", "flower", true, false},
+		{"cat_gov", "Госуслуги", "building", true, false},
+		{"cat_deposits", "Вклады", "piggy-bank", false, true},
+		{"cat_travel", "Турагентства", "map", true, false},
+		{"cat_repair", "Ремонт и\u00a0мебель", "hammer", true, false},
+		{"cat_other", "Другое", "tag", false, true},
+		{"cat_goods", "Различные товары", "package", true, false},
+		{"cat_auto_services", "Автоуслуги", "car", true, false},
+		{"cat_yandex", "Экосистема Яндекс", "layers", true, false},
+		{"cat_fines", "Штрафы", "alert-triangle", true, false},
+		{"cat_clothes", "Одежда и обувь", "shirt", true, false},
+		{"cat_entertainment", "Развлечения", "ticket", true, false},
+		{"cat_photo", "Фото и копицентры", "camera", true, false},
+		{"cat_car_dealers", "Автосалоны", "car", true, false},
+		{"cat_hotels", "Отели", "bed", true, false},
+		{"cat_fitness", "Тренировки", "dumbbell", true, false},
+		{"cat_internet", "Интернет", "wifi", true, false},
+	}
+	rows, err = conn.Query(ctx, `SELECT id, name, bank_name, icon, for_expense, for_income, sort_order
+		FROM category WHERE NOT is_system ORDER BY sort_order`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type row struct {
+		known
+		bankName  string
+		sortOrder int
+	}
+	got, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (row, error) {
+		var x row
+		err := r.Scan(&x.id, &x.name, &x.bankName, &x.icon, &x.expense, &x.income, &x.sortOrder)
+		return x, err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("known bank categories: %d rows, want %d", len(got), len(want))
+	}
+	for i, w := range want {
+		if g := got[i]; g.known != w || g.bankName != w.name || g.sortOrder != 40+10*i {
+			t.Fatalf("known category %d: %+v, want %+v with bank_name = name and sort_order %d", i, g, w, 40+10*i)
 		}
 	}
 
