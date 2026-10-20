@@ -192,8 +192,6 @@ CREATE TABLE upload (
     finished_at        timestamptz,
     deleted_at         timestamptz,
     operation_count    integer,
-    first_operation_at timestamptz,
-    last_operation_at  timestamptz,
     statement_from     date,
     statement_to       date,
     account_ids        bigint[]    NOT NULL DEFAULT '{}',
@@ -241,14 +239,11 @@ COMMENT ON COLUMN upload.finished_at IS
 COMMENT ON COLUMN upload.deleted_at IS
     'Когда пользователь удалил загрузку. Заполнено только у удалённой загрузки.';
 COMMENT ON COLUMN upload.operation_count IS 'Сколько операций прочитано из файла, включая уже загруженные раньше.';
-COMMENT ON COLUMN upload.first_operation_at IS
-    'Время первой операции в файле. Заполняется в конце успешного разбора и остаётся после удаления '
-    'загрузки. Поле пустое, если в файле нет операций или разбор не закончился.';
-COMMENT ON COLUMN upload.last_operation_at IS
-    'Время последней операции в файле. Заполняется так же, как время первой операции.';
 COMMENT ON COLUMN upload.statement_from IS
     'Первый день периода выписки — дата из тега DTSTART, как она записана в файле. У всех счетов одного '
-    'файла период один. Поле пустое, если в файле нет периода или разбор не закончился (docs/schema.md).';
+    'файла период один. По нему считаются покрытие и закрытие строк, и его же показывает история загрузок. '
+    'Если в файле нет периода, поле пустое, а период код считает по дням первой и последней операции '
+    'загрузки (docs/schema.md).';
 COMMENT ON COLUMN upload.statement_to IS
     'Последний день периода выписки — дата из тега DTEND, как она записана в файле. Этот день входит в '
     'период целиком.';
