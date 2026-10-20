@@ -17,5 +17,4 @@ DROP TABLE upload_account;
 DROP TABLE upload;
 DROP TABLE account;
 DROP TABLE category;
-DROP TABLE source;
 DROP TABLE user_state;

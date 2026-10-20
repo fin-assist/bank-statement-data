@@ -115,11 +115,11 @@ func seed(t *testing.T, conn *pgx.Conn, user string, hmacByte byte) fixture {
 	exec(t, conn, `INSERT INTO user_state (user_id) VALUES ($1)`, user)
 	hmac := make([]byte, 32)
 	hmac[0] = hmacByte
-	if err := conn.QueryRow(ctx, `INSERT INTO account (user_id, source_id, ext_id_hmac, ext_id_key_version, type, mask, is_other_bank)
+	if err := conn.QueryRow(ctx, `INSERT INTO account (user_id, source, ext_id_hmac, ext_id_key_version, type, mask, is_other_bank)
 		VALUES ($1, 'tbank_ofx', $2, 1, 'checking', '4821', false) RETURNING id`, user, hmac).Scan(&f.account); err != nil {
 		t.Fatal(err)
 	}
-	if err := conn.QueryRow(ctx, `INSERT INTO upload (user_id, source_id, file_name, size_bytes, content_sha256, object_key,
+	if err := conn.QueryRow(ctx, `INSERT INTO upload (user_id, source, file_name, size_bytes, content_sha256, object_key,
 			status, finished_at, operation_count, result)
 		VALUES ($1, 'tbank_ofx', 'operations.ofx', 100, $2, $3, 'done', now(), 1, '{}') RETURNING id`,
 		user, make([]byte, 32), user+"/seed").Scan(&f.upload); err != nil {
@@ -166,10 +166,10 @@ func TestAccountIsUniquePerUser(t *testing.T) {
 
 	hmac := make([]byte, 32)
 	hmac[0] = 7
-	fails(t, conn, uniqueViolation, `INSERT INTO account (user_id, source_id, ext_id_hmac, ext_id_key_version, type, is_other_bank)
+	fails(t, conn, uniqueViolation, `INSERT INTO account (user_id, source, ext_id_hmac, ext_id_key_version, type, is_other_bank)
 		VALUES ($1, 'tbank_ofx', $2, 1, 'savings', false)`, a.user, hmac)
 	// The HMAC is required; its length and the mask rule are the code's (docs/schema.md).
-	fails(t, conn, notNullViolation, `INSERT INTO account (user_id, source_id, ext_id_key_version, type, is_other_bank)
+	fails(t, conn, notNullViolation, `INSERT INTO account (user_id, source, ext_id_key_version, type, is_other_bank)
 		VALUES ($1, 'tbank_ofx', 1, 'checking', false)`, a.user)
 }
 
@@ -336,7 +336,7 @@ func TestUploadKeys(t *testing.T) {
 	seedCategories(t, conn)
 	a := seed(t, conn, userA, 1)
 	b := seed(t, conn, userB, 2)
-	insert := `INSERT INTO upload (user_id, source_id, file_name, size_bytes, content_sha256, object_key) VALUES ($1, 'tbank_ofx', 'f.ofx', 1, $2, $3)`
+	insert := `INSERT INTO upload (user_id, source, file_name, size_bytes, content_sha256, object_key) VALUES ($1, 'tbank_ofx', 'f.ofx', 1, $2, $3)`
 	sha := make([]byte, 32)
 
 	// The same content uploaded again is a new upload with its own file.
@@ -353,7 +353,7 @@ func TestUploadKeys(t *testing.T) {
 		a.user, a.user+"/second").Scan(&status); err != nil || status != "processing" {
 		t.Fatalf("a new upload: status %q, %v; want processing by default", status, err)
 	}
-	fails(t, conn, notNullViolation, `INSERT INTO upload (user_id, source_id, file_name, size_bytes, content_sha256) VALUES ($1, 'tbank_ofx', 'f.ofx', 1, $2)`, a.user, sha)
+	fails(t, conn, notNullViolation, `INSERT INTO upload (user_id, source, file_name, size_bytes, content_sha256) VALUES ($1, 'tbank_ofx', 'f.ofx', 1, $2)`, a.user, sha)
 }
 
 func TestUnreadLineKeys(t *testing.T) {
@@ -361,7 +361,7 @@ func TestUnreadLineKeys(t *testing.T) {
 	seedCategories(t, conn)
 	a := seed(t, conn, userA, 1)
 	var later string
-	if err := conn.QueryRow(context.Background(), `INSERT INTO upload (user_id, source_id, file_name, size_bytes, content_sha256, object_key, status, finished_at, operation_count, result)
+	if err := conn.QueryRow(context.Background(), `INSERT INTO upload (user_id, source, file_name, size_bytes, content_sha256, object_key, status, finished_at, operation_count, result)
 		VALUES ($1, 'tbank_ofx', 'fixed.ofx', 1, $2, $3, 'done', now(), 1, '{}') RETURNING id`, a.user, make([]byte, 32), a.user+"/fixed").Scan(&later); err != nil {
 		t.Fatal(err)
 	}

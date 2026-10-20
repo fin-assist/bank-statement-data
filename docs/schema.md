@@ -20,7 +20,7 @@
 
 - `user_id` — первая колонка каждого первичного и уникального ключа данных пользователя. Каждый FK между таблицами пользователя включает `user_id`: строка не может сослаться на чужой счёт, загрузку или операцию. `TestForeignKeysBetweenUserTablesIncludeUserID` проверяет это по каталогу для всех FK, включая будущие.
 - Удаление пользователя — `DELETE FROM user_state`: каскад FK доходит до каждой таблицы пользователя.
-- Дедупликация: `source_record (user_id, account_id, external_id)`; счёт — `account (user_id, source_id, ext_id_hmac)`.
+- Дедупликация: `source_record (user_id, account_id, external_id)`; счёт — `account (user_id, source, ext_id_hmac)`.
 - Одна операция — не больше одной пары переводов: PK `transfer_pair_member (user_id, operation_id)`. Сторона пары обязана быть её членом: отложенные FK `transfer_pair → transfer_pair_member (user_id, pair_id, operation_id)`.
 - Один файл — одна загрузка: `UNIQUE (user_id, object_key)`.
 - Стабильный id регулярного платежа: `regular_payment (user_id, periodicity, description)`. Продавец для токена выборки: `merchant (user_id, key)`.
@@ -40,8 +40,7 @@
 |---|---|---|---|
 | `user_state` | `timezone` | IANA-имя, 1–64 символа | тип `TimeZone`: разбор через `time.LoadLocation`; неизвестный пояс от `user` не записывается, остаётся прежний (по умолчанию `Europe/Moscow`) |
 | `user_state` | `settings_version`, `calc_version` | ≥ 0 (стартуют с 0) | `settings_version` приходит из `SetUserTimezone` и записывается только при большем значении; `calc_version` только увеличивается на 1 под блокировкой пользователя |
-| `source` | `id` | `^[a-z][a-z0-9_]{0,31}$` | константы источников в коде (`tbank_ofx`), новый источник — миграция данных |
-| `source` | `name` | 1–64 символа | там же |
+| `account`, `upload` | `source` | код известного источника: `^[a-z][a-z0-9_]{0,31}$`, сейчас только `tbank_ofx` | константы источников в коде: код → название для показа (`source_name`, «Выписка Т-Банка»); таблицы источников нет (решение владельца в ревью FIN-111), новый источник — новая константа вместе с адаптером; неизвестный код при чтении — ошибка данных |
 | `category` | `id` | `^cat_[a-z0-9_]{1,250}$` | тип `CategoryID`: слаг из транслита названия (`docs/calc.md` 3.1) |
 | `category` | `name`, `bank_name`, `note` | 1–64 символа; `bank_name` — `MEMO` после обрезки краёв, обрезанный до 64 | нормализация `MEMO` в адаптере OFX (`docs/calc.md` 2, 3.1) |
 | `category` | `icon` | 1–32 символа | ключи иконок — константы; новая категория банка — `tag` |

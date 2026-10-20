@@ -69,18 +69,6 @@ CREATE INDEX user_state_daily_recalc_due_at_idx ON user_state (daily_recalc_due_
 
 -- ---------------------------------------------------------------- reference data
 
-CREATE TABLE source (
-    id   text PRIMARY KEY,
-    name text NOT NULL
-);
-
-COMMENT ON TABLE source IS
-    'Справочник источников данных (форматы выписок, API банков), ключ — код источника; name — source_name в API.';
-COMMENT ON COLUMN source.id IS 'Код источника (tbank_ofx); новый источник добавляется миграцией данных.';
-COMMENT ON COLUMN source.name IS 'Название источника для показа — source_name в API («Выписка Т-Банка»).';
-
-INSERT INTO source (id, name) VALUES ('tbank_ofx', 'Выписка Т-Банка');
-
 CREATE TABLE category (
     id          text        PRIMARY KEY,
     name        text        NOT NULL,
@@ -133,7 +121,7 @@ INSERT INTO category (id, name, bank_name, icon, is_system, is_known, for_expens
 CREATE TABLE account (
     user_id            uuid        NOT NULL REFERENCES user_state ON DELETE CASCADE,
     id                 bigint      GENERATED ALWAYS AS IDENTITY,
-    source_id          text        NOT NULL REFERENCES source,
+    source             text        NOT NULL,
     ext_id_hmac        bytea       NOT NULL,
     ext_id_key_version bigint      NOT NULL,
     type               text        NOT NULL,
@@ -142,16 +130,17 @@ CREATE TABLE account (
     currency           text,
     created_at         timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (user_id, id),
-    UNIQUE (user_id, source_id, ext_id_hmac)
+    UNIQUE (user_id, source, ext_id_hmac)
 );
 
 COMMENT ON TABLE account IS
     'Счета пользователя, встреченные в выписках; ключ (user_id, id), счёт источника однозначен по '
-    '(user_id, source_id, ext_id_hmac). Полный номер (ACCTID) не хранится: только его HMAC с ключом сервиса, '
+    '(user_id, source, ext_id_hmac). Полный номер (ACCTID) не хранится: только его HMAC с ключом сервиса, '
     'тип и последние 4 символа.';
 COMMENT ON COLUMN account.user_id IS 'Пользователь (user_state).';
 COMMENT ON COLUMN account.id IS 'Внутренний ID счёта; наружу не уходит.';
-COMMENT ON COLUMN account.source_id IS 'Источник, из которого пришёл счёт.';
+COMMENT ON COLUMN account.source IS
+    'Источник, из которого пришёл счёт: код из констант сервиса (tbank_ofx), там же его название (source_name).';
 COMMENT ON COLUMN account.ext_id_hmac IS
     'Хеш номера счёта — HMAC-SHA-256 с ключом сервиса по user_id и ACCTID (или ID счёта в источнике): '
     'один и тот же счёт двух пользователей даёт разные значения, строки разных пользователей не связать.';
@@ -169,7 +158,7 @@ COMMENT ON COLUMN account.created_at IS 'Когда счёт впервые вс
 CREATE TABLE upload (
     user_id            uuid        NOT NULL REFERENCES user_state ON DELETE CASCADE,
     id                 uuid        NOT NULL DEFAULT uuidv7(),
-    source_id          text        NOT NULL REFERENCES source,
+    source             text        NOT NULL,
     file_name          text        NOT NULL,
     size_bytes         bigint      NOT NULL,
     content_sha256     bytea       NOT NULL,
@@ -198,7 +187,8 @@ COMMENT ON TABLE upload IS
     'WatchUpload повторяет итог неудачной загрузки.';
 COMMENT ON COLUMN upload.user_id IS 'Пользователь (user_state).';
 COMMENT ON COLUMN upload.id IS 'Идентификатор загрузки (UUIDv7) — upload_id в API.';
-COMMENT ON COLUMN upload.source_id IS 'Источник файла (формат выписки).';
+COMMENT ON COLUMN upload.source IS
+    'Источник файла (формат выписки): код из констант сервиса (tbank_ofx), там же его название (source_name).';
 COMMENT ON COLUMN upload.file_name IS 'Имя файла, как его прислал клиент, до 255 символов (3.4).';
 COMMENT ON COLUMN upload.size_bytes IS 'Размер файла в байтах.';
 COMMENT ON COLUMN upload.content_sha256 IS
