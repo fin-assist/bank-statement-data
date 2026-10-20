@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"regexp"
 	"strings"
 	"testing"
@@ -1171,25 +1172,28 @@ func TestTimestampsFollowTheRule(t *testing.T) {
 const numericValueOutOfRange = "22003"
 
 // settings_version is integer since 000003 (FIN-207), as in user and assistant: a user may
-// change the time zone more than 32 767 times, and every version up to the int32 limit of the
-// contract fits.
-func TestSettingsVersionHoldsInt32(t *testing.T) {
+// change the time zone more than 32 767 times, and every version of the contract (int32) fits.
+// calc_version is integer too and only grows by 1: the step past the int32 limit is refused,
+// not wrapped around.
+func TestVersionsHoldInt32(t *testing.T) {
 	conn, _ := schema(t)
 	exec(t, conn, `INSERT INTO user_state (user_id) VALUES ($1)`, userA)
-	if n := count(t, conn, `SELECT settings_version FROM user_state WHERE user_id = $1`, userA); n != 0 {
-		t.Fatalf("default settings_version: %d, want 0", n)
-	}
-	for _, v := range []int64{32768, 2147483647} {
-		exec(t, conn, `UPDATE user_state SET settings_version = $2 WHERE user_id = $1`, userA, v)
-		var got int64
-		if err := conn.QueryRow(context.Background(), `SELECT settings_version FROM user_state WHERE user_id = $1`, userA).Scan(&got); err != nil {
-			t.Fatal(err)
+	for _, column := range []string{"settings_version", "calc_version"} {
+		if n := count(t, conn, `SELECT `+column+` FROM user_state WHERE user_id = $1`, userA); n != 0 {
+			t.Fatalf("default %s: %d, want 0", column, n)
 		}
-		if got != v {
-			t.Fatalf("settings_version: %d, want %d", got, v)
+		for _, v := range []int32{math.MaxInt16 + 1, math.MaxInt32} {
+			exec(t, conn, `UPDATE user_state SET `+column+` = $2 WHERE user_id = $1`, userA, v)
+			var got int32
+			if err := conn.QueryRow(context.Background(), `SELECT `+column+` FROM user_state WHERE user_id = $1`, userA).Scan(&got); err != nil {
+				t.Fatal(err)
+			}
+			if got != v {
+				t.Fatalf("%s: %d, want %d", column, got, v)
+			}
 		}
+		fails(t, conn, numericValueOutOfRange, `UPDATE user_state SET `+column+` = `+column+` + 1 WHERE user_id = $1`, userA)
 	}
-	fails(t, conn, numericValueOutOfRange, `UPDATE user_state SET settings_version = $2::bigint WHERE user_id = $1`, userA, int64(2147483648))
 }
 
 // Rolling back 000003 refuses while a version does not fit smallint, instead of losing it, and
