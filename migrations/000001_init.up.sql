@@ -180,8 +180,8 @@ CREATE TABLE upload (
     operation_count    bigint,
     first_operation_at timestamptz,
     last_operation_at  timestamptz,
-    statement_from     timestamptz,
-    statement_to       timestamptz,
+    statement_from     date,
+    statement_to       date,
     result             jsonb,
     PRIMARY KEY (user_id, id),
     -- One file per upload: deleting the file of one upload never removes another's, even when
@@ -226,13 +226,13 @@ COMMENT ON COLUMN upload.last_operation_at IS
     'Последняя операция файла (период в 3.4); задана у done (и остаётся у deleted), NULL — в файле нет '
     'операций или разбор не завершён.';
 COMMENT ON COLUMN upload.statement_from IS
-    'Начало периода выписки — DTSTART как в файле (у всех счетов файла период один, решение владельца в ревью '
-    'FIN-111); задаётся вместе с statement_to у done, NULL — в файле нет блока с обоими тегами или разбор не '
-    'завершён. Покрытые дни и закрытие непрочитанных строк считаются по нему в поясе профиля на момент '
-    'проверки (docs/calc.md 4, api.md 3.6).';
+    'Первый день периода выписки — календарная дата DTSTART, как она записана в файле (у всех счетов файла '
+    'период один, решение владельца в ревью FIN-111); задаётся вместе с statement_to у done, NULL — в файле '
+    'нет блока с обоими тегами или разбор не завершён. Покрытие и закрытие строк сравнивают с ним день '
+    'операции в поясе профиля (docs/schema.md, «Период выписки и закрытие строк»).';
 COMMENT ON COLUMN upload.statement_to IS
-    'Конец периода выписки — DTEND как в файле; DTEND без времени покрывает свой день целиком. Задаётся '
-    'вместе с statement_from.';
+    'Последний день периода выписки — календарная дата DTEND, как она записана в файле; этот день покрыт '
+    'целиком. Задаётся вместе с statement_from.';
 COMMENT ON COLUMN upload.result IS
     'Итог импорта (ImportResult) события complete (protojson), который повторяет WatchUpload; только у '
     'done.';
