@@ -834,14 +834,18 @@ func TestBankCategoriesInOrderOfFirstAppearance(t *testing.T) {
 
 // Rule 2 of closing unread lines (api.md 3.6) reads the period of the file from upload and
 // the accounts of the upload from upload_account (docs/schema.md, «Период выписки и
-// закрытие строк»): a line is closed only by a later upload that contains the line's account
-// and whose period covers the day of the line. The test compares instants; the code compares
-// days in the profile zone, where DTEND without a time covers its whole day.
+// закрытие строк»): a line without a FITID is closed only by a later finished upload that
+// contains the line's account and whose period covers the day of the line. Days are calendar days in the user's
+// profile zone, so DTEND covers its whole day; the zone here differs from the session's.
 func TestStatementPeriodCoversLine(t *testing.T) {
 	conn, _ := schema(t)
 	ctx := context.Background()
 	seedCategories(t, conn)
 	a := seed(t, conn, userA, 1) // its upload covers 2026-09-01..2026-09-25 for its account
+	// The session is UTC and the user is in Vladivostok (UTC+10): a day computed in the wrong
+	// zone moves the boundaries.
+	exec(t, conn, `SET TIME ZONE 'UTC'`)
+	exec(t, conn, `UPDATE user_state SET timezone = 'Asia/Vladivostok' WHERE user_id = $1`, a.user)
 
 	var otherAccount int64
 	if err := conn.QueryRow(ctx, `INSERT INTO account (user_id, source, ext_id_hmac, ext_id_key_version, type, is_other_bank)
@@ -854,6 +858,13 @@ func TestStatementPeriodCoversLine(t *testing.T) {
 	exec(t, conn, line, a.user, a.upload, 28, "2026-09-28 12:00+03", a.account)
 	exec(t, conn, line, a.user, a.upload, 31, "2026-08-31 12:00+03", a.account)
 	exec(t, conn, line, a.user, a.upload, 99, "2026-09-10 12:00+03", otherAccount)
+	// The middle of the last day: covered, though later than the instant of DTEND.
+	exec(t, conn, line, a.user, a.upload, 25, "2026-09-25 12:00+03", a.account)
+	// 31 August in Moscow and UTC, but already 1 September in Vladivostok: covered.
+	exec(t, conn, line, a.user, a.upload, 1, "2026-08-31 23:30+03", a.account)
+	// A line with a FITID is closed by rule 1 only (the operation with that FITID), never by the period.
+	exec(t, conn, `INSERT INTO unread_line (user_id, upload_id, line_number, reason, occurred_at, account_id, external_id)
+		VALUES ($1, $2, 77, 'bad_amount', '2026-09-10 12:00+03', $3, 'FIT77')`, a.user, a.upload, a.account)
 
 	// laterUpload adds a finished upload of the same period, uploaded after the seeded one,
 	// containing the given account only.
@@ -877,9 +888,12 @@ func TestStatementPeriodCoversLine(t *testing.T) {
 			JOIN upload lu ON lu.user_id = l.user_id AND lu.id = l.upload_id
 			JOIN upload_account ua ON ua.user_id = l.user_id AND ua.account_id = l.account_id
 			JOIN upload u ON u.user_id = ua.user_id AND u.id = ua.upload_id
-			WHERE l.user_id = $1 AND l.upload_id = $2 AND l.line_number = $3 AND u.status = 'done'
+			JOIN user_state us ON us.user_id = l.user_id
+			WHERE l.user_id = $1 AND l.upload_id = $2 AND l.line_number = $3 AND l.external_id IS NULL
+			  AND u.status = 'done'
 			  AND (u.uploaded_at, u.id) > (lu.uploaded_at, lu.id)
-			  AND u.statement_from <= l.occurred_at AND u.statement_to >= l.occurred_at
+			  AND (l.occurred_at AT TIME ZONE us.timezone)::date
+			      BETWEEN (u.statement_from AT TIME ZONE us.timezone)::date AND (u.statement_to AT TIME ZONE us.timezone)::date
 			ORDER BY u.uploaded_at, u.id`, a.user, a.upload, lineNumber)
 		if err != nil {
 			t.Fatal(err)
@@ -906,6 +920,12 @@ func TestStatementPeriodCoversLine(t *testing.T) {
 	// A later upload with the line's account closes the line inside the period only.
 	checking := laterUpload("checking.ofx", "2 days", a.account)
 	want(10, checking)
+	want(77)
+	want(25, checking)
+	want(1, checking)
 	want(28)
 	want(31)
+	// A deleted upload keeps its period and accounts but closes nothing any more.
+	exec(t, conn, `UPDATE upload SET status = 'deleted', deleted_at = now(), result = NULL WHERE user_id = $1 AND id = $2`, a.user, checking)
+	want(10)
 }
