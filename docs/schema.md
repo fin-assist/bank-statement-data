@@ -46,18 +46,23 @@
 
 ### Категории банка пользователя (5.1)
 
-Отдельной таблицы нет (решение владельца в ревью FIN-111: «у нас уже есть таблица категорий»). Категории вне реестра (`category.sort_order IS NULL`), которые встретились пользователю, и их порядок выводятся из операций:
+Отдельной таблицы нет (решение владельца в ревью FIN-111: «у нас уже есть таблица категорий»). У пользователя есть только категории из его выписок (решение владельца 20.10.2026, FIN-199): справочник 5.1 — системные категории из миграции и категории банка его операций; категория реестра, которой нет в его выписках, в справочник не попадает. Реестр задаёт только направление и порядок:
 
 ```sql
-SELECT o.bank_category_id
-FROM source_record r
-JOIN operation o ON o.user_id = r.user_id AND o.occurred_at = r.operation_occurred_at AND o.id = r.operation_id
-JOIN category c ON c.id = o.bank_category_id
-WHERE r.user_id = $1 AND c.sort_order IS NULL
-GROUP BY o.bank_category_id
-ORDER BY min(r.id)
+SELECT c.id
+FROM category c
+LEFT JOIN (
+    SELECT o.bank_category_id AS id, min(r.id) AS first_record
+    FROM source_record r
+    JOIN operation o ON o.user_id = r.user_id AND o.occurred_at = r.operation_occurred_at AND o.id = r.operation_id
+    WHERE r.user_id = $1
+    GROUP BY o.bank_category_id
+) u ON u.id = c.id
+WHERE c.is_system OR u.id IS NOT NULL
+ORDER BY c.sort_order NULLS LAST, u.first_record
 ```
 
+- **Порядок** (calc.md 10) — системные и категории реестра по `sort_order`, затем новые категории банка (`sort_order IS NULL`) в порядке первого появления.
 - **Порядок первого появления** — наименьший `source_record.id` (identity) среди записей с этой категорией. Импорт вставляет записи в порядке строк файла, импорты одного пользователя фиксируются по очереди под его блокировкой: так получается «по загрузкам, внутри файла — в порядке строк» (calc.md 10).
 - **Отклонения от calc.md 10:**
   - загрузки упорядочены по моменту фиксации импорта, а не по `uploaded_at`: две загрузки, которые разбирались параллельно и завершились не по порядку, дадут порядок завершения;
