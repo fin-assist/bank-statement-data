@@ -35,6 +35,7 @@ const (
 const (
 	userA = "01a10800-0000-7000-8000-00000000000a"
 	userB = "01a10800-0000-7000-8000-00000000000b"
+	userC = "01a10800-0000-7000-8000-00000000000c"
 )
 
 // Account numbers (ACCTID) of the fixtures, stored as is; not real numbers.
@@ -791,10 +792,12 @@ func TestUploadDeletionByUploadIDs(t *testing.T) {
 	}
 }
 
-// 5.1 lists the bank categories outside the registry that the user met, in the order of
-// first appearance (docs/calc.md 10). Without a table of its own the order comes from the
-// identity of source_record: the import inserts records in the order of the file lines,
-// and imports of one user commit one after another (docs/schema.md, «Ожидаемые запросы»).
+// 5.1 lists the system categories and only the bank categories of the user's own operations:
+// registry ones by sort_order, then new ones in the order of first appearance (docs/calc.md 10).
+// A registry category the user never met is not listed. Without a table of its own the order
+// of new categories comes from the identity of source_record: the import inserts records in the
+// order of the file lines, and imports of one user commit one after another (docs/schema.md,
+// «Ожидаемые запросы»).
 func TestBankCategoriesInOrderOfFirstAppearance(t *testing.T) {
 	conn, _ := schema(t)
 	ctx := context.Background()
@@ -827,13 +830,17 @@ func TestBankCategoriesInOrderOfFirstAppearance(t *testing.T) {
 
 	order := func(user string) []string {
 		t.Helper()
-		rows, err := conn.Query(ctx, `SELECT o.bank_category_id
-			FROM source_record r
-			JOIN operation o ON o.user_id = r.user_id AND o.occurred_at = r.operation_occurred_at AND o.id = r.operation_id
-			JOIN category c ON c.id = o.bank_category_id
-			WHERE r.user_id = $1 AND c.sort_order IS NULL
-			GROUP BY o.bank_category_id
-			ORDER BY min(r.id)`, user)
+		rows, err := conn.Query(ctx, `SELECT c.id
+			FROM category c
+			LEFT JOIN (
+				SELECT o.bank_category_id AS id, min(r.id) AS first_record
+				FROM source_record r
+				JOIN operation o ON o.user_id = r.user_id AND o.occurred_at = r.operation_occurred_at AND o.id = r.operation_id
+				WHERE r.user_id = $1
+				GROUP BY o.bank_category_id
+			) u ON u.id = c.id
+			WHERE c.is_system OR u.id IS NOT NULL
+			ORDER BY c.sort_order NULLS LAST, u.first_record`, user)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -843,11 +850,18 @@ func TestBankCategoriesInOrderOfFirstAppearance(t *testing.T) {
 		}
 		return ids
 	}
-	if got := strings.Join(order(a.user), ","); got != "cat_zoo,cat_avia" {
-		t.Fatalf("order of A: %s, want cat_zoo,cat_avia", got)
+	// cat_transfers is in the registry, but neither user has it in a statement.
+	const system = "cat_own_transfer,cat_refund,cat_uncategorized,"
+	if got, want := strings.Join(order(a.user), ","), system+"cat_supermarkets,cat_zoo,cat_avia"; got != want {
+		t.Fatalf("categories of A: %s, want %s", got, want)
 	}
-	if got := strings.Join(order(b.user), ","); got != "cat_avia,cat_zoo" {
-		t.Fatalf("order of B: %s, want cat_avia,cat_zoo", got)
+	if got, want := strings.Join(order(b.user), ","), system+"cat_supermarkets,cat_avia,cat_zoo"; got != want {
+		t.Fatalf("categories of B: %s, want %s", got, want)
+	}
+	// A user without uploads sees only the system categories.
+	exec(t, conn, `INSERT INTO user_state (user_id) VALUES ($1)`, userC)
+	if got, want := strings.Join(order(userC), ","), strings.TrimSuffix(system, ","); got != want {
+		t.Fatalf("categories of a user without uploads: %s, want %s", got, want)
 	}
 }
 
