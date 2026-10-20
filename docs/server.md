@@ -38,7 +38,7 @@ Health (`grpc.health.v1`) и reflection (только `ENV=dev`) открыты 
 - `AUTH_MODE=insecure-dev` (только `ENV=dev`): токены `dev:<имя>` — `Bearer dev:bank-bff` в `x-service-authorization`, `Bearer dev:<user_id>` в `authorization`. Для локального запуска и тестов.
 - `AUTH_MODE=verify` (по умолчанию): `serve` не стартует с ошибкой про FIN-119. Сервис не работает с непроверенными идентичностями ни на стенде, ни в проде.
 
-Tombstone (FIN-110) — интерфейс `Tombstones`; до библиотеки в шаблоне `NoTombstones`, сервис данных обязан заменить его (`tombstones()` в `internal/app/app.go`).
+Tombstone (FIN-110) — интерфейс `Tombstones`; до библиотеки в шаблоне `NoTombstones`, сервис данных обязан заменить его (`tombstones()` в `internal/app/app.go`). Интерцептор лишь отсекает новые вызовы удалённого пользователя; что запись не вернёт его данные, держат транзакции записи — [schema.md](schema.md), «Удаление пользователя и tombstone».
 
 ## Сервер
 
