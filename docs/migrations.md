@@ -94,6 +94,8 @@ service migrate force <source> <version>  # выставить версию и �
 
 Только ключи (`PRIMARY KEY`, `UNIQUE`, `FOREIGN KEY` с каскадами), `NOT NULL` и `DEFAULT`; `CHECK`, `EXCLUDE`, триггеры и функции не используются — решение владельца 19.10.2026, подробности и список инвариантов, которые проверяет код, — [schema.md](schema.md).
 
+Разрядность целого выбирается по диапазону значений и росту за срок жизни таблицы; для identity учитываются все выделенные значения последовательности, включая откаты и конфликтующие вставки. По [FIN-214](https://finassist.youtrack.cloud/issue/FIN-214) правило `prefer-bigint-over-int` выключено в `.squawk.toml`: `integer` не требует подавления. Правило `prefer-bigint-over-smallint` остаётся включённым; обоснованный `smallint` требует точечного `squawk-ignore` или `squawk-ignore-file`.
+
 У каждой таблицы и каждого столбца — описание на русском: `COMMENT ON TABLE` (что хранит, ключ и роль) и `COMMENT ON COLUMN` (смысл значения). Описание начинается с русского слова; имена полей, коды и ссылки на контракт — внутри текста. У партиций `operation` описаний нет, их описывает родительская таблица. Таблицу или столбец без такого описания ловит `TestEveryTableAndColumnHasDescription` (`migrations/schema_test.go`).
 
 ## Партиции
