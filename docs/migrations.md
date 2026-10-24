@@ -107,7 +107,7 @@ service migrate force <source> <version>  # выставить версию и �
 - **Два пула**: на primary (`DB_PRIMARY_DSN`, `-rw`) и на реплики (`DB_REPLICA_DSN`, `-ro`). Чтение после своей записи — с primary: `bank-bff` пробрасывает `x-read-primary`, `db.Reader(ctx)` выбирает пул по нему. На стенде оба DSN указывают на один PostgreSQL (или реплика не задана).
 - **Только параметры** (`$1`, `$2`): ни одно значение из запроса не попадает в текст SQL. Имена таблиц и столбцов — константы в коде.
 - **Таймауты**: `statement_timeout` на роль сервиса (`ALTER ROLE … SET statement_timeout`) и дедлайн контекста запроса; транзакции короткие, без внешних вызовов внутри.
-- Транзакция — через менеджер транзакций `postgres.DB`: `db.Run(ctx, func(ctx) error {…})`; репозитории берут её из контекста через `db.Writer(ctx)` / `db.Reader(ctx)`, библиотеки — через `db.Tx(ctx)` ([server.md](server.md), «Транзакции и чтение»).
+- Транзакция — через адаптер `postgres.DB` общего менеджера `go-postgres`: `db.Run(ctx, func(ctx) error {…})`; репозитории берут её из контекста через `db.Writer(ctx)` / `db.Reader(ctx)`, библиотеки — через `db.Tx(ctx)` ([server.md](server.md), «Транзакции и чтение»).
 
 ## Проверки в CI
 
