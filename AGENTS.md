@@ -207,6 +207,7 @@ Also:
 - The measurable gate is at least 80% of all production-code statements for each of unit, integration and API
   separately (`make cover`, README and `docs/testing.md`). Combined coverage cannot compensate for a failing suite.
   Name every test `TestUnit…`, `TestIntegration…` or `TestAPI…`; classify it by its actual dependencies and assembly.
+  `make test-names` and CI reject unclassified test names using native `go test -list`.
 
 ## Checks
 

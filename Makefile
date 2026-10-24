@@ -6,12 +6,12 @@ SHELL := /bin/bash
 BIN := bin/bank-statement-data
 export GOPRIVATE := github.com/fin-assist/*
 
-.PHONY: build test cover collect-unit collect-integration collect-api check-unit check-integration check-api cover-unit cover-integration cover-api cover-combined lint fmt run migrate image up down release-check
+.PHONY: build test test-names cover collect-unit collect-integration collect-api check-unit check-integration check-api cover-unit cover-integration cover-api cover-combined lint fmt run migrate image up down release-check
 
 build: ## build the binary into bin/
 	go build -trimpath -o $(BIN) ./cmd/bank-statement-data
 
-test: ## go.mod tidy, unit/integration and script tests, changelog format
+test: test-names ## go.mod tidy, unit/integration and script tests, changelog format
 	go mod tidy -diff
 	go vet ./...
 	go test -race -count=1 -timeout=8m ./...
@@ -22,6 +22,11 @@ release-check: ## VERSION=vX.Y.Z: validate the CHANGELOG section before tagging
 	@test -n "$(VERSION)" || { echo "usage: make release-check VERSION=vX.Y.Z"; exit 2; }
 	python3 scripts/changelog.py check
 	test "$$(python3 scripts/changelog.py latest)" = "$(VERSION)"
+
+test-names: ## reject tests accidentally omitted from the three selectors
+	go test -list '^Test' -timeout=8m ./... > test-names.txt
+	@if grep -E '^Test' test-names.txt | grep -Ev '^Test(Unit|Integration|API).+'; then \
+	  echo 'Name every test TestUnit..., TestIntegration... or TestAPI...' >&2; exit 1; fi
 
 # All suites instrument the same whole module. No production files are excluded.
 # Ordinary packages without tests may be reported as skipped; skipped Test events fail.

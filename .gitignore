@@ -15,3 +15,4 @@ api.out
 *.jsonl
 *.coverage.txt
 *.report.txt
+test-names.txt

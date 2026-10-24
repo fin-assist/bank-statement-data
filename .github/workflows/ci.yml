@@ -37,6 +37,8 @@ jobs:
         run: go mod tidy -diff
       - name: Vet
         run: go vet ./...
+      - name: Classify every Go test
+        run: make test-names
       - name: Test the scripts
         run: python3 -m unittest discover -s scripts -p 'test_*.py'
       - name: CHANGELOG.md format
