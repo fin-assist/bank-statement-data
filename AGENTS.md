@@ -207,7 +207,7 @@ Also:
 - The measurable gate is at least 80% of all production-code statements for each of unit, integration and API
   separately (`make cover`, README and `docs/testing.md`). Combined coverage cannot compensate for a failing suite.
   Name every test `TestUnit…`, `TestIntegration…` or `TestAPI…`; classify it by its actual dependencies and assembly.
-  `make test-names` and CI reject unclassified test names using native `go test -list`.
+  `make test-names` and CI reject unclassified test names using native `go test -race -list`; every collect target requires this classification first.
 
 ## Checks
 
@@ -260,8 +260,8 @@ honest baseline and the absent business API; configuring gates does not satisfy 
   - `@codex` — the Codex GitHub integration under the owner's ChatGPT subscription. Its model is chosen by OpenAI
     and cannot be pinned from here; a pinned model would need the OpenAI API with per-token billing, which was
     declined (FIN-103).
-  - A review is requested only once `.github/workflows/claude.yml` is on `main`: comment-triggered workflows run
-    from the default branch.
+  - Request Claude only once `.github/workflows/claude.yml` is on `main`: comment-triggered workflows run
+    from the default branch. This does not restrict Codex: request it separately when its integration is available.
   - Replies in threads and other comments never mention `@codex` or `@claude`: any mention with text starts them
     again.
 - Waiting for the review: react to the PR's GitHub events when the session receives them; otherwise check 3 minutes
