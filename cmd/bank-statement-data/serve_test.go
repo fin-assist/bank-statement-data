@@ -9,7 +9,7 @@ import (
 	"github.com/fin-assist/bank-statement-data/internal/adapter/postgres/migrate/migratetest"
 )
 
-func TestServeFailsBeforeConnectingWithoutVerifiers(t *testing.T) {
+func TestUnitServeFailsBeforeConnectingWithoutVerifiers(t *testing.T) {
 	t.Setenv("SERVICE_NAME", "user")
 	t.Setenv("DB_PRIMARY_DSN", "postgres://nowhere.invalid/db")
 	t.Setenv("ENV", "prod")
@@ -21,7 +21,7 @@ func TestServeFailsBeforeConnectingWithoutVerifiers(t *testing.T) {
 
 // The whole serve path against a real database: config, pools, server, ops listener,
 // readiness and an orderly stop on cancel.
-func TestServeRunsAndStops(t *testing.T) {
+func TestIntegrationServeRunsAndStops(t *testing.T) {
 	dsn := migratetest.DSN(t)
 	for k, v := range map[string]string{
 		"SERVICE_NAME": "user", "ENV": "dev", "AUTH_MODE": "insecure-dev", "LOG_LEVEL": "error",
@@ -45,7 +45,7 @@ func TestServeRunsAndStops(t *testing.T) {
 	}
 }
 
-func TestServeFailsOnBadInput(t *testing.T) {
+func TestIntegrationServeFailsOnBadInput(t *testing.T) {
 	base := map[string]string{"SERVICE_NAME": "user", "ENV": "dev", "AUTH_MODE": "insecure-dev", "LOG_LEVEL": "error"}
 	cases := map[string]map[string]string{
 		"config":   {"DB_PRIMARY_DSN": ""},
