@@ -1,5 +1,7 @@
 # bank-statement-data
 
+Выпуск версии сервиса и повторная публикация GitHub Release описаны в [docs/releasing.md](docs/releasing.md). История изменений — [CHANGELOG.md](CHANGELOG.md). История начинается с пустого `Unreleased`; версии и теги создаёт владелец после PR и post-merge CI. Публикация образа и deployment — отдельные этапы.
+
 Go-сервис «Понятных финансов»: приём выписок (OFX Т-Банка), счета, операции и записи источников, справочник категорий, регулярные платежи и отметки «Не подписка», расчёт персональных метрик для `analytics`, инструменты чтения для помощника (`docs/grpc-api.md` 7.2 в [`fin-assist/contracts`](https://github.com/fin-assist/contracts)). Создан из шаблона [`fin-assist/go-service-template`](https://github.com/fin-assist/go-service-template) ([FIN-117](https://finassist.youtrack.cloud/issue/FIN-117), перенос — [FIN-190](https://finassist.youtrack.cloud/issue/FIN-190)). Контракты (`.proto`, сгенерированный код, реестр ошибок `finerr`) — в `fin-assist/contracts`, модуль `github.com/fin-assist/contracts/gen/go`.
 
 - [docs/server.md](docs/server.md) — gRPC-сервер и интерцепторы, идентичность, таблица доступа, клиенты, транзакции, логи и метрики.

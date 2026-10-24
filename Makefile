@@ -3,15 +3,22 @@ GOLANGCI_LINT_VERSION := v2.15.0
 BIN := bin/bank-statement-data
 export GOPRIVATE := github.com/fin-assist/*
 
-.PHONY: build test cover lint fmt run migrate image up down
+.PHONY: build test cover lint fmt run migrate image up down release-check
 
 build: ## build the binary into bin/
 	go build -trimpath -o $(BIN) ./cmd/bank-statement-data
 
-test: ## go.mod tidy, unit and integration tests (Docker or TEST_DATABASE_URL)
+test: ## go.mod tidy, unit/integration and script tests, changelog format
 	go mod tidy -diff
 	go vet ./...
 	go test -race -count=1 ./...
+	python3 -m unittest discover -s scripts -p 'test_*.py'
+	python3 scripts/changelog.py check
+
+release-check: ## VERSION=vX.Y.Z: validate the CHANGELOG section before tagging
+	@test -n "$(VERSION)" || { echo "usage: make release-check VERSION=vX.Y.Z"; exit 2; }
+	python3 scripts/changelog.py check
+	test "$$(python3 scripts/changelog.py latest)" = "$(VERSION)"
 
 cover: ## tests with a coverage profile, then coverage of the lines changed against origin/main
 	go test -race -count=1 -coverpkg=./... -coverprofile=cover.out ./...
