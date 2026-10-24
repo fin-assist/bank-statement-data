@@ -7,3 +7,11 @@ __pycache__/
 
 # Local Renovate runtime dependencies
 node_modules/
+
+# Separate Go suite coverage evidence
+unit.out
+integration.out
+api.out
+*.jsonl
+*.coverage.txt
+*.report.txt

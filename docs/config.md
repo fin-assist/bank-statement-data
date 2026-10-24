@@ -9,13 +9,13 @@
 Таблицы ниже **генерируются** из списка `Vars` в `internal/config/vars.go` — там у каждой переменной имя, значение по умолчанию, признак секрета и описание; код берёт значения по умолчанию оттуда же. Новая переменная или новое значение по умолчанию:
 
 1. строка в `Vars`, чтение в `load` / `loadMigrate`;
-2. `go test ./internal/config -run TestDocIsCurrent -update` — переписывает таблицы между маркерами.
+2. `go test ./internal/config -run TestUnitDocIsCurrent -update` — переписывает таблицы между маркерами.
 
-Руками блоки между маркерами не правятся. CI (`go test`) падает, если таблица устарела (`TestDocIsCurrent`), если код читает необъявленную переменную или объявленная нигде не читается (`TestVarsMatchWhatLoadReads`).
+Руками блоки между маркерами не правятся. CI (`go test`) падает, если таблица устарела (`TestUnitDocIsCurrent`), если код читает необъявленную переменную или объявленная нигде не читается (`TestUnitVarsMatchWhatLoadReads`).
 
 ## `serve`
 
-<!-- generated:config-serve:start (go test ./internal/config -run TestDocIsCurrent -update) -->
+<!-- generated:config-serve:start (go test ./internal/config -run TestUnitDocIsCurrent -update) -->
 | Переменная | По умолчанию | Что |
 |---|---|---|
 | `SERVICE_NAME` | — (обязательна) | имя сервиса: логи, `application_name`, токен в dev |
@@ -37,7 +37,7 @@
 
 ## `migrate`
 
-<!-- generated:config-migrate:start (go test ./internal/config -run TestDocIsCurrent -update) -->
+<!-- generated:config-migrate:start (go test ./internal/config -run TestUnitDocIsCurrent -update) -->
 | Переменная | По умолчанию | Что |
 |---|---|---|
 | `DB_PRIMARY_DSN` / `_FILE` | — (обязательна) | DSN primary, роль сервиса. Миграции никогда не идут на реплику |

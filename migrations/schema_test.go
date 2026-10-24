@@ -140,7 +140,7 @@ func seed(t *testing.T, conn *pgx.Conn, user string, accountNumber string) fixtu
 	return f
 }
 
-func TestSourceRecordDeduplication(t *testing.T) {
+func TestIntegrationSourceRecordDeduplication(t *testing.T) {
 	conn, _ := schema(t)
 	a := seed(t, conn, userA, account1)
 	seed(t, conn, userB, account1)
@@ -167,7 +167,7 @@ func TestSourceRecordDeduplication(t *testing.T) {
 	}
 }
 
-func TestAccountIsUniquePerUser(t *testing.T) {
+func TestIntegrationAccountIsUniquePerUser(t *testing.T) {
 	conn, _ := schema(t)
 	a := seed(t, conn, userA, account7)
 	seed(t, conn, userB, account7) // the same number for another user is allowed
@@ -190,7 +190,7 @@ func TestAccountIsUniquePerUser(t *testing.T) {
 		VALUES ($1, 'tbank_ofx', 'checking', false)`, a.user)
 }
 
-func TestRowsCannotPointAtAnotherUser(t *testing.T) {
+func TestIntegrationRowsCannotPointAtAnotherUser(t *testing.T) {
 	conn, _ := schema(t)
 	a := seed(t, conn, userA, account1)
 	b := seed(t, conn, userB, account2)
@@ -208,12 +208,12 @@ func TestRowsCannotPointAtAnotherUser(t *testing.T) {
 	fails(t, conn, foreignKeyViolation, `INSERT INTO unread_line (user_id, upload_id, line_number, reason, account_id)
 		VALUES ($1, $2, 2, 'truncated', $3)`, b.user, b.upload, a.account)
 	// operation.transfer_pair_id has no foreign key: a pair is a value shared by the two sides,
-	// and every query by it is scoped by user_id (TestTransferPairLookup).
+	// and every query by it is scoped by user_id (TestIntegrationTransferPairLookup).
 }
 
 // Every foreign key between two tables that both have user_id includes user_id and maps it
 // to user_id: a new or changed key cannot let a row of one user point at another user's row.
-func TestForeignKeysBetweenUserTablesIncludeUserID(t *testing.T) {
+func TestIntegrationForeignKeysBetweenUserTablesIncludeUserID(t *testing.T) {
 	conn, _ := schema(t)
 	rows, err := conn.Query(context.Background(), `
 		SELECT c.conname,
@@ -257,7 +257,7 @@ func TestForeignKeysBetweenUserTablesIncludeUserID(t *testing.T) {
 	}
 }
 
-func TestOperationPartitions(t *testing.T) {
+func TestIntegrationOperationPartitions(t *testing.T) {
 	conn, _ := schema(t)
 	a := seed(t, conn, userA, account1)
 
@@ -287,7 +287,7 @@ func TestOperationPartitions(t *testing.T) {
 	}
 }
 
-func TestOperationReferences(t *testing.T) {
+func TestIntegrationOperationReferences(t *testing.T) {
 	conn, _ := schema(t)
 	a := seed(t, conn, userA, account1)
 	op := `UPDATE operation SET %s WHERE user_id = '` + a.user + `' AND id = '` + a.operation + `'`
@@ -304,7 +304,7 @@ func TestOperationReferences(t *testing.T) {
 	exec(t, conn, set(`manual_category_id = 'cat_transfers', category_id = 'cat_transfers'`))
 }
 
-func TestCategoryKeys(t *testing.T) {
+func TestIntegrationCategoryKeys(t *testing.T) {
 	conn, _ := schema(t)
 	exec(t, conn, `INSERT INTO category (id, name, bank_name, icon, for_expense, for_income, assignable)
 		VALUES ('cat_kripto', 'Крипто', 'Крипто', 'tag', true, true, true)`)
@@ -322,7 +322,7 @@ func TestCategoryKeys(t *testing.T) {
 // Migration 000002 inserts the 51 known bank categories of fixtures/calc/categories.json in
 // fin-assist/contracts (FIN-200) with the directions of docs/calc.md 3.1: income only, both,
 // and expense for the rest.
-func TestKnownCategories(t *testing.T) {
+func TestIntegrationKnownCategories(t *testing.T) {
 	conn, dsn := schema(t)
 	ctx := context.Background()
 	if n := count(t, conn, `SELECT count(*) FROM category WHERE is_known AND NOT is_system`); n != 51 {
@@ -471,7 +471,7 @@ func TestKnownCategories(t *testing.T) {
 	}
 }
 
-func TestUploadKeys(t *testing.T) {
+func TestIntegrationUploadKeys(t *testing.T) {
 	conn, _ := schema(t)
 	a := seed(t, conn, userA, account1)
 	b := seed(t, conn, userB, account2)
@@ -495,7 +495,7 @@ func TestUploadKeys(t *testing.T) {
 	fails(t, conn, notNullViolation, `INSERT INTO upload (user_id, source, file_name, size_bytes, content_sha256) VALUES ($1, 'tbank_ofx', 'f.ofx', 1, $2)`, a.user, sha)
 }
 
-func TestUnreadLineKeys(t *testing.T) {
+func TestIntegrationUnreadLineKeys(t *testing.T) {
 	conn, _ := schema(t)
 	a := seed(t, conn, userA, account1)
 	var later string
@@ -541,7 +541,7 @@ type op struct {
 // 3.2). The lookup by the ID of an own_transfer record finds both sides of the user's pair
 // only; that a pair has exactly two sides, an expense and an income, and that losing one
 // clears the other is the code's (docs/schema.md), tested with the pairing code.
-func TestTransferPairLookup(t *testing.T) {
+func TestIntegrationTransferPairLookup(t *testing.T) {
 	conn, _ := schema(t)
 	a := seed(t, conn, userA, account1)
 	b := seed(t, conn, userB, account2)
@@ -637,7 +637,7 @@ func scannedRelations(t *testing.T, conn *pgx.Conn, sql string, args ...any) (re
 	return relations, indexes
 }
 
-func TestOperationLookupByOccurredAtAndID(t *testing.T) {
+func TestIntegrationOperationLookupByOccurredAtAndID(t *testing.T) {
 	conn, _ := schema(t)
 	ctx := context.Background()
 	a := seed(t, conn, userA, account1)
@@ -775,7 +775,7 @@ func TestOperationLookupByOccurredAtAndID(t *testing.T) {
 	const pair = "01a10800-0000-7000-8000-0000000000bb"
 	debit, credit := newOp(t, conn, a, "expense", time.Minute), newOp(t, conn, a, "income", 2*time.Minute)
 	exec(t, conn, `UPDATE operation SET transfer_pair_id = $2 WHERE user_id = $1 AND id IN ($3, $4)`, a.user, pair, debit.id, credit.id)
-	// The key finds the debit; the code then reads the pair (TestTransferPairLookup).
+	// The key finds the debit; the code then reads the pair (TestIntegrationTransferPairLookup).
 	one("pair by key", byKey(a.user, debit.at, pair), debit.id, debit.at)
 	// The fallback finds both sides.
 	if got := byID(a.user, pair); len(got) != 2 || got[0].id != debit.id || got[1].id != credit.id {
@@ -794,7 +794,7 @@ func TestOperationLookupByOccurredAtAndID(t *testing.T) {
 	one("split side by key", byKey(a.user, credit.at, credit.id), credit.id, credit.at)
 }
 
-func TestRegularPaymentIDIsStable(t *testing.T) {
+func TestIntegrationRegularPaymentIDIsStable(t *testing.T) {
 	conn, _ := schema(t)
 	seed(t, conn, userA, account1)
 	seed(t, conn, userB, account2)
@@ -825,7 +825,7 @@ func TestRegularPaymentIDIsStable(t *testing.T) {
 	}
 }
 
-func TestRecalcQueueMarksAMonthOnce(t *testing.T) {
+func TestIntegrationRecalcQueueMarksAMonthOnce(t *testing.T) {
 	conn, _ := schema(t)
 	a := seed(t, conn, userA, account1)
 	// generation is smallint and wraps around instead of stopping at its limit, so every mark
@@ -860,7 +860,7 @@ func TestRecalcQueueMarksAMonthOnce(t *testing.T) {
 
 // PurgeUserData is one DELETE of the user's row: nothing of the user is left, the other user
 // is untouched.
-func TestPurgeUserRemovesEverything(t *testing.T) {
+func TestIntegrationPurgeUserRemovesEverything(t *testing.T) {
 	conn, _ := schema(t)
 	a := seed(t, conn, userA, account1)
 	seed(t, conn, userB, account1)
@@ -910,7 +910,7 @@ func TestPurgeUserRemovesEverything(t *testing.T) {
 // (closing unread lines, calc_version) and does not conflict with the FOR KEY SHARE that the
 // foreign key of every child insert takes, so an import holding the lock and another
 // transaction writing rows of the same user do not wait for each other. FOR UPDATE would.
-func TestUserLockDoesNotBlockChildInserts(t *testing.T) {
+func TestIntegrationUserLockDoesNotBlockChildInserts(t *testing.T) {
 	conn, dsn := schema(t)
 	a := seed(t, conn, userA, account1)
 	ctx := context.Background()
@@ -954,7 +954,7 @@ func TestUserLockDoesNotBlockChildInserts(t *testing.T) {
 // (COMMENT ON TABLE, COMMENT ON COLUMN), so a table or a column added later without one fails
 // here. Leaf partitions of operation are described by their parent; schema_migrations
 // belongs to golang-migrate.
-func TestEveryTableAndColumnHasDescription(t *testing.T) {
+func TestIntegrationEveryTableAndColumnHasDescription(t *testing.T) {
 	conn, _ := schema(t)
 	// One row per table (column NULL) and per column of it.
 	rows, err := conn.Query(context.Background(), `
@@ -1020,7 +1020,7 @@ var startsInRussian = regexp.MustCompile(`^\p{Cyrillic}`)
 // deleting an upload keeps an operation another upload still contains and deletes the one
 // no upload contains any more; a line is closed by FITID only through an upload that
 // contains the record.
-func TestUploadDeletionByUploadIDs(t *testing.T) {
+func TestIntegrationUploadDeletionByUploadIDs(t *testing.T) {
 	conn, _ := schema(t)
 	ctx := context.Background()
 	a := seed(t, conn, userA, account1) // operation 1 is in upload 1 only
@@ -1144,7 +1144,7 @@ func TestUploadDeletionByUploadIDs(t *testing.T) {
 // of new categories comes from the identity of source_record: the import inserts records in the
 // order of the file lines, and imports of one user commit one after another (docs/schema.md,
 // «Ожидаемые запросы»).
-func TestBankCategoriesInOrderOfFirstAppearance(t *testing.T) {
+func TestIntegrationBankCategoriesInOrderOfFirstAppearance(t *testing.T) {
 	conn, _ := schema(t)
 	ctx := context.Background()
 	a := seed(t, conn, userA, account1) // its operation is in the known category cat_supermarkets
@@ -1227,7 +1227,7 @@ func TestBankCategoriesInOrderOfFirstAppearance(t *testing.T) {
 // contains the line's account and whose period covers the day of the line. The day of the line
 // is taken in the user's profile zone; the bounds are the dates written in the file, and the
 // last one is covered whole. Two zones are checked, east and west of the file's +03.
-func TestStatementPeriodCoversLine(t *testing.T) {
+func TestIntegrationStatementPeriodCoversLine(t *testing.T) {
 	conn, _ := schema(t)
 	ctx := context.Background()
 	a := seed(t, conn, userA, account1) // its upload covers 2026-09-01..2026-09-25 for its account
@@ -1341,7 +1341,7 @@ func TestStatementPeriodCoversLine(t *testing.T) {
 // No table keeps a general updated_at, and every table whose rows are inserted by events has
 // its creation time set by the database (docs/schema.md, «Время в строках»). A new table
 // without one, or an updated_at added back, fails here.
-func TestTimestampsFollowTheRule(t *testing.T) {
+func TestIntegrationTimestampsFollowTheRule(t *testing.T) {
 	conn, _ := schema(t)
 	creation := map[string]string{"upload": "uploaded_at", "recalc_queue": "enqueued_at"}
 	optional := map[string]bool{"category": true} // reference data
@@ -1386,7 +1386,7 @@ const numericValueOutOfRange = "22003"
 // change the time zone more than 32 767 times, and every version of the contract (int32) fits.
 // calc_version is integer too and only grows by 1: the step past the int32 limit is refused,
 // not wrapped around.
-func TestVersionsHoldInt32(t *testing.T) {
+func TestIntegrationVersionsHoldInt32(t *testing.T) {
 	conn, _ := schema(t)
 	exec(t, conn, `INSERT INTO user_state (user_id) VALUES ($1)`, userA)
 	for _, column := range []string{"settings_version", "calc_version"} {
@@ -1409,7 +1409,7 @@ func TestVersionsHoldInt32(t *testing.T) {
 
 // Rolling back 000003 refuses while a version does not fit smallint, instead of losing it, and
 // leaves the column integer; once every version fits, it returns the column to smallint.
-func TestSettingsVersionRollbackRefusesLargeVersions(t *testing.T) {
+func TestIntegrationSettingsVersionRollbackRefusesLargeVersions(t *testing.T) {
 	conn, dsn := schema(t)
 	ctx := context.Background()
 	c := migrate.DefaultConfig(dsn)
