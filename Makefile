@@ -76,8 +76,8 @@ down:
 
 run: build ## the service on the host against the compose PostgreSQL
 	SERVICE_NAME=bank-statement-data ENV=dev AUTH_MODE=insecure-dev LOG_FORMAT=text \
-	DB_PRIMARY_DSN='postgres://bank-statement-data:bank-statement-data@localhost:5432/bank-statement-data?sslmode=disable' \
+	DB_PRIMARY_DSN='postgres://bank_statement_data:bank_statement_data@localhost:5432/bank_statement_data?sslmode=disable' \
 	$(BIN) serve
 
 migrate: build ## migrate up against the compose PostgreSQL
-	DB_PRIMARY_DSN='postgres://bank-statement-data:bank-statement-data@localhost:5432/bank-statement-data?sslmode=disable' $(BIN) migrate up
+	DB_PRIMARY_DSN='postgres://bank_statement_data:bank_statement_data@localhost:5432/bank_statement_data?sslmode=disable' $(BIN) migrate up
