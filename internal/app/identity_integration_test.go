@@ -60,45 +60,17 @@ func TestIntegrationVerifiedIdentityAndTombstoneAdmission(t *testing.T) {
 	cfg := config.Config{Service: "bank-statement-data"}
 	stand.Configure(&cfg, "bank-statement-data")
 	reg := prometheus.NewRegistry()
-	id, err := newIdentity(cfg, reg, time.Now)
+	id, err := newIdentity(cfg, reg, nil, time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer id.close()
+	t.Cleanup(id.close) // after the chain below has stopped
 	admission, err := newTombstoneAdmission(db, reg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv, err := server.New(server.Options{MaxRecvMsgSize: 1 << 20}, server.Deps{
-		Logger: slog.New(slog.DiscardHandler), Metrics: reg,
-		Policy:   server.Policy{"/grpc.testing.TestService/*": {Callers: []string{"bank-bff"}, Model: server.ModelUser}},
-		Services: id.services, Users: id.users, Tombstones: admission,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	handler := probe{seen: make(chan string, 1)}
-	testgrpc.RegisterTestServiceServer(srv.GRPC(), handler)
-	lis := bufconn.Listen(1 << 20)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		if err := srv.Serve(lis); err != nil {
-			t.Error(err)
-		}
-	}()
-	defer func() { srv.Shutdown(context.Background(), 0); <-done }()
-	conn, err := grpc.NewClient("passthrough:///bank-statement-data",
-		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }),
-		grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = conn.Close() }()
-	call := func(serviceToken, userToken string) error {
-		_, err := testgrpc.NewTestServiceClient(conn).EmptyCall(testidentity.Outgoing(t.Context(), serviceToken, userToken), &testgrpc.Empty{})
-		return err
-	}
+	call, seen := admissionChain(t, id, admission, reg)
+	handler := probe{seen: seen}
 
 	alive, deleted := "3f0e9a52-7f7b-4c9b-9b8e-0d1f5d0c2a11", "8c2b6c0e-1a3d-4f5e-9a7b-2c4d6e8f0a12"
 	bff := stand.ServiceToken("bank-bff")
@@ -152,4 +124,41 @@ func TestIntegrationVerifiedIdentityAndTombstoneAdmission(t *testing.T) {
 	if err := admission.revoked.Write(&revoked); err != nil || revoked.GetCounter().GetValue() != 2 {
 		t.Fatalf("finassist_tombstone_revoked_total = %v (%v), want the two deleted-user refusals", revoked.GetCounter().GetValue(), err)
 	}
+}
+
+// admissionChain serves the probe in a go-grpc server built from the assembly's identity
+// and tombstone admission and returns a caller of its user-model method.
+func admissionChain(t *testing.T, id identityParts, admission server.Tombstones, reg *prometheus.Registry) (func(serviceToken, userToken string) error, chan string) {
+	t.Helper()
+	srv, err := server.New(server.Options{MaxRecvMsgSize: 1 << 20}, server.Deps{
+		Logger: slog.New(slog.DiscardHandler), Metrics: reg,
+		Policy:   server.Policy{"/grpc.testing.TestService/*": {Callers: []string{"bank-bff"}, Model: server.ModelUser}},
+		Services: id.services, Users: id.users, Tombstones: admission,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := probe{seen: make(chan string, 1)}
+	testgrpc.RegisterTestServiceServer(srv.GRPC(), handler)
+	lis := bufconn.Listen(1 << 20)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := srv.Serve(lis); err != nil {
+			t.Error(err)
+		}
+	}()
+	t.Cleanup(func() { srv.Shutdown(context.Background(), 0); <-done })
+	conn, err := grpc.NewClient("passthrough:///bank-statement-data",
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	call := func(serviceToken, userToken string) error {
+		_, err := testgrpc.NewTestServiceClient(conn).EmptyCall(testidentity.Outgoing(t.Context(), serviceToken, userToken), &testgrpc.Empty{})
+		return err
+	}
+	return call, handler.seen
 }

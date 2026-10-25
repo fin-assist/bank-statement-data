@@ -277,6 +277,12 @@ func writeJSON(t testing.TB, dir, name string, v any) string {
 	return path
 }
 
+// SignJWT signs claims as an EdDSA JWT with kid; tests use it for tokens of issuers the
+// Stand does not model (Kubernetes ServiceAccounts).
+func SignJWT(t testing.TB, key ed25519.PrivateKey, kid string, claims map[string]any) string {
+	return sign(t, key, kid, claims)
+}
+
 // sign builds an EdDSA JWT with the standard library: the payload is fixed by the test,
 // the signature is real.
 func sign(t testing.TB, key ed25519.PrivateKey, kid string, claims map[string]any) string {

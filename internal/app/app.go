@@ -43,7 +43,12 @@ func New(ctx context.Context, cfg config.Config, log *slog.Logger, reg prometheu
 }
 
 func assemble(ctx context.Context, cfg config.Config, log *slog.Logger, reg prometheus.Registerer, openDB func(context.Context, postgres.Options) (*postgres.DB, error)) (*App, error) {
-	id, err := newIdentity(cfg, reg, time.Now)
+	// Client metrics come first: the identity connection to user reports into them too.
+	clients, err := client.NewMetrics(reg)
+	if err != nil {
+		return nil, err
+	}
+	id, err := newIdentity(cfg, reg, clients, time.Now)
 	if err != nil {
 		return nil, err
 	}
@@ -55,7 +60,7 @@ func assemble(ctx context.Context, cfg config.Config, log *slog.Logger, reg prom
 		id.close()
 		return nil, err
 	}
-	a := &App{Cfg: cfg, Log: log, DB: db, Tokens: id.tokens, Jobs: id.jobs, closers: []func(){id.close, db.Close}}
+	a := &App{Cfg: cfg, Log: log, DB: db, Clients: clients, Tokens: id.tokens, Jobs: id.jobs, closers: []func(){id.close, db.Close}}
 	fail := func(err error) (*App, error) { a.Close(); return nil, err }
 
 	admission, err := newTombstoneAdmission(db, reg)
@@ -66,9 +71,6 @@ func assemble(ctx context.Context, cfg config.Config, log *slog.Logger, reg prom
 		Logger: log, Metrics: reg, Policy: AccessPolicy(),
 		Services: id.services, Users: id.users, Tombstones: admission,
 	}); err != nil {
-		return fail(err)
-	}
-	if a.Clients, err = client.NewMetrics(reg); err != nil {
 		return fail(err)
 	}
 	jobs, closeWired, err := wire(a)
@@ -105,8 +107,9 @@ const userKeysRetry = "finassist.user.v1.UserInternalService/GetSigningKeys"
 // newIdentity builds the identity of AUTH_MODE: go-identity NewAssembly for verify
 // (Kubernetes ServiceAccounts in prod, file-key stand JWTs in stage, user JWTs by the
 // keys of user.GetSigningKeys in both) or the dev verifiers of go-grpc for insecure-dev.
-// A refusal opens nothing and leaves no metric registered; there is no weaker fallback.
-func newIdentity(cfg config.Config, reg prometheus.Registerer, now func() time.Time) (identityParts, error) {
+// The user connection reports into clients (grpc_client_*{peer="user"}). A refusal opens
+// nothing and registers no identity metric; there is no weaker fallback.
+func newIdentity(cfg config.Config, reg prometheus.Registerer, clients *client.Metrics, now func() time.Time) (identityParts, error) {
 	switch cfg.Auth.Mode {
 	case config.AuthInsecureDev:
 		// New is exported and callable without config.Load, so the dev-only gate is
@@ -128,7 +131,7 @@ func newIdentity(cfg config.Config, reg prometheus.Registerer, now func() time.T
 		Env: string(cfg.Env), Service: cfg.Service,
 		UserIssuer: id.UserIssuer, UserAudience: id.UserAudience,
 		DialUser: func(tokens identitylib.TokenSource) (*grpc.ClientConn, error) {
-			return client.Dial(cfg.Peers["user"], client.Options{Peer: "user", Tokens: tokens, Retry: []string{userKeysRetry}})
+			return client.Dial(cfg.Peers["user"], client.Options{Peer: "user", Tokens: tokens, Metrics: clients, Retry: []string{userKeysRetry}})
 		},
 		Clock: now, Registerer: reg,
 	}

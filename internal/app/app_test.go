@@ -76,12 +76,21 @@ func TestUnitIdentityFailsClosed(t *testing.T) {
 			cfg := valid()
 			tt.change(&cfg)
 			reg := prometheus.NewRegistry()
-			id, err := newIdentity(cfg, reg, time.Now)
+			id, err := newIdentity(cfg, reg, nil, time.Now)
 			if err == nil || !strings.Contains(err.Error(), tt.want) || id.services != nil || id.users != nil || id.tokens != nil {
 				t.Fatalf("identity built: %v", err)
 			}
 			if !registryEmpty(t, reg) {
 				t.Fatal("a refused identity left metrics registered")
+			}
+			// The whole assembly refuses with the same reason before opening any pool.
+			opened := false
+			a, err := assemble(t.Context(), cfg, slog.New(slog.DiscardHandler), prometheus.NewRegistry(), func(context.Context, postgres.Options) (*postgres.DB, error) {
+				opened = true
+				return nil, errors.New("must not open")
+			})
+			if a != nil || opened || err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("assembly: app=%v opened=%v err=%v", a != nil, opened, err)
 			}
 		})
 	}
@@ -97,7 +106,7 @@ func TestUnitStageIdentityBuildsAssemblyAndRefreshJob(t *testing.T) {
 	cfg := config.Config{Service: "bank-statement-data"}
 	stand.Configure(&cfg, "bank-statement-data")
 	reg := prometheus.NewRegistry()
-	id, err := newIdentity(cfg, reg, time.Now)
+	id, err := newIdentity(cfg, reg, nil, time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +136,7 @@ func TestUnitStageIdentityBuildsAssemblyAndRefreshJob(t *testing.T) {
 }
 
 func TestUnitInsecureDevIdentityOnlyInDev(t *testing.T) {
-	id, err := newIdentity(config.Config{Service: "bank-statement-data", Env: config.EnvDev, Auth: config.AuthConfig{Mode: config.AuthInsecureDev}}, prometheus.NewRegistry(), time.Now)
+	id, err := newIdentity(config.Config{Service: "bank-statement-data", Env: config.EnvDev, Auth: config.AuthConfig{Mode: config.AuthInsecureDev}}, prometheus.NewRegistry(), nil, time.Now)
 	if err != nil || id.services == nil || id.users == nil || id.tokens == nil || len(id.jobs) != 0 {
 		t.Fatalf("dev: %v", err)
 	}
@@ -141,7 +150,7 @@ func TestUnitInsecureDevRefusedOutsideDevWithoutConfigLoad(t *testing.T) {
 		t.Run(string(env), func(t *testing.T) {
 			cfg := config.Config{Service: "analytics", Env: env, Auth: config.AuthConfig{Mode: config.AuthInsecureDev},
 				DB: config.DBConfig{PrimaryDSN: "primary", MaxConns: 1}}
-			id, err := newIdentity(cfg, prometheus.NewRegistry(), time.Now)
+			id, err := newIdentity(cfg, prometheus.NewRegistry(), nil, time.Now)
 			if err == nil || id.services != nil || id.users != nil || id.tokens != nil || !strings.Contains(err.Error(), "only with ENV=dev") {
 				t.Fatalf("insecure identities accepted in %q: %v", env, err)
 			}

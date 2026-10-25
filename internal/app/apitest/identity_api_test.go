@@ -48,33 +48,37 @@ func TestAPIStageVerifyAssemblyServes(t *testing.T) {
 }
 
 // Verify mode never falls back to unverified identities: without its settings, outside
-// prod/stage or with stand keys in prod the assembly refuses before the database is used.
+// prod/stage or with stand keys in prod the whole assembly refuses with the identity
+// reason (that no pool is opened first is asserted by TestUnitIdentityFailsClosed).
 func TestAPIVerifyAssemblyRefusesIncompleteIdentity(t *testing.T) {
 	stand := testidentity.New(t)
 	dsn := testdb.DSN(t)
-	for name, mutate := range map[string]func(*config.Config){
-		"prod without files": func(c *config.Config) {
+	for _, tt := range []struct {
+		name, want string
+		mutate     func(*config.Config)
+	}{
+		{"prod without files", "separate service and API token files", func(c *config.Config) {
 			c.Env, c.Auth.Mode = config.EnvProd, config.AuthVerify
 			c.Auth.Identity = config.IdentityConfig{UserIssuer: "u", UserAudience: "a"}
 			c.Peers["user"] = "dns:///user.invalid:9090"
-		},
-		"verify in dev": func(c *config.Config) {
+		}},
+		{"verify in dev", "env prod or stage", func(c *config.Config) {
 			stand.Configure(c, "bank-statement-data")
 			c.Env = config.EnvDev
-		},
-		"stand keys in prod": func(c *config.Config) {
+		}},
+		{"stand keys in prod", "not allowed in prod", func(c *config.Config) {
 			stand.Configure(c, "bank-statement-data")
 			c.Env, c.Auth.ServiceTokenFile = config.EnvProd, "/var/run/secrets/finassist/token"
-		},
+		}},
 	} {
-		t.Run(name, func(t *testing.T) {
-			env, closeEnv, err := start(context.Background(), dsn, realDependencies(), mutate)
+		t.Run(tt.name, func(t *testing.T) {
+			env, closeEnv, err := start(context.Background(), dsn, realDependencies(), tt.mutate)
 			if err == nil {
 				closeEnv()
 				t.Fatalf("started: %v", env != nil)
 			}
-			if !strings.Contains(err.Error(), "app:") || errors.Is(err, context.Canceled) {
-				t.Fatalf("refusal: %v", err)
+			if !strings.HasPrefix(err.Error(), "app: identity: ") || !strings.Contains(err.Error(), tt.want) || errors.Is(err, context.Canceled) {
+				t.Fatalf("refusal %q, want the identity reason %q", err, tt.want)
 			}
 		})
 	}
