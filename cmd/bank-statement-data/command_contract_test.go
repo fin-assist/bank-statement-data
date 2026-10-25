@@ -38,7 +38,7 @@ func TestAPICommandConfigurationAndUsageAreRealExitStatuses(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(previous) })
 	for _, args := range [][]string{nil, {"not-a-command"}, {"serve", "unexpected"}, {"migrate"}} {
 		var stderr bytes.Buffer
-		if code := mainExit(args, &stderr); code != 2 || !strings.Contains(stderr.String(), "service migrate") {
+		if code := mainExit(args, &stderr); code != 2 || !strings.Contains(stderr.String(), "bank-statement-data migrate") {
 			t.Fatalf("args=%v code=%d stderr=%q", args, code, stderr.String())
 		}
 	}

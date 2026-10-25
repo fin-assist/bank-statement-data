@@ -1,8 +1,6 @@
-// Command service is the binary of the service: "serve" runs the gRPC server with its
-// background jobs (FIN-117), "migrate" applies database migrations before a rollout
-// (FIN-115). Configuration comes from the environment (docs/config.md).
-//
-// Rename the directory to the service name (cmd/user, cmd/bank-bff, ...) in a new service.
+// Command bank-statement-data is the binary of the service: "serve" runs the gRPC server
+// with its background jobs (FIN-117), "migrate" applies database migrations before a
+// rollout (FIN-115). Configuration comes from the environment (docs/config.md).
 package main
 
 import (
@@ -47,11 +45,11 @@ type usageError string
 func (e usageError) Error() string { return string(e) }
 
 const usage = `usage:
-  service serve                            run the gRPC server, /metrics and background jobs
-  service migrate up                       apply pending migrations of all sources
-  service migrate version                  print applied versions
-  service migrate down <source> <steps>    roll back the last steps of one source
-  service migrate force <source> <version> set the version and clear the dirty flag`
+  bank-statement-data serve                            run the gRPC server, /metrics and background jobs
+  bank-statement-data migrate up                       apply pending migrations of all sources
+  bank-statement-data migrate version                  print applied versions
+  bank-statement-data migrate down <source> <steps>    roll back the last steps of one source
+  bank-statement-data migrate force <source> <version> set the version and clear the dirty flag`
 
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {

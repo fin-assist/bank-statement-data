@@ -155,12 +155,29 @@ Priorities when they pull apart, in this order:
   with `db.Run` (delegated to `go-postgres`); repositories take `db.Writer(ctx)` / `db.Reader(ctx)`;
   no calls to other services inside `Run`.
   Migrations follow `docs/migrations.md` (two releases for an incompatible change, `CONCURRENTLY` alone in a file).
-  The schema holds only keys (PK, UNIQUE, FK with cascades), NOT NULL and DEFAULT — no CHECK, EXCLUDE, triggers or
-  functions (owner's decision of 19.10.2026). Every other rule lives in the code: the table of «Инварианты в коде
-  сервиса» in `docs/schema.md` says where; a new rule adds its row there.
-- Constraint errors: service adapters own the SQLSTATE + exact constraint-name mapping to domain errors.
-  `db.RunMapped` maps callback and actual COMMIT errors at the outer operation; nested calls use `Run`.
-  Foreign-manager contexts fail closed. Unknown database errors remain INTERNAL.
+- Constraint errors (FIN-195): go-postgres owns the transaction mechanism. Adapters define one
+  operation-specific mapper on the outer RunMapped, matching both SQLSTATE and constraint name;
+  usecases see only domain errors and translate them with finerr per the method contract. Never
+  install a global mapping or parse pgconn in a usecase. Deferred errors are mapped at actual COMMIT;
+  nested work uses Run, not another mapper. Unknown violations remain INTERNAL. Never copy PgError.Detail
+  or wrap the raw PgError into a domain error. See docs/migrations.md and internal/adapter/postgres/transactions_test.go.
+- No validation or logic in the schema (FIN-194, `docs/migrations.md` «Что можно в схеме»): allowed are `PRIMARY KEY`,
+  `UNIQUE`, `FOREIGN KEY` with any `ON DELETE` / `ON UPDATE` action (`SET DEFAULT` included), `NOT NULL`, `DEFAULT`,
+  indexes (unique, partial and expression ones included) and generated columns `GENERATED ALWAYS AS (…) STORED` (a
+  value computed for storage or search, not validation); an identity column (`GENERATED ALWAYS AS IDENTITY`) is a
+  separate case, a key, and is allowed too. Not allowed: `CHECK`, `EXCLUDE`, triggers, stored functions or procedures,
+  domains with constraints. Such invariants live in `internal/domain` or the usecase with unit tests; actions on a
+  write (`pg_notify` included) run in the service's own `db.Run`. DDL inside a migration (a `DO` block creating the
+  initial set of partitions, `RAISE EXCEPTION` in an irreversible down file) runs once on `migrate up` /
+  `migrate down`, is not runtime logic and is allowed. Future partitions are created by the service's job, never
+  `pg_partman` (`docs/migrations.md`, «Партиции»).
+  A cross-row invariant (a former `EXCLUDE`, «one active row», non-overlapping intervals) is expressed by a unique
+  index where possible (a partial `UNIQUE`, for example); otherwise code checks it under a lock in the same `db.Run`
+  — `SELECT … FOR UPDATE` of the parent row or a transaction-level advisory lock, `pg_advisory_xact_lock(key)`
+  (released on `COMMIT` / `ROLLBACK`; a session `pg_advisory_lock` would stay on the pooled connection) — and an
+  integration test with two concurrent writers on PostgreSQL covers it.
+  Every such rule of this service has its row in «Инварианты в коде сервиса» of `docs/schema.md`; a new rule adds
+  its row there.
 - Clients of other services: `client.Dial` with `Retry` listing only reads and methods idempotent by construction;
   the context carries the deadline.
 - Time: "now" in business logic comes from an injected clock (`func() time.Time` or an interface passed by `wire()`),
