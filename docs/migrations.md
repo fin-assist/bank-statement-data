@@ -60,7 +60,7 @@ bank-statement-data migrate force <source> <version>  # выставить ве�
 {Name: "service", Table: "schema_migrations", FS: migrations.FS},
 ```
 
-Библиотека отдаёт `Migrations` (`fs.FS` со своими файлами по тем же правилам), `MigrationsName` и `MigrationsTable` (`<библиотека>_schema_migrations`), а сервис проверяет подключённый источник публичным `github.com/fin-assist/go-migrate/migratetest.CheckUpDownUp(t, dsn, source)`. Собственные тесты библиотеки определяются её README; сервис не копирует её test harness. Правило выпущенных миграций библиотеки — в её `docs/releasing.md`, «Миграции»: файл не меняется, несовместимое изменение схемы — в два выпуска.
+Библиотека отдаёт `Migrations` (`fs.FS` со своими файлами по тем же правилам), `MigrationsName` и `MigrationsTable` (`<библиотека>_schema_migrations`), а сервис проверяет каждый источник из `MigrationSources()` по порядку на одной БД публичным `github.com/fin-assist/go-migrate/migratetest.CheckUpDownUp(t, dsn, source)` (`TestIntegrationUpDownUp` в `migrations/migrations_test.go`): новый источник проверяется без правки теста. Собственные тесты библиотеки определяются её README; сервис не копирует её test harness. Правило выпущенных миграций библиотеки — в её `docs/releasing.md`, «Миграции»: файл не меняется, несовместимое изменение схемы — в два выпуска.
 
 ## Изменение схемы без простоя
 
