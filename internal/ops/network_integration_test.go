@@ -95,6 +95,10 @@ func TestIntegrationReadinessNetworkFailureRecoveryAndShutdown(t *testing.T) {
 	unavailable.Store(false)
 	await(true)
 	get("/readyz", 200, "ok")
+	// Shutdown drain over the real listener: not ready while the dependency is healthy.
+	readiness.Drain()
+	get("/readyz", 503, "not ready")
+	get("/healthz", 200, "ok")
 	cancel()
 	select {
 	case <-done:

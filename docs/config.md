@@ -20,15 +20,25 @@
 |---|---|---|
 | `SERVICE_NAME` | — (обязательна) | имя сервиса: логи, `application_name`, токен в dev |
 | `ENV` | `prod` | `dev`, `stage` или `prod`. Reflection включён только при `dev` |
-| `AUTH_MODE` | `verify` | `verify` — проверка JWT и токенов ServiceAccount (FIN-119, пока не подключена: сервис не стартует); `insecure-dev` — токены `dev:<имя>` без проверки, только при `ENV=dev` |
-| `SERVICE_TOKEN_FILE` | — | файл с токеном ServiceAccount этого сервиса для исходящих вызовов (FIN-119) |
+| `AUTH_MODE` | `verify` | `verify` — проверка токенов через `go-identity` (`NewAssembly`): при `ENV=prod` — ServiceAccount Kubernetes, при `ENV=stage` — JWT стенда с ключами из файлов; access JWT пользователя — по ключам `user.GetSigningKeys`. `insecure-dev` — токены `dev:<имя>` без проверки, только при `ENV=dev` |
+| `AUTH_USER_ISSUER` | — | доверенный issuer access JWT `user`; обязателен при `verify` |
+| `AUTH_USER_AUDIENCE` | — | доверенная audience access JWT `user`; обязательна при `verify` |
+| `SERVICE_TOKEN_FILE` | — | projected-токен ServiceAccount этого сервиса (audience `finassist-internal`) для исходящих вызовов; обязателен при `verify` и `ENV=prod`, отдельный от `AUTH_KUBERNETES_API_TOKEN_FILE` |
+| `AUTH_KUBERNETES_ISSUER` | `https://kubernetes.default.svc.cluster.local` | `ENV=prod`: issuer токенов ServiceAccount; сверить с настройкой кластера |
+| `AUTH_KUBERNETES_JWKS_URL` | `https://kubernetes.default.svc/openid/v1/jwks` | `ENV=prod`: HTTPS-адрес ключей ServiceAccount без query, fragment и credentials |
+| `AUTH_KUBERNETES_CA_FILE` | `/var/run/secrets/kubernetes.io/serviceaccount/ca.crt` | `ENV=prod`: CA Kubernetes API, единственное доверие для JWKS |
+| `AUTH_KUBERNETES_API_TOKEN_FILE` | `/var/run/secrets/kubernetes.io/serviceaccount/token` | `ENV=prod`: API-токен пода для чтения JWKS; отдельный от `finassist-internal` |
+| `AUTH_KUBERNETES_NAMESPACE` | `finassist` | `ENV=prod`: доверенный namespace вызывающих ServiceAccount |
+| `AUTH_STAGE_ISSUER` | — | `ENV=stage`: общий issuer сервисных JWT стенда; обязателен в stage, запрещён в prod |
+| `AUTH_STAGE_SIGNING_KEY_FILE` | — | `ENV=stage`: PKCS#8 PEM Ed25519 ключ этого сервиса (права `0600`), читается при старте; обязателен в stage, запрещён в prod |
+| `AUTH_STAGE_PUBLIC_KEYS_FILE` | — | `ENV=stage`: JWKS ключей сервисов стенда (только OKP Ed25519, `kid` — имя сервиса), читается при старте; обязателен в stage, запрещён в prod |
 | `DB_PRIMARY_DSN` / `_FILE` | — (обязательна) | DSN primary (`-rw`) |
 | `DB_REPLICA_DSN` / `_FILE` | — | DSN реплик (`-ro`); пусто — чтение тоже с primary. На стенде оба указывают на один PostgreSQL |
 | `DB_MAX_CONNS` | `10` | размер каждого пула |
 | `GRPC_ADDR` | `:9090` | gRPC |
 | `GRPC_MAX_RECV_MSG_SIZE` | `4194304` | байт, предел размера входящего сообщения. Лимит 16 МиБ из grpc-api.md 9 относится к ответу `SearchOperations`, а не к запросам: приём не поднимать без метода с большим запросом |
 | `HTTP_ADDR` | `:9091` | `/metrics`, `/healthz`, `/readyz` |
-| `PEER_<NAME>_ADDR` | — | адрес другого сервиса: `PEER_BANK_STATEMENT_DATA_ADDR` → `cfg.Peers["bank-statement-data"]`. k3s: `dns:///bank-statement-data.finassist.svc.cluster.local:9090`; стенд: `dns:///127.0.0.1:9092` |
+| `PEER_<NAME>_ADDR` | — | адрес другого сервиса: `PEER_BANK_STATEMENT_DATA_ADDR` → `cfg.Peers["bank-statement-data"]`. k3s: `dns:///bank-statement-data.finassist.svc.cluster.local:9090`; стенд: `dns:///127.0.0.1:9092`. `PEER_USER_ADDR` обязателен при `AUTH_MODE=verify`: ключи access JWT (`GetSigningKeys`) |
 | `LOG_LEVEL` | `info` | `debug` добавляет в строку вызова metadata и запрос с замаскированными токенами |
 | `LOG_FORMAT` | `json` | `json` или `text` |
 | `SHUTDOWN_DELAY` | `5s` | после `NOT_SERVING` сервер ещё принимает вызовы, пока балансировщики не уберут под |

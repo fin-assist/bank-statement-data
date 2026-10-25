@@ -10,6 +10,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	tombstone "github.com/fin-assist/go-tombstone"
+
 	"github.com/fin-assist/bank-statement-data/internal/adapter/postgres"
 	"github.com/fin-assist/bank-statement-data/internal/config"
 )
@@ -44,8 +46,9 @@ func TestUnitAssemblyPassesPoolConfigurationAndKeepsScaffoldEmpty(t *testing.T) 
 			t.Fatalf("unexpected business service %q", name)
 		}
 	}
-	if len(AccessPolicy()) != 0 || len(MigrationSources()) != 1 || MigrationSources()[0].Table != "schema_migrations" {
-		t.Fatal("scaffold policy or migration sources changed")
+	sources := MigrationSources()
+	if len(AccessPolicy()) != 0 || len(sources) != 2 || sources[0].Table != tombstone.MigrationsTable || sources[0].Name != tombstone.MigrationsName || sources[1].Table != "schema_migrations" {
+		t.Fatal("scaffold policy or migration sources changed: the tombstone source must precede the service")
 	}
 }
 
@@ -62,7 +65,7 @@ func TestUnitAssemblyRefusesIdentityBeforeOpeningDatabase(t *testing.T) {
 }
 
 func TestUnitAssemblyPropagatesPoolFailureAndRefusesDuplicateMetrics(t *testing.T) {
-	cfg := config.Config{Service: "bank-statement-data", Auth: config.AuthConfig{Mode: config.AuthInsecureDev}}
+	cfg := config.Config{Service: "bank-statement-data", Env: config.EnvDev, Auth: config.AuthConfig{Mode: config.AuthInsecureDev}}
 	log := slog.New(slog.DiscardHandler)
 	boom := errors.New("pool failed")
 	a, err := assemble(t.Context(), cfg, log, prometheus.NewRegistry(), func(context.Context, postgres.Options) (*postgres.DB, error) {
@@ -71,7 +74,7 @@ func TestUnitAssemblyPropagatesPoolFailureAndRefusesDuplicateMetrics(t *testing.
 	if a != nil || !errors.Is(err, boom) {
 		t.Fatalf("pool failure: app=%v err=%v", a, err)
 	}
-	for _, name := range []string{"grpc_server_handled_total", "grpc_client_handled_total"} {
+	for _, name := range []string{"finassist_tombstone_revoked_total", "grpc_server_handled_total", "grpc_client_handled_total"} {
 		t.Run(name, func(t *testing.T) {
 			reg := prometheus.NewRegistry()
 			reg.MustRegister(prometheus.NewGauge(prometheus.GaugeOpts{Name: name, Help: "conflict"}))

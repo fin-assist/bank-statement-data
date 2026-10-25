@@ -99,7 +99,7 @@ func TestIntegrationCommandServiceMigrationsAndVersions(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	if err := runMigrate(t.Context(), []string{"version"}, &out); err != nil || out.String() != "service\t3\n" {
+	if err := runMigrate(t.Context(), []string{"version"}, &out); err != nil || out.String() != "tombstone\t1\nservice\t3\n" {
 		t.Fatalf("version=%q err=%v", out.String(), err)
 	}
 	for _, args := range [][]string{{"down", "service", "1"}, {"up"}, {"force", "service", "3"}} {
@@ -108,7 +108,7 @@ func TestIntegrationCommandServiceMigrationsAndVersions(t *testing.T) {
 		}
 	}
 	out.Reset()
-	if err := runMigrate(t.Context(), []string{"version"}, &out); err != nil || out.String() != "service\t3\n" {
+	if err := runMigrate(t.Context(), []string{"version"}, &out); err != nil || out.String() != "tombstone\t1\nservice\t3\n" {
 		t.Fatalf("version=%q err=%v", out.String(), err)
 	}
 	for _, args := range [][]string{{"force", "service", "-2"}, {"down", "service", "0"}, {"version", "extra"}, {"force", "service", "not-a-number"}} {

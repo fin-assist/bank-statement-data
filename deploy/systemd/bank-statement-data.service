@@ -18,9 +18,12 @@ EnvironmentFile=/etc/finassist/bank-statement-data/env
 Environment=ENV=stage
 LoadCredential=db-primary-dsn:/etc/finassist/bank-statement-data/db-primary-dsn
 Environment=DB_PRIMARY_DSN_FILE=%d/db-primary-dsn
-# The service token file of FIN-119 goes the same way:
-#LoadCredential=service-token:/etc/finassist/bank-statement-data/service-token
-#Environment=SERVICE_TOKEN_FILE=%d/service-token
+# AUTH_MODE=verify on the stand (FIN-267, docs/config.md): AUTH_USER_ISSUER, AUTH_USER_AUDIENCE,
+# AUTH_STAGE_ISSUER and PEER_USER_ADDR go to the env file; the stand keys go the same way as the DSN:
+LoadCredential=stage-signing-key:/etc/finassist/bank-statement-data/stage-signing-key.pem
+Environment=AUTH_STAGE_SIGNING_KEY_FILE=%d/stage-signing-key
+LoadCredential=stage-public-keys:/etc/finassist/stand/stage-public-keys.json
+Environment=AUTH_STAGE_PUBLIC_KEYS_FILE=%d/stage-public-keys
 
 DynamicUser=yes
 Restart=on-failure

@@ -49,6 +49,7 @@ updates them in the same PR. A service made from the template rewrites the first
 | Primary/replica routing, go-postgres.OpenPools/transaction adapter, repositories | `internal/adapter/postgres/`; rules — `docs/migrations.md`, «Запросы на pgx» |
 | Migration runner and public test harness | `github.com/fin-assist/go-migrate` / `migratetest` v0.1.0; ordered service sources — `internal/app/` |
 | Test PostgreSQL server selection (not runtime business code) | `internal/testdb/`; public migratetest creates/checks databases; counted in every profile |
+| Stand identity for verify-mode tests: key files, signed tokens, user GetSigningKeys peer | `internal/testidentity/`; never wired into serve; counted in every profile |
 | SQL migrations (embedded) and schema constraint tests | `migrations/` (`schema_test.go`); rules — `docs/migrations.md`, schema and code invariants — `docs/schema.md` |
 | Application-specific peer adapters, when needed | `internal/adapter/client/<peer>/`; shared dialing/token contracts — go-grpc/client |
 | Shared job lifecycle; application jobs when needed | `github.com/fin-assist/go-worker` v0.1.0; `internal/worker/<job>/` |
@@ -62,8 +63,12 @@ updates them in the same PR. A service made from the template rewrites the first
 | PR review by Claude | `.github/workflows/claude.yml` |
 
 FIN-258 keeps only service routing/assembly adapters locally. Do not copy library internals back into the service
-or add dummy RPCs, SQL or jobs. Preserve fail-closed verify identity and the explicit NoTombstones replacement
-requirement. Pass the service logger, metric registry and worker clock/restart settings explicitly; library defaults
+or add dummy RPCs, SQL or jobs. FIN-267: AUTH_MODE=verify is go-identity v0.2.0 NewAssembly (prod: Kubernetes
+ServiceAccounts, stage: file-key stand JWTs; user JWTs by user.GetSigningKeys through PEER_USER_ADDR, refreshed by
+the identity-keys job); any other ENV with verify fails startup, insecure-dev stays dev-only in config and app.New.
+go-tombstone v0.1.0 supplies the first migration source and the primary-backed go-grpc admission (TOKEN_REVOKED).
+Guard in writing transactions and UserDeletionService.PurgeUserData come with the first RPC that writes user data.
+Pass the service logger, metric registry and worker clock/restart settings explicitly; library defaults
 are not a substitute for existing service behaviour. go-postgres is pinned at v0.2.0. Paths with <feature>, <peer>
 and <job> describe future application code only, not actual empty directories in the template.
 
@@ -95,7 +100,7 @@ the PR with why it is needed.
 - The image needs Docker; without it say in the PR that the image was built only by the CI job `image`.
 - Every test or lint run gets a timeout (`timeout 600 make test` or the tool's own): a hung run blocks the session.
 - A local `serve` for a smoke check: `ENV=dev AUTH_MODE=insecure-dev SERVICE_NAME=bank-statement-data DB_PRIMARY_DSN=… make run`;
-  `/readyz` on `HTTP_ADDR` answers when the database does.
+  `/readyz` on `HTTP_ADDR` answers when the database does and drops to 503 at SIGTERM, before `SHUTDOWN_DELAY` (FIN-289).
 
 ## Principles
 
@@ -236,8 +241,11 @@ Also:
   Run with `-race`; no sleeps for synchronisation — wait on a channel or a condition with a deadline.
 - The measurable gate is at least 80% of all production-code statements for each of unit, integration and API
   separately (`make cover`, README and `docs/testing.md`). Combined coverage cannot compensate for a failing suite.
-  Name every test `TestUnit…`, `TestIntegration…` or `TestAPI…`; classify it by its actual dependencies and assembly.
-  `make test-names` and CI reject unclassified test names using native `go test -race -list`; every collect target requires this classification first.
+  Name every test `TestUnit…`, `TestIntegration…` or `TestAPI…` and every fuzz target `FuzzUnit…`,
+  `FuzzIntegration…` or `FuzzAPI…` (its seed corpus runs in that suite); classify it by its actual dependencies and
+  assembly. `make test-names` and CI reject any other `Test`/`Fuzz` name and any `Example…` (a service has no public
+  Go API, and an example cannot carry a suite prefix) using native `go test -race -list`; every collect target
+  (`-run "^(Test|Fuzz)<Suite>"`) requires this classification first.
 
 ## Checks
 

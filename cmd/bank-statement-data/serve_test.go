@@ -14,7 +14,8 @@ func TestUnitServeFailsBeforeConnectingWithoutVerifiers(t *testing.T) {
 	t.Setenv("DB_PRIMARY_DSN", "postgres://nowhere.invalid/db")
 	t.Setenv("ENV", "prod")
 	err := runServe(t.Context())
-	if err == nil || !strings.Contains(err.Error(), "FIN-119") {
+	// The defaults AUTH_MODE=verify and ENV=prod need the identity settings.
+	if err == nil || !strings.Contains(err.Error(), "AUTH_USER_ISSUER") || !strings.Contains(err.Error(), "SERVICE_TOKEN_FILE") {
 		t.Fatalf("error %v", err)
 	}
 }
