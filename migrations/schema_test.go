@@ -17,8 +17,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/fin-assist/bank-statement-data/internal/adapter/postgres/migrate"
-	"github.com/fin-assist/bank-statement-data/internal/adapter/postgres/migrate/migratetest"
+	"github.com/fin-assist/go-migrate"
+
+	"github.com/fin-assist/bank-statement-data/internal/testdb"
 	"github.com/fin-assist/bank-statement-data/migrations"
 )
 
@@ -51,7 +52,7 @@ const (
 // schema returns a connection to a fresh database with the service migrations applied.
 func schema(t *testing.T) (*pgx.Conn, string) {
 	t.Helper()
-	dsn := migratetest.DSN(t)
+	dsn := testdb.DSN(t)
 	c := migrate.DefaultConfig(dsn)
 	c.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	src := migrate.Source{Name: "service", Table: "schema_migrations", FS: migrations.FS}

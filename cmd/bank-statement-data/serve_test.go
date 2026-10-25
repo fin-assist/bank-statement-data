@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fin-assist/bank-statement-data/internal/adapter/postgres/migrate/migratetest"
+	"github.com/fin-assist/bank-statement-data/internal/testdb"
 )
 
 func TestUnitServeFailsBeforeConnectingWithoutVerifiers(t *testing.T) {
@@ -22,7 +22,7 @@ func TestUnitServeFailsBeforeConnectingWithoutVerifiers(t *testing.T) {
 // The whole serve path against a real database: config, pools, server, ops listener,
 // readiness and an orderly stop on cancel.
 func TestIntegrationServeRunsAndStops(t *testing.T) {
-	dsn := migratetest.DSN(t)
+	dsn := testdb.DSN(t)
 	for k, v := range map[string]string{
 		"SERVICE_NAME": "user", "ENV": "dev", "AUTH_MODE": "insecure-dev", "LOG_LEVEL": "error",
 		"DB_PRIMARY_DSN": dsn, "GRPC_ADDR": "127.0.0.1:0", "HTTP_ADDR": "127.0.0.1:0",
@@ -50,7 +50,7 @@ func TestIntegrationServeFailsOnBadInput(t *testing.T) {
 	cases := map[string]map[string]string{
 		"config":   {"DB_PRIMARY_DSN": ""},
 		"database": {"DB_PRIMARY_DSN": "postgres://nobody@127.0.0.1:1/db?connect_timeout=1"},
-		"listen":   {"DB_PRIMARY_DSN": migratetest.DSN(t), "GRPC_ADDR": "256.0.0.1:1"},
+		"listen":   {"DB_PRIMARY_DSN": testdb.DSN(t), "GRPC_ADDR": "256.0.0.1:1"},
 	}
 	for name, extra := range cases {
 		t.Run(name, func(t *testing.T) {

@@ -1,9 +1,10 @@
 package app
 
 import (
-	"github.com/fin-assist/bank-statement-data/internal/adapter/grpc/server"
-	"github.com/fin-assist/bank-statement-data/internal/adapter/postgres/migrate"
-	"github.com/fin-assist/bank-statement-data/internal/worker"
+	"github.com/fin-assist/go-grpc/server"
+	"github.com/fin-assist/go-migrate"
+	"github.com/fin-assist/go-worker"
+
 	"github.com/fin-assist/bank-statement-data/migrations"
 )
 

@@ -13,6 +13,7 @@ package apitest
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net"
 	"testing"
@@ -24,11 +25,12 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/test/bufconn"
 
-	"github.com/fin-assist/bank-statement-data/internal/adapter/grpc/server"
-	"github.com/fin-assist/bank-statement-data/internal/adapter/postgres/migrate"
-	"github.com/fin-assist/bank-statement-data/internal/adapter/postgres/migrate/migratetest"
+	"github.com/fin-assist/go-grpc/server"
+	"github.com/fin-assist/go-migrate"
+
 	"github.com/fin-assist/bank-statement-data/internal/app"
 	"github.com/fin-assist/bank-statement-data/internal/config"
+	"github.com/fin-assist/bank-statement-data/internal/testdb"
 )
 
 // Env is a running service.
@@ -42,53 +44,101 @@ type Env struct {
 // the configuration (peers, limits) before the assembly.
 func Start(t *testing.T, mutate ...func(*config.Config)) *Env {
 	t.Helper()
-	ctx := context.Background()
-	dsn := migratetest.DSN(t)
-
-	mcfg := migrate.DefaultConfig(dsn)
-	mcfg.Logger = slog.New(slog.DiscardHandler)
-	if err := migrate.Up(ctx, mcfg, app.MigrationSources()); err != nil {
-		t.Fatalf("migrate: %v", err)
+	env, closeEnv, err := start(context.Background(), testdb.DSN(t), realDependencies(), mutate...)
+	if err != nil {
+		t.Fatal(err)
 	}
+	t.Cleanup(closeEnv)
+	return env
+}
 
+// These ports keep resource ownership testable without opening a database or socket.
+// They model only the IO used by the whole-assembly test harness.
+type service interface {
+	Check() error
+	Serve(net.Listener) error
+	SetServing(bool)
+	Shutdown(context.Context, time.Duration)
+}
+
+type listener interface {
+	net.Listener
+	DialContext(context.Context) (net.Conn, error)
+}
+
+type dependencies struct {
+	migrate  func(context.Context, string) error
+	assemble func(context.Context, config.Config) (*app.App, service, func(), error)
+	listen   func() listener
+	connect  func(listener) (*grpc.ClientConn, func() error, error)
+}
+
+func realDependencies() dependencies {
+	return dependencies{
+		migrate: func(ctx context.Context, dsn string) error {
+			cfg := migrate.DefaultConfig(dsn)
+			cfg.Logger = slog.New(slog.DiscardHandler)
+			return migrate.Up(ctx, cfg, app.MigrationSources())
+		},
+		assemble: func(ctx context.Context, cfg config.Config) (*app.App, service, func(), error) {
+			a, err := app.New(ctx, cfg, slog.New(slog.DiscardHandler), prometheus.NewRegistry())
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			return a, a.GRPC, a.Close, nil
+		},
+		listen: func() listener { return bufconn.Listen(1 << 20) },
+		connect: func(lis listener) (*grpc.ClientConn, func() error, error) {
+			conn, err := grpc.NewClient("passthrough:///apitest",
+				grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }),
+				grpc.WithTransportCredentials(insecure.NewCredentials()))
+			if err != nil {
+				return nil, nil, err
+			}
+			return conn, conn.Close, nil
+		},
+	}
+}
+
+func start(ctx context.Context, dsn string, deps dependencies, mutate ...func(*config.Config)) (*Env, func(), error) {
+	if err := deps.migrate(ctx, dsn); err != nil {
+		return nil, nil, fmt.Errorf("migrate: %w", err)
+	}
 	cfg := config.Config{
-		Service: "apitest",
-		Env:     config.EnvDev,
-		Auth:    config.AuthConfig{Mode: config.AuthInsecureDev},
-		DB:      config.DBConfig{PrimaryDSN: dsn, MaxConns: 4},
-		GRPC:    config.GRPCConfig{MaxRecvMsgSize: 4 << 20},
-		Peers:   map[string]string{},
+		Service: "apitest", Env: config.EnvDev,
+		Auth: config.AuthConfig{Mode: config.AuthInsecureDev},
+		DB:   config.DBConfig{PrimaryDSN: dsn, MaxConns: 4},
+		GRPC: config.GRPCConfig{MaxRecvMsgSize: 4 << 20}, Peers: map[string]string{},
 	}
 	for _, m := range mutate {
 		m(&cfg)
 	}
-	a, err := app.New(ctx, cfg, slog.New(slog.DiscardHandler), prometheus.NewRegistry())
+	a, srv, closeApp, err := deps.assemble(ctx, cfg)
 	if err != nil {
-		t.Fatalf("app: %v", err)
+		return nil, nil, fmt.Errorf("app: %w", err)
 	}
-	if err := a.GRPC.Check(); err != nil {
-		a.Close()
-		t.Fatalf("server: %v", err)
+	if err := srv.Check(); err != nil {
+		closeApp()
+		return nil, nil, fmt.Errorf("server: %w", err)
 	}
-
-	lis := bufconn.Listen(1 << 20)
-	go func() { _ = a.GRPC.Serve(lis) }()
-	a.GRPC.SetServing(true)
-	conn, err := grpc.NewClient("passthrough:///apitest",
-		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }),
-		grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		a.Close()
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = conn.Close()
+	lis := deps.listen()
+	done := make(chan struct{})
+	go func() { defer close(done); _ = srv.Serve(lis) }()
+	srv.SetServing(true)
+	stop := func() {
 		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		a.GRPC.Shutdown(sctx, 0)
-		a.Close()
-	})
-	return &Env{App: a, Conn: conn, DSN: dsn}
+		srv.Shutdown(sctx, 0)
+		_ = lis.Close()
+		<-done
+		closeApp()
+	}
+	conn, closeConn, err := deps.connect(lis)
+	if err != nil {
+		stop()
+		return nil, nil, fmt.Errorf("client: %w", err)
+	}
+	return &Env{App: a, Conn: conn, DSN: dsn}, func() { _ = closeConn(); stop() }, nil
 }
 
 // User returns ctx for a user call made by bank-bff on behalf of userID.
