@@ -30,7 +30,8 @@ const (
 type AuthMode string
 
 const (
-	// AuthVerify checks JWT and ServiceAccount tokens (library of FIN-119).
+	// AuthVerify checks user JWTs and service tokens with go-identity NewAssembly:
+	// Kubernetes ServiceAccount tokens in prod, file-key stand JWTs in stage.
 	AuthVerify AuthMode = "verify"
 	// AuthInsecureDev trusts "Bearer dev:<name>" tokens; allowed only with ENV=dev.
 	AuthInsecureDev AuthMode = "insecure-dev"
@@ -80,8 +81,10 @@ type DBConfig struct {
 // AuthConfig configures identity checks.
 type AuthConfig struct {
 	Mode AuthMode
-	// ServiceTokenFile holds this service's ServiceAccount token, presented on outgoing calls.
+	// ServiceTokenFile holds this service's ServiceAccount token, presented on outgoing calls (prod).
 	ServiceTokenFile string
+	// Identity pins issuers, audiences and key sources of AuthVerify.
+	Identity IdentityConfig
 }
 
 // Load reads the configuration from the process environment.
@@ -135,11 +138,12 @@ func load(getenv func(string) string, readFile func(string) ([]byte, error), env
 		DB: DBConfig{
 			PrimaryDSN: r.secret("DB_PRIMARY_DSN"),
 			ReplicaDSN: r.secret("DB_REPLICA_DSN"),
-			MaxConns:   int32(r.int("DB_MAX_CONNS")),
+			MaxConns:   r.int32("DB_MAX_CONNS"),
 		},
 		Auth: AuthConfig{
 			Mode:             AuthMode(r.str("AUTH_MODE")),
 			ServiceTokenFile: r.str("SERVICE_TOKEN_FILE"),
+			Identity:         r.identity(),
 		},
 		Peers:           map[string]string{},
 		ShutdownDelay:   r.duration("SHUTDOWN_DELAY"),
@@ -190,7 +194,7 @@ func (c Config) validate() []error {
 	default:
 		errs = append(errs, fmt.Errorf("AUTH_MODE=%q, want verify or insecure-dev", c.Auth.Mode))
 	}
-	return errs
+	return append(errs, c.validateIdentity()...)
 }
 
 // onRead, when set by a test, sees every variable a load reads.
@@ -258,6 +262,17 @@ func (r *reader) int(name string) int {
 		r.errs = append(r.errs, fmt.Errorf("%s=%q: not an integer", name, v))
 	}
 	return n
+}
+
+// int32 parses name within the int32 range, so a pool size never wraps around: an
+// out-of-range value is an error, not a silently truncated small number.
+func (r *reader) int32(name string) int32 {
+	v := r.str(name)
+	n, err := strconv.ParseInt(v, 10, 32)
+	if err != nil {
+		r.errs = append(r.errs, fmt.Errorf("%s=%q: not an integer in the range of int32", name, v))
+	}
+	return int32(n)
 }
 
 func (r *reader) duration(name string) time.Duration {

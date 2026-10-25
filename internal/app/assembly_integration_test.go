@@ -19,7 +19,7 @@ func TestIntegrationAssemblyClosesOwnedPoolsWhenMetricsConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = observer.Close(t.Context()) }()
-	for _, name := range []string{"grpc_server_handled_total", "grpc_client_handled_total"} {
+	for _, name := range []string{"finassist_tombstone_revoked_total", "grpc_server_handled_total", "grpc_client_handled_total"} {
 		t.Run(name, func(t *testing.T) {
 			reg := prometheus.NewRegistry()
 			reg.MustRegister(prometheus.NewGauge(prometheus.GaugeOpts{Name: name, Help: "conflict"}))

@@ -3,6 +3,7 @@ package app
 import (
 	"github.com/fin-assist/go-grpc/server"
 	"github.com/fin-assist/go-migrate"
+	tombstone "github.com/fin-assist/go-tombstone"
 	"github.com/fin-assist/go-worker"
 
 	"github.com/fin-assist/bank-statement-data/migrations"
@@ -22,12 +23,14 @@ func AccessPolicy() server.Policy {
 }
 
 // MigrationSources lists the migration sources in the order they are applied: libraries
-// first (each with its own version table), then the service. A library exposes its files
-// and table; add it here when the service starts using it, for example:
+// first (each with its own version table), then the service. go-tombstone comes first:
+// the service schema (user_state, PurgeUserData) relies on tombstone_users. A further
+// library is added the same way, for example:
 //
 //	{Name: outbox.MigrationsName, Table: outbox.MigrationsTable, FS: outbox.Migrations},
 func MigrationSources() []migrate.Source {
 	return []migrate.Source{
+		{Name: tombstone.MigrationsName, Table: tombstone.MigrationsTable, FS: tombstone.Migrations},
 		{Name: "service", Table: "schema_migrations", FS: migrations.FS},
 	}
 }

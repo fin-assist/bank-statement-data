@@ -22,8 +22,14 @@ func env(vars map[string]string) (func(string) string, func() []string) {
 
 func noFiles(string) ([]byte, error) { return nil, fs.ErrNotExist }
 
+// base is the smallest valid production environment: the defaults ENV=prod and
+// AUTH_MODE=verify need the user issuer/audience, the user peer and the service token.
 func base() map[string]string {
-	return map[string]string{"SERVICE_NAME": "user", "DB_PRIMARY_DSN": "postgres://primary/user"}
+	return map[string]string{
+		"SERVICE_NAME": "user", "DB_PRIMARY_DSN": "postgres://primary/user",
+		"AUTH_USER_ISSUER": "https://user.example", "AUTH_USER_AUDIENCE": "finassist",
+		"SERVICE_TOKEN_FILE": "/var/run/secrets/finassist/token", "PEER_USER_ADDR": "dns:///user:9090",
+	}
 }
 
 func TestUnitDefaults(t *testing.T) {
@@ -107,8 +113,27 @@ func TestUnitPeers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Peers["bank-statement-data"] == "" || c.Peers["analytics"] != "127.0.0.1:9093" || len(c.Peers) != 2 {
+	if c.Peers["bank-statement-data"] == "" || c.Peers["analytics"] != "127.0.0.1:9093" || len(c.Peers) != 3 {
 		t.Fatalf("peers %v", c.Peers)
+	}
+}
+
+// A pool size beyond int32 used to wrap around (4294967297 became 1) and pass the
+// positivity check; it is a configuration error instead.
+func TestUnitMaxConnsOutsideInt32IsRejected(t *testing.T) {
+	for _, v := range []string{"4294967297", "2147483648", "-2147483649", "99999999999999999999"} {
+		vars := base()
+		vars["DB_MAX_CONNS"] = v
+		get, list := env(vars)
+		if c, err := load(get, noFiles, list); err == nil || !strings.Contains(err.Error(), "DB_MAX_CONNS") {
+			t.Fatalf("DB_MAX_CONNS=%s accepted as %d: %v", v, c.DB.MaxConns, err)
+		}
+	}
+	vars := base()
+	vars["DB_MAX_CONNS"] = "2147483647"
+	get, list := env(vars)
+	if c, err := load(get, noFiles, list); err != nil || c.DB.MaxConns != 2147483647 {
+		t.Fatalf("max int32: %d %v", c.DB.MaxConns, err)
 	}
 }
 

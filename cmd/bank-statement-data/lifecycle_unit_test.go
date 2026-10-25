@@ -40,6 +40,48 @@ type lifecycleReadiness func(context.Context, time.Duration, *slog.Logger, func(
 func (f lifecycleReadiness) Watch(ctx context.Context, d time.Duration, l *slog.Logger, p func(context.Context) error, s func(bool)) {
 	f(ctx, d, l, p, s)
 }
+func (lifecycleReadiness) Drain() {}
+
+// drainingReadiness records when serve drains readiness relative to the gRPC shutdown.
+type drainingReadiness struct {
+	lifecycleReadiness
+	drained chan<- struct{}
+}
+
+func (r drainingReadiness) Drain() { close(r.drained) }
+
+func TestUnitLifecycleDrainsReadinessBeforeShutdownDelay(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	drained, shutdownCalled := make(chan struct{}), make(chan struct{})
+	gstop, hstop := make(chan struct{}), make(chan struct{})
+	cfg := config.Config{ShutdownDelay: time.Hour, ShutdownTimeout: time.Second}
+	deps := serving{listener: &listenerMarker{}, ping: func(context.Context) error { return nil }}
+	deps.grpc = lifecycleGRPC{start: func(net.Listener) error { <-gstop; return nil }, ready: func(bool) {}, stop: func(sctx context.Context, delay time.Duration) {
+		select {
+		case <-drained:
+		default:
+			t.Error("gRPC shutdown delay started while /readyz still reported ready")
+		}
+		if delay != cfg.ShutdownDelay {
+			t.Error("drain delay changed")
+		}
+		close(shutdownCalled)
+		close(gstop)
+	}}
+	deps.http = lifecycleHTTP{start: func() error { <-hstop; return http.ErrServerClosed }, stop: func(context.Context) error { close(hstop); return nil }}
+	deps.readiness = drainingReadiness{drained: drained, lifecycleReadiness: func(ctx context.Context, _ time.Duration, _ *slog.Logger, _ func(context.Context) error, _ func(bool)) {
+		<-ctx.Done()
+	}}
+	deps.jobs = lifecycleJobs(func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() })
+	done := make(chan error, 1)
+	go func() { done <- serve(ctx, cfg, slog.New(slog.DiscardHandler), deps) }()
+	cancel()
+	receiveLifecycle(t, shutdownCalled)
+	if err := receiveLifecycle(t, done); err != nil {
+		t.Fatal(err)
+	}
+}
 
 type lifecycleJobs func(context.Context) error
 

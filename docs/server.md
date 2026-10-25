@@ -10,9 +10,9 @@
 
 ## Identity и удалённые пользователи
 
-Сервис передаёт серверу реализации интерфейсов проверки сервисного и пользовательского токенов. В каркасе подключение production identity остаётся явным TODO: `AUTH_MODE=verify` отказывает при старте до интеграции, а `insecure-dev` разрешён только при `ENV=dev`. Это не обход проверки в stage/prod.
+`AUTH_MODE=verify` (FIN-267) — одна сборка `identity.NewAssembly` из `go-identity v0.2.0`: она реализует `server.ServiceVerifier`, `server.UserVerifier` и `client.TokenSource`, вторая цепочка аутентификации не ставится. При `ENV=prod` вызывающие — ServiceAccount Kubernetes (JWKS API-сервера по HTTPS только с CA из `AUTH_KUBERNETES_CA_FILE`, отдельный API-токен, проверка namespace и `sub`), исходящий токен — projected `SERVICE_TOKEN_FILE`. При `ENV=stage` — JWT стенда (`kid` = `sub` = имя сервиса, TTL 1 минута) по ключам из `AUTH_STAGE_*`; ключи стенда в prod — ошибка старта. Access JWT пользователя в обоих режимах — по ключам `user.GetSigningKeys`: соединение с `user` (`PEER_USER_ADDR`) принадлежит сборке и повторяет только этот метод; задание `identity-keys` обновляет кэш ключей, `App.Close` после остановки заданий закрывает соединение. Нет свежих ключей — голый `UNAVAILABLE`, не `INVALID_TOKEN` (FIN-293). Метрики библиотеки: `finassist_identity_rejected_total{kind,reason}`, `finassist_identity_jwks_skipped_keys{kind,reason}`. `verify` с `ENV=dev` или неизвестным `ENV` отклоняется, `insecure-dev` разрешён только при `ENV=dev` — и в `config.Load`, и в `app.New`.
 
-`NoTombstones` остаётся временной явной реализацией для каркаса. Сервис с данными пользователей обязан заменить её интеграцией `go-tombstone` в `internal/app`; вынос transport-кода не реализует эту интеграцию автоматически.
+Удалённые пользователи (FIN-267) — `go-tombstone v0.1.0`, «Сборка с go-grpc»: admission над `Store.Deleted` читает primary при каждом пользовательском вызове без кэша; удалённому — `TOKEN_REVOKED` до обработчика, сбой чтения или `sub` не UUID — голый `UNAVAILABLE`. Отказы считает `finassist_tombstone_revoked_total` (методов с `AllowDeleted` нет, поэтому каждый положительный ответ — отказ). `Interceptors` библиотеки не ставятся. `Guard` в пишущих транзакциях и `UserDeletionService.PurgeUserData` (правило `{Callers: user, Model: ModelSystem}`) подключаются вместе с первыми RPC, которые пишут данные пользователя.
 
 ## Клиенты и задания
 
@@ -24,7 +24,7 @@
 
 Сервис передаёт pool options в `go-postgres.OpenPools` v0.2.0. Локальный `postgres.DB` остаётся тонким адаптером менеджера транзакций и маршрутизации: `Writer` выбирает транзакцию/primary, `Reader` — транзакцию, primary для `x-read-primary` от `bank-bff` или реплику. Репозитории и domain mapping принадлежат сервису; подробнее — [migrations.md](migrations.md).
 
-`cmd/bank-statement-data` владеет listeners и порядком shutdown: readiness/health перестают сообщать готовность, выдерживается `SHUTDOWN_DELAY`, gRPC graceful stop ограничен `SHUTDOWN_TIMEOUT`, затем останавливаются jobs и закрываются пулы. Вынос библиотек не меняет этот порядок или конфигурационные defaults.
+`cmd/bank-statement-data` владеет listeners и порядком shutdown: HTTP `/readyz` (`ops.Readiness.Drain`, необратимо до конца процесса) и gRPC health одновременно перестают сообщать готовность, выдерживается `SHUTDOWN_DELAY` (вызовы ещё принимаются, `/healthz` отвечает 200), gRPC graceful stop ограничен `SHUTDOWN_TIMEOUT`, затем останавливаются jobs и закрываются пулы. Вынос библиотек не меняет этот порядок или конфигурационные defaults.
 
 ## Наблюдаемость
 

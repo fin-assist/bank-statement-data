@@ -150,7 +150,7 @@ ID записи — `operation.id` одиночной операции или `t
 
 - Таблица библиотеки `go-tombstone` ([FIN-110](https://finassist.youtrack.cloud/issue/FIN-110)) в БД сервиса: строка (`user_id`, `deleted_at`) на удалённого пользователя (proto `userdeletion`). Миграции — источник библиотеки в `MigrationSources()` перед источником сервиса, со своей таблицей версий ([migrations.md](migrations.md), «Источники: сервис и библиотеки»).
 - FK на `user_state` у отметки нет: она переживает удаление строки пользователя. Срок хранения контракт не задаёт («сервис помнит `user_id`»).
-- Состояние на 20.10.2026: у `go-tombstone` только каркас — нет миграций, API и тега; в сервисе стоит `NoTombstones` (`tombstones()` в `internal/app/app.go`). Ниже — по контракту и интерфейсу `server.Tombstones`. Имена таблицы и методов появятся с FIN-110.
+- Состояние на 25.10.2026 (FIN-267): подключён `go-tombstone v0.1.0` — таблица `tombstone_users(user_id uuid PRIMARY KEY, deleted_at timestamptz NOT NULL)` с версиями в `tombstone_schema_migrations`, источник первым в `MigrationSources()`; admission go-grpc отвечает удалённому `TOKEN_REVOKED`. `Store.Guard` и `Store.Purge` (`PurgeUserData` ниже) подключаются с первыми пишущими RPC. Отметку ставит `Purge` библиотеки (идемпотентно), ключ — UUID в каноническом виде.
 
 ### Что делает `PurgeUserData`
 

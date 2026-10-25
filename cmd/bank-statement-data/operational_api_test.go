@@ -53,7 +53,7 @@ func TestAPICommandMigrationDeploymentServesOperationsAndStops(t *testing.T) {
 		t.Fatal(err)
 	}
 	var versions bytes.Buffer
-	if err := runMigrate(t.Context(), []string{"version"}, &versions); err != nil || versions.String() != "service\t3\n" {
+	if err := runMigrate(t.Context(), []string{"version"}, &versions); err != nil || versions.String() != "tombstone\t1\nservice\t3\n" {
 		t.Fatalf("deployment migration version: %q %v", versions.String(), err)
 	}
 	_ = grpcPort.Close()
@@ -199,10 +199,10 @@ func TestAPICommandMigrationDeploymentServesOperationsAndStops(t *testing.T) {
 		t.Fatal("HTTP still served after shutdown")
 	}
 	// A failed rollout after this observed healthy baseline leaves no serving API.
-	for _, variant := range []string{"verify-not-wired", "database-unavailable", "http-port-conflict"} {
+	for _, variant := range []string{"verify-without-identity", "database-unavailable", "http-port-conflict"} {
 		t.Run(variant, func(t *testing.T) {
 			switch variant {
-			case "verify-not-wired":
+			case "verify-without-identity":
 				t.Setenv("ENV", "prod")
 				t.Setenv("AUTH_MODE", "verify")
 			case "database-unavailable":

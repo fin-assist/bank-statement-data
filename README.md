@@ -17,7 +17,7 @@ Go-сервис «Понятных финансов»: приём выписок
 ## Что ещё не сделано после переноса шаблона
 
 - `AccessPolicy()` и обработчики в `wire()` (`internal/app/wire.go`) — вместе с первыми RPC сервиса, строки из таблицы grpc-api.md 3.3.
-- `NoTombstones` → библиотека `go-tombstone` (FIN-110); outbox (FIN-109) и идемпотентность (FIN-78) — отдельные задачи подключения в бизнес-сборке.
+- Из `go-tombstone` подключены только источник миграций и admission (FIN-267); `Guard` в пишущих сценариях и `UserDeletionService.PurgeUserData` (grpc-api.md 7: «каждый реализует») — вместе с первыми RPC, которые пишут данные пользователя (решение владельца 25.10.2026). Outbox (FIN-109) и идемпотентность (FIN-78) — отдельные задачи подключения в бизнес-сборке.
 - Секреты репозитория (`CLAUDE_CODE_OAUTH_TOKEN` для ревью `@claude`, `GO_MODULES_TOKEN` для приватных модулей fin-assist), Claude GitHub App и Codex — владелец.
 
 ## Раскладка
@@ -36,6 +36,7 @@ internal/adapter/client/<peer>/    application peer adapters when needed; shared
 go-worker                         shared job lifecycle; service jobs when implemented
 internal/config/                   configuration from the environment
 internal/testdb/                   test PostgreSQL server selection (counted in all profiles)
+internal/testidentity/             stand key files, signed test tokens and a user GetSigningKeys peer (counted in all profiles)
 internal/logx/                     slog with values from the context
 internal/ops/                      /metrics, /healthz, /readyz, readiness
 migrations/                        SQL migrations, embedded into the binary
@@ -68,7 +69,13 @@ make run
 
 FIN-258 подключает опубликованные `go-grpc v0.1.0` (server/client/reqctx), `go-migrate v0.1.0`, `go-worker v0.1.0` и `go-postgres v0.2.0`. Локальные копии транспорта, контекста, runner и worker удалены. `postgres.DB` остаётся тонким адаптером транзакций и read-primary routing; пулы создаёт `go-postgres.OpenPools`. Сопоставление SQLSTATE и имени ограничения доменной ошибке принадлежит сервису. Новые библиотеки заменяют ранее скопированную инфраструктуру, stdlib не предоставляет её контрактных реализаций.
 
-Схема и все существующие SQL-миграции сохранены; CLI мигрирует настоящий service source. Пустые `AccessPolicy()`/`wire()`, fail-closed `AUTH_MODE=verify` и временный `NoTombstones` сохраняются до отдельных задач реализации сервиса. Перенос инфраструктуры не добавляет бизнес-RPC, импорт OFX или задание партиций FIN-193. `serve` передаёт logger, registry, clock и интервал перезапуска 5 с явно.
+Схема и все существующие SQL-миграции сохранены; CLI мигрирует настоящий service source. Пустые `AccessPolicy()`/`wire()` сохраняются до отдельных задач реализации сервиса. Перенос инфраструктуры не добавляет бизнес-RPC, импорт OFX или задание партиций FIN-193. `serve` передаёт logger, registry, clock и интервал перезапуска 5 с явно.
+
+## Идентичность и удалённые пользователи (FIN-267)
+
+`AUTH_MODE=verify` собирается через `identity.NewAssembly` из [`go-identity v0.2.0`](https://github.com/fin-assist/go-identity/tree/v0.2.0) (README, «Внедрение», шаг 0): при `ENV=prod` — токены ServiceAccount Kubernetes (JWKS API-сервера по HTTPS с доверием только к `AUTH_KUBERNETES_CA_FILE`, исходящий токен — `SERVICE_TOKEN_FILE`), при `ENV=stage` — короткие JWT стенда с ключами из файлов `AUTH_STAGE_*`. Access JWT пользователя проверяется в обоих режимах по ключам `user.GetSigningKeys` (`PEER_USER_ADDR`, повтор — только этот метод); фоновое задание `identity-keys` обновляет ключи. Любое другое `ENV` с `verify`, в том числе `dev`, — ошибка старта; `insecure-dev` — только при `ENV=dev`, проверка и в `config.Load`, и в `app.New`. Ошибка сборки не открывает пулов и не оставляет зарегистрированных метрик. Новая обязательная зависимость старта — достижимый адрес `user` и файлы ключей; сами ключи загружаются лениво или заданием, поэтому кратковременная недоступность `user` старт не ломает, а проверяемые запросы получают `UNAVAILABLE`, не `INVALID_TOKEN`.
+
+[`go-tombstone v0.1.0`](https://github.com/fin-assist/go-tombstone/tree/v0.1.0) подключён по разделу «Сборка с go-grpc»: источник миграций библиотеки (`tombstone_users`) стоит в `MigrationSources()` перед сервисным, admission `server.Deps.Tombstones` читает primary без кэша. Пользовательский вызов удалённого пользователя получает `TOKEN_REVOKED` до обработчика, сбой чтения — голый `UNAVAILABLE`; отказы считает `finassist_tombstone_revoked_total` (методов с `AllowDeleted` у сервиса нет). Переменные — [docs/config.md](docs/config.md), детали — [docs/server.md](docs/server.md).
 
 Публичный `go-migrate/migratetest` создаёт изолированную БД из выбранного сервисом adminDSN и проверяет up/down/up; `internal/testdb` выбирает сервер PG18. Оба обычных Go helper-пакета сервиса (`testdb` и `apitest`) учитываются во всех трёх профилях. Подробнее — [docs/testing.md](docs/testing.md).
 
@@ -105,7 +112,7 @@ make cover-combined        # informational union of the three profiles
 make cover                 # collect all three, then enforce each gate
 ```
 
-Каждый прогон использует `-race -count=1 -timeout=8m -coverpkg=./...` и выбирает функции с префиксом `TestUnit`, `TestIntegration` или `TestAPI`. Новый тест обязательно получает один из этих префиксов; `make test-names` и CI отвергают остальные имена через штатный `go test -race -list`. Все наборы инструментируют один и тот же Go-модуль целиком, включая generated production-код и Go-файлы инфраструктуры `apitest`/`testdb`; исключений пакетов или файлов ради порога нет. `_test.go` Go в production-профиль не включает. Чистые функции и правила — unit; PostgreSQL, транспорт, клиенты и фоновые процессы — integration; полная сборка приложения с вызовом публичного API — api. Прямой вызов handler не считается API-тестом.
+Каждый прогон использует `-race -count=1 -timeout=8m -coverpkg=./...` и выбирает функции с префиксом `TestUnit`, `TestIntegration` или `TestAPI` (селектор `^(Test|Fuzz)<Набор>`). Имена проверяет `make test-names` до прогонов через штатный `go test -race -list`: каждый тест — `TestUnit…`/`TestIntegration…`/`TestAPI…`, каждая fuzz-цель — `FuzzUnit…`/`FuzzIntegration…`/`FuzzAPI…` (её seed-корпус выполняется в своём наборе). `Example…` в сервисе отклоняется: публичного Go API у сервиса нет, а префикс набора в имени примера невозможен, и он выполнялся бы вне всех трёх наборов (FIN-290). Все наборы инструментируют один и тот же Go-модуль целиком, включая generated production-код и Go-файлы инфраструктуры `apitest`/`testdb`; исключений пакетов или файлов ради порога нет. `_test.go` Go в production-профиль не включает. Чистые функции и правила — unit; PostgreSQL, транспорт, клиенты и фоновые процессы — integration; полная сборка приложения с вызовом публичного API — api. Прямой вызов handler не считается API-тестом.
 
 `scripts/check-suite.sh` проверяет JSON-события Go: набор должен действительно выполнить хотя бы один тест и завершиться без failed/skipped тестов. Отсутствующий, пустой профиль, только заголовок и профиль без исполняемых statements отвергаются. Это проверка факта исполнения, не собственный расчёт процентов. Для всех coverage-прогонов `CI=true`: отсутствие PostgreSQL даёт ошибку, а не успешный skip. Инструмент округляет процент до одного знака перед проверкой порога; это согласованное поведение v2.20.1.
 
