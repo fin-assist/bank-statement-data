@@ -55,8 +55,8 @@ github.com/fin-assist/contracts/gen/go v0.4.0 h1:tXxehsDQ8olxaVgFZ4fEAVK/K+VHZZK
 github.com/fin-assist/contracts/gen/go v0.4.0/go.mod h1:R03qUcSFzz6G6LclYBDqybz9kqY7UDu7cA4FoS9Hivg=
 github.com/fin-assist/go-grpc v0.1.0 h1:mCqsUUEB8FyR6n0PCG+gUHKB0isf5PIfC/NlCr6a4CI=
 github.com/fin-assist/go-grpc v0.1.0/go.mod h1:CEex18BOgLsQQtegBXlBNzGp1Pf9btpHUjPUmYAPWto=
-github.com/fin-assist/go-migrate v0.1.0 h1:iaCKpAcZDxfb5SudmhgCzBOMoE+abwhg/cwmOabY/es=
-github.com/fin-assist/go-migrate v0.1.0/go.mod h1:HrFhmWrq0nOj7Aqtds+MuqMRNavS1SzKXcdSEMnPFW4=
+github.com/fin-assist/go-migrate v0.1.1 h1:tSXiKv/itPM1E8D+pK8Zel6bUD6eB+ENVb/5hpJm3QQ=
+github.com/fin-assist/go-migrate v0.1.1/go.mod h1:HrFhmWrq0nOj7Aqtds+MuqMRNavS1SzKXcdSEMnPFW4=
 github.com/fin-assist/go-postgres v0.2.0 h1:yzUFNKBmM+RE12IaoQYKS+2yqu4BnHYK63nSjTgI0sU=
 github.com/fin-assist/go-postgres v0.2.0/go.mod h1:5U+6AXnjzMvLd6RFOLgURetKUQ4yta88thouBD3Y69I=
 github.com/fin-assist/go-worker v0.1.0 h1:EgZfn94R81ivjmAsKgt2kHrSDiuv9MphLp7LTkAbmu8=
