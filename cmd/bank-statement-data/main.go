@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -18,22 +19,27 @@ import (
 // version is set at build time (-X main.version=...).
 var version = "dev"
 
-func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+func main() { os.Exit(mainExit(os.Args[1:], os.Stderr)) }
+
+// mainExit owns process setup and the command exit status. Returning before os.Exit
+// also releases the signal subscription on unsuccessful invocations.
+func mainExit(args []string, stderr io.Writer) int {
+	logger := slog.New(slog.NewJSONHandler(stderr, nil))
 	slog.SetDefault(logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := run(ctx, os.Args[1:]); err != nil {
+	if err := run(ctx, args); err != nil {
 		var usage usageError
 		if errors.As(err, &usage) {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(2)
+			_, _ = fmt.Fprintln(stderr, err)
+			return 2
 		}
 		logger.Error("failed", "error", err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
 type usageError string

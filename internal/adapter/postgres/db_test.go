@@ -6,14 +6,15 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/fin-assist/go-grpc/reqctx"
+
 	"github.com/fin-assist/bank-statement-data/internal/adapter/postgres"
-	"github.com/fin-assist/bank-statement-data/internal/adapter/postgres/migrate/migratetest"
-	"github.com/fin-assist/bank-statement-data/internal/reqctx"
+	"github.com/fin-assist/bank-statement-data/internal/testdb"
 )
 
 func open(t *testing.T) *postgres.DB {
 	t.Helper()
-	dsn := migratetest.DSN(t)
+	dsn := testdb.DSN(t)
 	db, err := postgres.Open(context.Background(), postgres.Options{PrimaryDSN: dsn, AppName: "test"})
 	if err != nil {
 		t.Fatal(err)

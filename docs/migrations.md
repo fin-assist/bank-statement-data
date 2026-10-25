@@ -2,7 +2,7 @@
 
 Решение — [FIN-115](https://finassist.youtrack.cloud/issue/FIN-115), Confluence «Архитектура» → «Миграции и доступ к БД».
 
-- Миграции — [golang-migrate](https://github.com/golang-migrate/migrate), драйвер `pgx/v5`.
+- Runner — [`go-migrate v0.1.0`](https://github.com/fin-assist/go-migrate/tree/v0.1.0), использующий golang-migrate и pgx/v5. Сервис задаёт источники, CLI, logger и таймауты явно.
 - Запросы — ручной SQL на `pgx/v5`, без ORM и генерации кода.
 - Линтер миграций — [squawk](https://squawkhq.com) в CI.
 
@@ -21,7 +21,7 @@
 
 ## Как выполняется файл
 
-golang-migrate отправляет файл целиком одним запросом. PostgreSQL выполняет такой запрос **как одну неявную транзакцию**: если упала любая команда, откатывается весь файл (проверяется тестом `TestIntegrationFailedMigrationIsDirtyUntilForced`). Поэтому:
+golang-migrate отправляет файл целиком одним запросом. PostgreSQL выполняет такой запрос **как одну неявную транзакцию**: если упала любая команда, откатывается весь файл (проверяется тестом PostgreSQL-тестами библиотеки go-migrate). Поэтому:
 
 - `BEGIN; … COMMIT;` в файле не нужен — файл и так атомарен.
 - **`CREATE INDEX CONCURRENTLY` и `DROP INDEX CONCURRENTLY` — одной командой в отдельном файле.** Внутри транзакции они запрещены, а с другой командой в том же файле транзакция будет. Если `CONCURRENTLY` упал, остаётся индекс в состоянии `INVALID`: его удаляют (`DROP INDEX CONCURRENTLY IF EXISTS …`) и запускают снова. Поэтому в таких файлах — `IF NOT EXISTS` / `IF EXISTS`.
@@ -107,7 +107,7 @@ service migrate force <source> <version>  # выставить версию и �
 - **Два пула**: на primary (`DB_PRIMARY_DSN`, `-rw`) и на реплики (`DB_REPLICA_DSN`, `-ro`). Чтение после своей записи — с primary: `bank-bff` пробрасывает `x-read-primary`, `db.Reader(ctx)` выбирает пул по нему. На стенде оба DSN указывают на один PostgreSQL (или реплика не задана).
 - **Только параметры** (`$1`, `$2`): ни одно значение из запроса не попадает в текст SQL. Имена таблиц и столбцов — константы в коде.
 - **Таймауты**: `statement_timeout` на роль сервиса (`ALTER ROLE … SET statement_timeout`) и дедлайн контекста запроса; транзакции короткие, без внешних вызовов внутри.
-- Транзакция — через адаптер `postgres.DB` общего менеджера `go-postgres`: `db.Run(ctx, func(ctx) error {…})`; репозитории берут её из контекста через `db.Writer(ctx)` / `db.Reader(ctx)`, библиотеки — через `db.Tx(ctx)` ([server.md](server.md), «Транзакции и чтение»).
+- Транзакция — через адаптер `postgres.DB` общего менеджера `go-postgres v0.2.0`: `db.Run(ctx, func(ctx) error {…})`; репозитории берут её из контекста через `db.Writer(ctx)` / `db.Reader(ctx)`, библиотеки — через `db.Tx(ctx)` ([server.md](server.md), «Транзакции и чтение»).
 
 ## Проверки в CI
 
@@ -122,3 +122,9 @@ service migrate force <source> <version>  # выставить версию и �
 export TEST_DATABASE_URL='postgres://postgres@localhost:5432/postgres?sslmode=disable'
 go test ./...
 ```
+
+## Тестовая БД и публичный harness (FIN-258)
+
+`internal/testdb` выбирает PostgreSQL18 через `TEST_DATABASE_URL` либо testcontainer. Публичный `go-migrate/migratetest.DSN(t, adminDSN)` создаёт отдельную БД и регистрирует bounded cleanup; helper не читает environment и не выбирает сервер. `migratetest.CheckUpDownUp(t, dsn, source)` проверяет переданный источник и не владеет lifetime БД. Существующие up/down файлы и тесты схемы сохраняются.
+
+`internal/testdb` и `internal/app/apitest` остаются в одинаковом полном production-знаменателе трёх сервисных профилей. Библиотечное исключение `internal/pgtest` к сервису не применяется. Пулы primary/replica создаёт `go-postgres.OpenPools` v0.2.0, адаптер `postgres.DB` сохраняет routing и caller-owned transaction contract.

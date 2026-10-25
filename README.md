@@ -17,7 +17,7 @@ Go-сервис «Понятных финансов»: приём выписок
 ## Что ещё не сделано после переноса шаблона
 
 - `AccessPolicy()` и обработчики в `wire()` (`internal/app/wire.go`) — вместе с первыми RPC сервиса, строки из таблицы grpc-api.md 3.3.
-- `NoTombstones` → библиотека `go-tombstone` (FIN-110); outbox (FIN-109) и идемпотентность (FIN-78) — по «Библиотеки и обновления» ниже, когда у библиотек будут теги.
+- `NoTombstones` → библиотека `go-tombstone` (FIN-110); outbox (FIN-109) и идемпотентность (FIN-78) — отдельные задачи подключения в бизнес-сборке.
 - Секреты репозитория (`CLAUDE_CODE_OAUTH_TOKEN` для ревью `@claude`, `GO_MODULES_TOKEN` для приватных модулей fin-assist), Claude GitHub App и Codex — владелец.
 
 ## Раскладка
@@ -28,14 +28,14 @@ internal/app/                      assembly: identity, pools, server, wire() (ha
 internal/app/apitest/              the whole service in-process for API tests
 internal/domain/                   entities and invariants, no infrastructure imports
 internal/<feature>/                usecases; interfaces of repositories and clients they need
-internal/adapter/grpc/server/      gRPC server, interceptors, access table types, identity interfaces
+go-grpc/{server,client,reqctx}     shared transport, token and request context; service assembly in internal/app
 internal/adapter/grpc/<feature>/   gRPC handlers: messages <-> usecases
 internal/adapter/postgres/         pools, transaction manager, repositories on pgx
-internal/adapter/postgres/migrate/ migration runner (migratetest: PostgreSQL for tests)
-internal/adapter/client/           clients of other services, service token source
-internal/worker/                   background jobs: outbox dispatcher, scheduled jobs
+go-migrate / migratetest          shared runner and isolated PostgreSQL database harness
+internal/adapter/client/<peer>/    application peer adapters when needed; shared dial/token in go-grpc/client
+go-worker                         shared job lifecycle; service jobs when implemented
 internal/config/                   configuration from the environment
-internal/reqctx/                   request-scoped values: request ID, caller, user, hints
+internal/testdb/                   test PostgreSQL server selection (counted in all profiles)
 internal/logx/                     slog with values from the context
 internal/ops/                      /metrics, /healthz, /readyz, readiness
 migrations/                        SQL migrations, embedded into the binary
@@ -66,7 +66,11 @@ make run
 - **Обновления приносит Renovate** (`renovate.json`): модули `github.com/fin-assist/*` (библиотеки и `contracts/gen/go`) — отдельный PR сразу после тега, остальные зависимости — один PR в неделю, версия Go — вручную. PR Renovate проходит CI сервиса и обрабатывается по [политике FIN-211](docs/renovate-policy.md). При несовместимом обновлении человеческий коммит в открытом PR переводит его на ручное сопровождение; если ботский PR уже закрыт после повторного падения, исправления сервиса идут отдельным PR с задачей YouTrack. Порядок миграции — по CHANGELOG библиотеки.
 - **Проверить библиотеку до выпуска** — локально `go mod edit -replace github.com/fin-assist/go-<имя>=../go-<имя>`; `replace` в PR сервиса не попадает.
 
-`go-postgres v0.1.1` подключён в адаптере `postgres.DB`: сервис выбирает границу через `Run`/`RunWith`, общий менеджер выполняет COMMIT/ROLLBACK. `RunMapped` принимает mapper операции из адаптера сервиса и обрабатывает также ошибку фактического COMMIT. Сопоставление SQLSTATE и имени ограничения доменной ошибке остаётся здесь; неизвестные ошибки дают INTERNAL. У библиотеки нет собственных пулов и миграций. Бизнес-RPC пока не реализованы, поэтому производственных mapper в сервисе ещё нет.
+FIN-258 подключает опубликованные `go-grpc v0.1.0` (server/client/reqctx), `go-migrate v0.1.0`, `go-worker v0.1.0` и `go-postgres v0.2.0`. Локальные копии транспорта, контекста, runner и worker удалены. `postgres.DB` остаётся тонким адаптером транзакций и read-primary routing; пулы создаёт `go-postgres.OpenPools`. Сопоставление SQLSTATE и имени ограничения доменной ошибке принадлежит сервису. Новые библиотеки заменяют ранее скопированную инфраструктуру, stdlib не предоставляет её контрактных реализаций.
+
+Схема и все существующие SQL-миграции сохранены; CLI мигрирует настоящий service source. Пустые `AccessPolicy()`/`wire()`, fail-closed `AUTH_MODE=verify` и временный `NoTombstones` сохраняются до отдельных задач реализации сервиса. Перенос инфраструктуры не добавляет бизнес-RPC, импорт OFX или задание партиций FIN-193. `serve` передаёт logger, registry, clock и интервал перезапуска 5 с явно.
+
+Публичный `go-migrate/migratetest` создаёт изолированную БД из выбранного сервисом adminDSN и проверяет up/down/up; `internal/testdb` выбирает сервер PG18. Оба обычных Go helper-пакета сервиса (`testdb` и `apitest`) учитываются во всех трёх профилях. Подробнее — [docs/testing.md](docs/testing.md).
 
 ## Проверки
 
@@ -101,7 +105,7 @@ make cover-combined        # informational union of the three profiles
 make cover                 # collect all three, then enforce each gate
 ```
 
-Каждый прогон использует `-race -count=1 -timeout=8m -coverpkg=./...` и выбирает функции с префиксом `TestUnit`, `TestIntegration` или `TestAPI`. Новый тест обязательно получает один из этих префиксов; `make test-names` и CI отвергают остальные имена через штатный `go test -race -list`. Все наборы инструментируют один и тот же Go-модуль целиком, включая generated production-код и Go-файлы инфраструктуры `apitest`/`migratetest`; исключений пакетов или файлов ради порога нет. `_test.go` Go в production-профиль не включает. Чистые функции и правила — unit; PostgreSQL, транспорт, клиенты и фоновые процессы — integration; полная сборка приложения с вызовом публичного API — api. Прямой вызов handler не считается API-тестом.
+Каждый прогон использует `-race -count=1 -timeout=8m -coverpkg=./...` и выбирает функции с префиксом `TestUnit`, `TestIntegration` или `TestAPI`. Новый тест обязательно получает один из этих префиксов; `make test-names` и CI отвергают остальные имена через штатный `go test -race -list`. Все наборы инструментируют один и тот же Go-модуль целиком, включая generated production-код и Go-файлы инфраструктуры `apitest`/`testdb`; исключений пакетов или файлов ради порога нет. `_test.go` Go в production-профиль не включает. Чистые функции и правила — unit; PostgreSQL, транспорт, клиенты и фоновые процессы — integration; полная сборка приложения с вызовом публичного API — api. Прямой вызов handler не считается API-тестом.
 
 `scripts/check-suite.sh` проверяет JSON-события Go: набор должен действительно выполнить хотя бы один тест и завершиться без failed/skipped тестов. Отсутствующий, пустой профиль, только заголовок и профиль без исполняемых statements отвергаются. Это проверка факта исполнения, не собственный расчёт процентов. Для всех coverage-прогонов `CI=true`: отсутствие PostgreSQL даёт ошибку, а не успешный skip. Инструмент округляет процент до одного знака перед проверкой порога; это согласованное поведение v2.20.1.
 

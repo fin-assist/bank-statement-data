@@ -11,11 +11,12 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/fin-assist/bank-statement-data/internal/adapter/client"
-	"github.com/fin-assist/bank-statement-data/internal/adapter/grpc/server"
+	"github.com/fin-assist/go-grpc/client"
+	"github.com/fin-assist/go-grpc/server"
+	"github.com/fin-assist/go-worker"
+
 	"github.com/fin-assist/bank-statement-data/internal/adapter/postgres"
 	"github.com/fin-assist/bank-statement-data/internal/config"
-	"github.com/fin-assist/bank-statement-data/internal/worker"
 )
 
 // App is the assembled service. Wire reads its fields to build adapters and usecases.
@@ -33,11 +34,15 @@ type App struct {
 
 // New assembles the service from cfg. Close releases what it opened.
 func New(ctx context.Context, cfg config.Config, log *slog.Logger, reg prometheus.Registerer) (*App, error) {
+	return assemble(ctx, cfg, log, reg, postgres.Open)
+}
+
+func assemble(ctx context.Context, cfg config.Config, log *slog.Logger, reg prometheus.Registerer, openDB func(context.Context, postgres.Options) (*postgres.DB, error)) (*App, error) {
 	services, users, tokens, err := identity(cfg)
 	if err != nil {
 		return nil, err
 	}
-	db, err := postgres.Open(ctx, postgres.Options{
+	db, err := openDB(ctx, postgres.Options{
 		PrimaryDSN: cfg.DB.PrimaryDSN, ReplicaDSN: cfg.DB.ReplicaDSN,
 		MaxConns: cfg.DB.MaxConns, AppName: cfg.Service,
 	})

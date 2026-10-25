@@ -7,7 +7,8 @@ import (
 	"log/slog"
 	"strconv"
 
-	"github.com/fin-assist/bank-statement-data/internal/adapter/postgres/migrate"
+	"github.com/fin-assist/go-migrate"
+
 	"github.com/fin-assist/bank-statement-data/internal/app"
 	"github.com/fin-assist/bank-statement-data/internal/config"
 )

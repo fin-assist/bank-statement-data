@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/fin-assist/bank-statement-data/internal/reqctx"
+	"github.com/fin-assist/go-grpc/reqctx"
 )
 
 type unitBeginner struct{ tx pgx.Tx }
