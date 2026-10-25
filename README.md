@@ -74,7 +74,7 @@ CI (`.github/workflows/ci.yml`):
 
 | Job | Что |
 |---|---|
-| `go` | `go mod tidy` без изменений, `go vet`, `go test -race` с PostgreSQL 18 в Docker (testcontainers), включая «вверх → вниз → вверх» для миграций; тесты скриптов; общее покрытие и покрытие изменённых строк — в сводке прогона и комментарием в PR |
+| `go` | `go mod tidy` без изменений, `go vet`, три отдельных набора `unit`/`integration`/`api` с `-race`, PostgreSQL 18, проверкой фактического исполнения и порогом 80% statements каждого; combined дополнительно, отчёты в сводке и артефактах; тесты скриптов |
 | `lint` | golangci-lint (`.golangci.yml`), в том числе `forbidigo` против обхода `finerr` и `depguard` против фреймворков, ORM и DI-контейнеров |
 | `image` | сборка образа и запуск бинаря в нём |
 | `migrations` (PR) | существующие миграции не изменены, squawk по новым |
@@ -86,22 +86,29 @@ make test   # Docker for testcontainers, or TEST_DATABASE_URL=postgres://... to 
 make lint
 ```
 
-### Покрытие изменённых строк
+### Покрытие statements по трём наборам (FIN-238)
 
-Цель — не ниже **80 %** изменённых исполняемых строк production-кода (без `_test.go` и `testdata/`). CI считает его скриптом `scripts/coverage-diff.py` по профилю `go test -coverpkg=./... -coverprofile=cover.out` и диффу PR против базы (`base...HEAD`) и публикует таблицу в сводке прогона и одним комментарием в PR, который обновляется на каждом пуше. Ничего не падает: порог проверяется на ревью. Непокрытые строки перечисляются в описании PR («Как проверено») с причиной — например, ветка ошибки, которую не вызвать без отказа ОС.
-
-Строка учитывается, если её содержит блок покрытия Go с ненулевым числом statements. Это метрика диапазонов строк: комментарии и пустые строки внутри блока тоже учитываются. С `-coverpkg=./...` строка покрыта, тесты какого бы пакета её ни выполнили.
+Для **каждого** набора `unit`, `integration` и `api` обязателен порог **80% statements всего production-кода сервиса**. Сбор — штатный Go coverage, проверка — `vladopajic/go-test-coverage/v2` **v2.20.1**. Общий результат `combined` показывает объединение профилей силами инструмента; он не компенсирует провал отдельного набора. Внешнего сервиса отчётности нет.
 
 ```bash
-make cover   # cover.out and the table against origin/main
-python3 scripts/coverage-diff.py                 # project totals
-python3 -m unittest discover -s scripts -p 'test_*.py'
+make collect-unit          # unit.out + unit.jsonl, without a percentage gate
+make collect-integration   # real PostgreSQL required
+make collect-api           # full application over its public API
+make check-unit            # the corresponding 80% gate
+make check-integration
+make check-api
+make cover-combined        # informational union of the three profiles
+make cover                 # collect all three, then enforce each gate
 ```
 
+Каждый прогон использует `-race -count=1 -timeout=8m -coverpkg=./...` и выбирает функции с префиксом `TestUnit`, `TestIntegration` или `TestAPI`. Новый тест обязательно получает один из этих префиксов; `make test-names` и CI отвергают остальные имена через штатный `go test -race -list`. Все наборы инструментируют один и тот же Go-модуль целиком, включая generated production-код и Go-файлы инфраструктуры `apitest`/`migratetest`; исключений пакетов или файлов ради порога нет. `_test.go` Go в production-профиль не включает. Чистые функции и правила — unit; PostgreSQL, транспорт, клиенты и фоновые процессы — integration; полная сборка приложения с вызовом публичного API — api. Прямой вызов handler не считается API-тестом.
+
+`scripts/check-suite.sh` проверяет JSON-события Go: набор должен действительно выполнить хотя бы один тест и завершиться без failed/skipped тестов. Отсутствующий, пустой профиль, только заголовок и профиль без исполняемых statements отвергаются. Это проверка факта исполнения, не собственный расчёт процентов. Для всех coverage-прогонов `CI=true`: отсутствие PostgreSQL даёт ошибку, а не успешный skip. Инструмент округляет процент до одного знака перед проверкой порога; это согласованное поведение v2.20.1.
+
+CI сохраняет `.out`, `.jsonl`, `*.coverage.txt` и `*.report.txt` как артефакт, публикует отдельные unit/integration/api/combined в сводке. Обязательный job `go` остаётся красным при провале любого отдельного набора. Fork PR не получают права записи комментариев.
+
+Прежний критерий «80% изменённых исполняемых строк» заменён тремя порогами statements. Исторические проценты строк не сопоставимы с новыми. Проценты не доказывают полноту бизнес-сценариев.
+
+Подробности классификации и исходные дефициты — [docs/testing.md](docs/testing.md).
+
 Модули `github.com/fin-assist/*` берутся из git, минуя прокси (`GOPRIVATE`, задан в `Makefile` и CI). Для приватного — токен с чтением репозиториев fin-assist: локально `git config --global url."https://x-access-token:<token>@github.com/fin-assist/".insteadOf "https://github.com/fin-assist/"`, в CI — секрет `GO_MODULES_TOKEN`, в `docker build` — секрет `netrc`.
-
-### Общее покрытие и изменённые строки
-
-CI публикует разделы «Покрытие проекта» и «Покрытие изменённых строк» в сводке запуска и одном обновляемом комментарии PR. Оба раздела используют один профиль корневого Go-модуля, без повторного запуска тестов; на push сохраняется общее покрытие. Комментарий для PR из fork не записывается. При ошибке построения или пустом файле отчёта последний корректный комментарий сохраняется.
-
-Метрика — уникальные строки внутри блоков Go-профиля с ненулевым числом statements, а не процент statements из `go tool cover`. `_test.go` и `testdata/` исключены; сгенерированный production-код включён на тех же условиях. Повторные блоки разных тестовых бинарей объединяются: достаточно одного выполнения. Без исполняемых строк отчёт сообщает «Нет данных», а не 100 %. Цель **80 %** относится только к изменённым строкам и проверяется на ревью; общий процент её не заменяет.
