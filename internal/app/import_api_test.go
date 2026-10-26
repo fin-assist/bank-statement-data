@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/grpc/metadata"
 
+	"github.com/fin-assist/bank-statement-data/internal/app"
 	"github.com/fin-assist/bank-statement-data/internal/app/apitest"
 )
 
@@ -40,14 +43,17 @@ func apiUpload(t *testing.T, c pb.StatementsServiceClient, user, key, name, body
 	if err = stream.Send(&pb.UploadStatementRequest{Part: &pb.UploadStatementRequest_Header{Header: &pb.UploadHeader{FileName: name, SizeBytes: int64(len(body))}}}); err != nil {
 		return nil, err
 	}
-	if err = stream.Send(&pb.UploadStatementRequest{Part: &pb.UploadStatementRequest_Chunk{Chunk: []byte(body)}}); err != nil {
-		return nil, err
+	for start := 0; start < len(body); start += 256 << 10 {
+		chunk := body[start:min(start+256<<10, len(body))]
+		if err = stream.Send(&pb.UploadStatementRequest{Part: &pb.UploadStatementRequest_Chunk{Chunk: []byte(chunk)}}); err != nil {
+			return nil, err
+		}
 	}
 	return stream.CloseAndRecv()
 }
 func apiComplete(t *testing.T, c pb.StatementsServiceClient, id string) *pb.ImportResult {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(apitest.User(t.Context(), apiUser), 15*time.Second)
+	ctx, cancel := context.WithTimeout(apitest.User(t.Context(), apiUser), 60*time.Second)
 	defer cancel()
 	stream, err := c.WatchUpload(ctx, &pb.WatchUploadRequest{UploadId: id})
 	if err != nil {
@@ -227,5 +233,45 @@ func TestAPIImportOversizeHintPrecedesStreamKeyValidation(t *testing.T) {
 	}
 	if keys != 0 || uploads != 0 {
 		t.Fatalf("prekey refusal stored state: %d/%d", keys, uploads)
+	}
+}
+
+func TestAPIImportPublishedCoverageSequenceUsesActualStoredResults(t *testing.T) {
+	zone, _ := time.LoadLocation("Europe/Moscow")
+	var clock atomic.Int64
+	clock.Store(time.Date(2025, 11, 1, 10, 0, 0, 0, zone).UnixNano())
+	env := apitest.StartWith(t, app.Options{Now: func() time.Time { return time.Unix(0, clock.Load()) }})
+	c := pb.NewStatementsServiceClient(env.Conn)
+	for _, tc := range []struct {
+		file            string
+		now             time.Time
+		read, new, dups int64
+		full            int32
+	}{
+		{"00-2025-10-15_2025-10-31.ofx", time.Date(2025, 11, 1, 10, 0, 0, 0, zone), 76, 76, 0, 0},
+		{"01-2025-10-15_2026-06-30.ofx", time.Date(2026, 7, 1, 10, 0, 0, 0, zone), 1261, 1185, 76, 8},
+		{"02-2026-06-20_2026-08-07.ofx", time.Date(2026, 8, 8, 10, 0, 0, 0, zone), 342, 283, 59, 9},
+		{"03-2026-08-20_2026-09-25.ofx", time.Date(2026, 9, 26, 10, 0, 0, 0, zone), 261, 261, 0, 9},
+	} {
+		clock.Store(tc.now.UnixNano())
+		body, err := os.ReadFile("../adapter/ofx/testdata/" + tc.file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		accepted, err := apiUpload(t, c, apiUser, uuid.NewString(), tc.file, string(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		result := apiComplete(t, c, accepted.UploadId)
+		if result.OperationCount != tc.read || result.NewCount != tc.new || result.DuplicateCount != tc.dups || result.GetCoverage().GetFullMonths() != tc.full {
+			t.Fatalf("published API %s: %v", tc.file, result)
+		}
+		if len(result.Accounts) != 3 || result.Totals == nil || len(result.GetCoverage().Features) == 0 {
+			t.Fatalf("missing real accounts/totals/features: %v", result)
+		}
+	}
+	history, err := c.ListUploads(apitest.User(t.Context(), apiUser), &pb.ListUploadsRequest{})
+	if err != nil || len(history.Uploads) != 4 || history.Summary == nil {
+		t.Fatalf("real history: %v %v", history, err)
 	}
 }

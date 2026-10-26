@@ -45,12 +45,19 @@ type Env struct {
 // Start runs the service for the test and stops it at the end. mutate, if given, adjusts
 // the configuration (peers, limits) before the assembly.
 func Start(t *testing.T, mutate ...func(*config.Config)) *Env {
+	return StartWith(t, app.Options{}, mutate...)
+}
+
+// StartWith keeps the real assembly and permits an explicit deterministic application clock.
+// The object transport always belongs to this test's real TLS fixture.
+func StartWith(t *testing.T, options app.Options, mutate ...func(*config.Config)) *Env {
 	t.Helper()
 	objects := testobjects.New(t)
 	deps := realDependencies()
 	deps.assemble = func(ctx context.Context, cfg config.Config) (*app.App, service, func(), error) {
 		objects.Configure(&cfg)
-		a, err := app.New(ctx, cfg, slog.New(slog.DiscardHandler), prometheus.NewRegistry(), app.Options{ObjectClient: objects.Server.Client()})
+		options.ObjectClient = objects.Server.Client()
+		a, err := app.New(ctx, cfg, slog.New(slog.DiscardHandler), prometheus.NewRegistry(), options)
 		if err != nil {
 			return nil, nil, nil, err
 		}

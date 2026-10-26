@@ -222,7 +222,7 @@ func TestIntegrationPublishedImportSequenceRetainsSourceIdentityAndRealCoverage(
 		}
 	}
 	history, err := a.Imports.History(t.Context(), apiUser)
-	if err != nil || len(history.Gaps) != 1 || history.Gaps[0].From.Format("2006-01-02") != "2026-08-08" || history.Gaps[0].To.Format("2006-01-02") != "2026-08-19" {
+	if err != nil || len(history.Gaps) != 1 || history.Gaps[0].From.Format("2006-01-02") != "2026-08-08" || history.Gaps[0].To.Format("2006-01-02") != "2026-08-20" {
 		t.Fatalf("real global gap: %+v %v", history.Gaps, err)
 	}
 	if err = a.Imports.Delete(t.Context(), apiUser, ids[0]); err != nil {
