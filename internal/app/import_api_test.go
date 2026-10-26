@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -59,9 +60,13 @@ func apiUpload(t *testing.T, c pb.StatementsServiceClient, user, key, name, body
 	}
 	return stream.CloseAndRecv()
 }
-func apiComplete(t *testing.T, c pb.StatementsServiceClient, id string) *pb.ImportResult {
+func apiComplete(t *testing.T, c pb.StatementsServiceClient, id string, users ...string) *pb.ImportResult {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(apitest.User(t.Context(), apiUser), 60*time.Second)
+	user := apiUser
+	if len(users) > 0 {
+		user = users[0]
+	}
+	ctx, cancel := context.WithTimeout(apitest.User(t.Context(), user), 60*time.Second)
 	defer cancel()
 	stream, err := c.WatchUpload(ctx, &pb.WatchUploadRequest{UploadId: id})
 	if err != nil {
@@ -584,5 +589,55 @@ func TestAPIActualBackgroundJobsRecoverStagingAndOrphans(t *testing.T) {
 	var fenced *time.Time
 	if err = db.QueryRow(t.Context(), "SELECT status,file_deleted_at FROM upload WHERE user_id=$1 AND id=$2", apiUser, stagingID).Scan(&state, &fenced); err != nil || state != "failed" || fenced == nil {
 		t.Fatalf("staging recovery not durable: %s %v %v", state, fenced, err)
+	}
+}
+
+func TestAPIEmptyAndNativeCurrenciesHaveHonestSummaries(t *testing.T) {
+	env := apitest.Start(t)
+	c := pb.NewStatementsServiceClient(env.Conn)
+	empty, err := os.ReadFile("../adapter/ofx/testdata/06-empty-2026-09.ofx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := apiUpload(t, c, apiUser, uuid.NewString(), "empty.ofx", string(empty))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := apiComplete(t, c, accepted.UploadId)
+	if result.OperationCount != 0 || result.Totals != nil || result.FirstOperationAt != nil || !slices.Contains(result.Notices, pb.ImportNotice_IMPORT_NOTICE_EMPTY_STATEMENT) {
+		t.Fatalf("invented empty summary: %v", result)
+	}
+	history, err := c.ListUploads(apitest.User(t.Context(), apiUser), &pb.ListUploadsRequest{})
+	if err != nil || len(history.Uploads) != 1 || history.Summary != nil {
+		t.Fatalf("empty DONE visibility: %v %v", history, err)
+	}
+	config, err := c.GetImportConfig(apitest.User(t.Context(), apiUser), &pb.GetImportConfigRequest{})
+	if err != nil || config.Loaded != nil {
+		t.Fatalf("empty config invented operations: %v %v", config, err)
+	}
+	first := strings.Index(apiOFX, "<STMTTRN>")
+	end := first + strings.Index(apiOFX[first:], "</STMTTRN>") + len("</STMTTRN>")
+	row := strings.ReplaceAll(apiOFX[first:end], "<TRNTYPE>DEBIT</TRNTYPE>", "<TRNTYPE>CREDIT</TRNTYPE>")
+	row = strings.ReplaceAll(row, "<TRNAMT>-123.45</TRNAMT>", "<TRNAMT>123.45</TRNAMT>")
+	usd := strings.ReplaceAll(row, "opaque-fixture-1", "opaque-usd-2")
+	usd = strings.ReplaceAll(usd, "<TRNAMT>123.45</TRNAMT>", "<TRNAMT>999.99</TRNAMT>")
+	usd = strings.Replace(usd, "</STMTTRN>", "<CURRENCY><CURSYM>USD</CURSYM></CURRENCY></STMTTRN>", 1)
+	source := apiOFX[:first] + row + usd + apiOFX[strings.LastIndex(apiOFX, "</STMTTRN>")+len("</STMTTRN>"):]
+	native, err := apiUpload(t, c, apiOther, uuid.NewString(), "native.ofx", source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result = apiComplete(t, c, native.UploadId, apiOther)
+	if result.NewCount != 2 || result.Totals == nil || result.Totals.IncomeMinor != 12345 || result.Totals.ExpenseMinor != 0 || !slices.Contains(result.Notices, pb.ImportNotice_IMPORT_NOTICE_NO_EXPENSES) {
+		t.Fatalf("native currency was converted/summed or notice lost: %v", result)
+	}
+	db, err := pgx.Connect(t.Context(), env.DSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close(context.Background()) }()
+	var usdAmount int64
+	if err = db.QueryRow(t.Context(), "SELECT amount_minor FROM operation WHERE user_id=$1 AND currency='USD'", apiOther).Scan(&usdAmount); err != nil || usdAmount != 99999 {
+		t.Fatalf("native amount changed: %d %v", usdAmount, err)
 	}
 }
