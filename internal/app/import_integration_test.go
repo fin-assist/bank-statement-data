@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -230,5 +232,72 @@ func TestIntegrationPublishedImportSequenceRetainsSourceIdentityAndRealCoverage(
 	}
 	if n := len(importSnapshot(t, a, apiUser).Operations); n != 1805 {
 		t.Fatalf("duplicate source lost operation: %d", n)
+	}
+}
+
+func TestIntegrationCloudCorruptionCannotPublishOperations(t *testing.T) {
+	a, objects := importAssembly(t)
+	accepted, err := a.Imports.Upload(t.Context(), apiUser, importing.Header{FileName: "integrity.ofx"}, bytes.NewBufferString(apiOFX), []string{uuid.NewString()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := apiUser + "/" + accepted.UploadID
+	// Model a privileged provider-side corruption after admission. It is not a
+	// public import operation and deliberately bypasses the adapter's create-only PUT.
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, objects.Server.URL+"/private/"+key, strings.NewReader(strings.Replace(apiOFX, "-123.45", "-999.45", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-YaCloud-SubjectToken", "fixture-iam-token")
+	req.Header.Set("X-Amz-Server-Side-Encryption", "aws:kms")
+	req.Header.Set("X-Amz-Server-Side-Encryption-Aws-Kms-Key-Id", "fixture-key")
+	response, err := objects.Server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != 200 {
+		t.Fatalf("provider corruption setup: %d", response.StatusCode)
+	}
+	if err = a.Imports.Process(t.Context(), apiUser, accepted.UploadID); err != nil {
+		t.Fatal(err)
+	}
+	state := importSnapshot(t, a, apiUser)
+	if len(state.Operations) != 0 || len(state.Sources) != 0 || len(state.Unread) != 0 || state.Uploads[0].Status != "failed" || state.Uploads[0].ErrorCode != "processing_failed" || state.Uploads[0].FileDeletedAt == nil {
+		t.Fatalf("corrupt object published facts: %+v", state)
+	}
+	if body, ok := objects.Bytes(key); !ok || len(body) != 0 {
+		t.Fatal("corrupt source not fenced")
+	}
+}
+
+func TestIntegrationPurgeKeepsDurableIntentsAcrossCloudFailure(t *testing.T) {
+	a, objects := importAssembly(t)
+	accepted, err := a.Imports.Upload(t.Context(), apiUser, importing.Header{FileName: "purge.ofx"}, bytes.NewBufferString(apiOFX), []string{uuid.NewString()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	objects.SetErasureFailure(true)
+	if err = a.Imports.Purge(t.Context(), apiUser); err == nil {
+		t.Fatal("purge acknowledged an unconfirmed erasure")
+	}
+	state := importSnapshot(t, a, apiUser)
+	if len(state.Uploads) != 1 || state.Uploads[0].ID != accepted.UploadID || state.Uploads[0].FileDeletedAt != nil {
+		t.Fatal("cloud uncertainty erased its durable intent")
+	}
+	var retired bool
+	if err = a.DB.Primary().QueryRow(t.Context(), "SELECT EXISTS(SELECT 1 FROM tombstone_users WHERE user_id=$1)", apiUser).Scan(&retired); err != nil || !retired {
+		t.Fatalf("phase1 not committed: %v %v", retired, err)
+	}
+	objects.SetErasureFailure(false)
+	if err = a.Imports.Purge(t.Context(), apiUser); err != nil {
+		t.Fatal(err)
+	}
+	state = importSnapshot(t, a, apiUser)
+	if len(state.Uploads) != 0 || len(state.Operations) != 0 {
+		t.Fatal("phase2 incomplete")
+	}
+	if body, ok := objects.Bytes(apiUser + "/" + accepted.UploadID); !ok || len(body) != 0 {
+		t.Fatal("Purge lost permanent fence")
 	}
 }

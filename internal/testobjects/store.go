@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,12 +23,16 @@ import (
 // Store serves a dedicated private fixture bucket, including conditional file writes
 // and permanent zero-byte erasure fences.
 type Store struct {
-	Server    *httptest.Server
-	mu        sync.Mutex
-	data      map[string][]byte
-	modified  map[string]time.Time
-	TokenFile string
+	Server         *httptest.Server
+	mu             sync.Mutex
+	data           map[string][]byte
+	modified       map[string]time.Time
+	TokenFile      string
+	erasureFailure atomic.Bool
 }
+
+// SetErasureFailure models a provider outage without changing the runtime adapter.
+func (s *Store) SetErasureFailure(fail bool) { s.erasureFailure.Store(fail) }
 
 // New creates a real TLS S3 protocol fixture and an external token file.
 func New(t testing.TB) *Store {
@@ -116,6 +121,10 @@ func (s *Store) serve(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(io.LimitReader(r.Body, (10<<20)+1))
 		if err != nil || len(body) > 10<<20 || r.ContentLength != int64(len(body)) {
 			w.WriteHeader(400)
+			return
+		}
+		if len(body) == 0 && s.erasureFailure.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
 		s.mu.Lock()

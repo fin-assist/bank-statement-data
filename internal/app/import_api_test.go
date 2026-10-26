@@ -275,3 +275,40 @@ func TestAPIImportPublishedCoverageSequenceUsesActualStoredResults(t *testing.T)
 		t.Fatalf("real history: %v %v", history, err)
 	}
 }
+
+func TestAPIPurgeRetiresAccessBeforeCloudRecoveryAndFinishesOnRetry(t *testing.T) {
+	env := apitest.Start(t)
+	c := pb.NewStatementsServiceClient(env.Conn)
+	accepted, err := apiUpload(t, c, apiUser, uuid.NewString(), "private.ofx", apiOFX)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = apiComplete(t, c, accepted.UploadId)
+	env.Objects.SetErasureFailure(true)
+	purge := deletionpb.NewUserDeletionServiceClient(env.Conn)
+	if _, err = purge.PurgeUserData(apitest.Caller(t.Context(), "user"), &deletionpb.PurgeUserDataRequest{UserId: apiUser}); err == nil {
+		t.Fatal("false purge acknowledgement")
+	}
+	if _, err = c.GetImportConfig(apitest.User(t.Context(), apiUser), &pb.GetImportConfigRequest{}); apitest.Reason(err) != "TOKEN_REVOKED" {
+		t.Fatalf("phase1 did not retire access: %v", err)
+	}
+	db, err := pgx.Connect(t.Context(), env.DSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close(context.Background()) }()
+	var count int
+	if err = db.QueryRow(t.Context(), "SELECT count(*) FROM upload WHERE user_id=$1 AND file_deleted_at IS NULL", apiUser).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("lost cleanup intent: %d %v", count, err)
+	}
+	env.Objects.SetErasureFailure(false)
+	if _, err = purge.PurgeUserData(apitest.Caller(t.Context(), "user"), &deletionpb.PurgeUserDataRequest{UserId: apiUser}); err != nil {
+		t.Fatal(err)
+	}
+	if body, ok := env.Objects.Bytes(apiUser + "/" + accepted.UploadId); !ok || len(body) != 0 {
+		t.Fatal("cloud not fenced after recovery")
+	}
+	if err = db.QueryRow(t.Context(), "SELECT count(*) FROM user_state WHERE user_id=$1", apiUser).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("retained personal rows after confirmed recovery: %d %v", count, err)
+	}
+}

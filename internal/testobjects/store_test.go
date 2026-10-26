@@ -57,6 +57,11 @@ func TestUnitFixturePreservesCloudConditionalWriteAndErasureSemantics(t *testing
 	if err != nil || len(page.Objects) != 1 || page.Objects[0].Key != key || page.Objects[0].ModifiedAt.IsZero() {
 		t.Fatalf("fixture list: %+v %v", page, err)
 	}
+	fixture.SetErasureFailure(true)
+	if err = store.Delete(t.Context(), key); err == nil {
+		t.Fatal("fixture swallowed provider erasure refusal")
+	}
+	fixture.SetErasureFailure(false)
 	if err = store.Delete(t.Context(), key); err != nil {
 		t.Fatal(err)
 	}

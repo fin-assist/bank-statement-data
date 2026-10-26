@@ -37,9 +37,10 @@ import (
 
 // Env is a running service.
 type Env struct {
-	App  *app.App
-	Conn *grpc.ClientConn
-	DSN  string // the test database, for arranging and checking rows directly
+	App     *app.App
+	Conn    *grpc.ClientConn
+	DSN     string             // the test database, for arranging and checking rows directly
+	Objects *testobjects.Store // owned TLS provider fixture, for explicit cloud failure scenarios
 }
 
 // Start runs the service for the test and stops it at the end. mutate, if given, adjusts
@@ -67,6 +68,7 @@ func StartWith(t *testing.T, options app.Options, mutate ...func(*config.Config)
 	if err != nil {
 		t.Fatal(err)
 	}
+	env.Objects = objects
 	t.Cleanup(closeEnv)
 	return env
 }
