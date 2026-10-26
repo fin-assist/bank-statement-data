@@ -19,6 +19,8 @@
 
 ### Исправлено
 
+- FIN-342: body чтения объекта проверяет исходный caller context до и после транспортного Read, включая EOF и пробу лимита; отмена/истечение бюджета не превращается в успешный EOF, частичные байты и zero-length semantics сохраняются.
+
 - FIN-351: проверка systemd unit стенда отклоняет повтор имени `LoadCredential=`, `LoadCredentialEncrypted=` и `ImportCredential=`; добавлены отрицательные мутации unit-файла, включая чужой источник перед правильным. Изменены только тесты, действующий unit и runtime не меняются.
 - FIN-289: во время `SHUTDOWN_DELAY` HTTP `/readyz` отвечает 503 вместе с gRPC health `NOT_SERVING`; `app.New` отказывает в `AUTH_MODE=insecure-dev` вне `ENV=dev` и без `config.Load`; `DB_MAX_CONNS` вне int32 — ошибка конфигурации, а не усечённое значение; глобальное исключение gosec G115 снято.
 

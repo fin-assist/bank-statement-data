@@ -112,6 +112,7 @@ func (s *Store) put(ctx context.Context, key string, body io.Reader, size int64,
 }
 
 // Open returns a bounded body which the caller must close and verify against its hash.
+// Caller cancellation remains authoritative through EOF; already read bytes are retained.
 func (s *Store) Open(ctx context.Context, key string) (io.ReadCloser, error) {
 	if !validKey(key) {
 		return nil, ErrInput
@@ -131,7 +132,7 @@ func (s *Store) Open(ctx context.Context, key string) (io.ReadCloser, error) {
 		}
 		return nil, ErrUnavailable
 	}
-	return &limitedBody{body: resp.Body, left: maxObjectBytes}, nil
+	return &limitedBody{ctx: ctx, body: resp.Body, left: maxObjectBytes}, nil
 }
 
 // Delete erases file contents with a permanent encrypted zero-byte fence. A late
@@ -276,6 +277,7 @@ func validKey(s string) bool {
 }
 
 type limitedBody struct {
+	ctx  context.Context
 	body io.ReadCloser
 	left int64
 }
@@ -284,9 +286,15 @@ func (b *limitedBody) Read(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
+	if err := b.ctx.Err(); err != nil {
+		return 0, err
+	}
 	if b.left == 0 {
 		var extra [1]byte
 		n, err := b.body.Read(extra[:])
+		if callerErr := b.ctx.Err(); callerErr != nil {
+			return 0, callerErr
+		}
 		if n > 0 {
 			return 0, ErrUnavailable
 		}
@@ -297,6 +305,11 @@ func (b *limitedBody) Read(p []byte) (int, error) {
 	}
 	n, err := b.body.Read(p)
 	b.left -= int64(n)
+	// Transport EOF can race with cancellation; never report successful EOF
+	// after the caller budget expired, while retaining already returned bytes.
+	if callerErr := b.ctx.Err(); callerErr != nil {
+		return n, callerErr
+	}
 	return n, err
 }
 func (b *limitedBody) Close() error { return b.body.Close() }
