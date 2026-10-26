@@ -1,0 +1,141 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<?OFX OFXHEADER="200" VERSION="202" SECURITY="NONE" OLDFILEUID="NONE" NEWFILEUID="NONE"?>
+<OFX>
+  <BANKMSGSRSV1>
+    <STMTTRNRS>
+      <TRNUID>0</TRNUID>
+      <STMTRS>
+        <CURDEF>RUB</CURDEF>
+        <BANKACCTFROM>
+          <BANKID>T-BANK</BANKID>
+          <ACCTID>40817810000000001111</ACCTID>
+          <ACCTTYPE>CHECKING</ACCTTYPE>
+        </BANKACCTFROM>
+        <BANKTRANLIST>
+          <DTSTART>20260901000000.000[+3:MSK]</DTSTART>
+          <DTEND>20260925235959.000[+3:MSK]</DTEND>
+<STMTTRN>
+            <TRNTYPE>DEBIT</TRNTYPE>
+            <DTPOSTED>20260911120000.000[+3:MSK]</DTPOSTED>
+            <TRNAMT>-700.00</TRNAMT>
+            <FITID>syn-empty-memo</FITID>
+            <NAME>Ларёк у дома</NAME>
+            <MEMO></MEMO>
+            <CURRENCY>
+              <CURSYM>RUB</CURSYM>
+              <CURRATE>1.0</CURRATE>
+            </CURRENCY>
+          </STMTTRN>
+<STMTTRN>
+            <TRNTYPE>DEBIT</TRNTYPE>
+            <DTPOSTED>20260912120000.000[+3:MSK]</DTPOSTED>
+            <TRNAMT>-350.00</TRNAMT>
+            <FITID>syn-literal-uncat</FITID>
+            <NAME>Киоск</NAME>
+            <MEMO>Без категории</MEMO>
+            <CURRENCY>
+              <CURSYM>RUB</CURSYM>
+              <CURRATE>1.0</CURRATE>
+            </CURRENCY>
+          </STMTTRN>
+<STMTTRN>
+            <TRNTYPE>CREDIT</TRNTYPE>
+            <DTPOSTED>20260913120000.000[+3:MSK]</DTPOSTED>
+            <TRNAMT>5000.00</TRNAMT>
+            <FITID>syn-new-cat</FITID>
+            <NAME>Биржа</NAME>
+            <MEMO>Крипто</MEMO>
+            <CURRENCY>
+              <CURSYM>RUB</CURSYM>
+              <CURRATE>1.0</CURRATE>
+            </CURRENCY>
+          </STMTTRN>
+<STMTTRN>
+            <TRNTYPE>DEBIT</TRNTYPE>
+            <DTPOSTED>20260914120000.000[+3:MSK]</DTPOSTED>
+            <TRNAMT>-1200.00</TRNAMT>
+            <FITID>syn-long-cat</FITID>
+            <NAME>Мастерская</NAME>
+            <MEMO>Очень длинная категория банка, которой нет в списке известных категорий Т-Банка</MEMO>
+            <CURRENCY>
+              <CURSYM>RUB</CURSYM>
+              <CURRATE>1.0</CURRATE>
+            </CURRENCY>
+          </STMTTRN>
+<STMTTRN>
+            <TRNTYPE>CREDIT</TRNTYPE>
+            <DTPOSTED>20260915120000.000[+3:MSK]</DTPOSTED>
+            <TRNAMT>813.00</TRNAMT>
+            <FITID>syn-refund-word</FITID>
+            <NAME>Возврат за заказ</NAME>
+            <MEMO>Переводы</MEMO>
+            <CURRENCY>
+              <CURSYM>RUB</CURSYM>
+              <CURRATE>1.0</CURRATE>
+            </CURRENCY>
+          </STMTTRN>
+<STMTTRN>
+            <TRNTYPE>CREDIT</TRNTYPE>
+            <DTPOSTED>20260916120000.000[+3:MSK]</DTPOSTED>
+            <TRNAMT>150.00</TRNAMT>
+            <FITID>syn-refund-name</FITID>
+            <NAME>Пятёрочка</NAME>
+            <MEMO>Супермаркеты</MEMO>
+            <CURRENCY>
+              <CURSYM>RUB</CURSYM>
+              <CURRATE>1.0</CURRATE>
+            </CURRENCY>
+          </STMTTRN>
+<STMTTRN>
+            <TRNTYPE>DEBIT</TRNTYPE>
+            <DTPOSTED>20260917120000.000[+3:MSK]</DTPOSTED>
+            <TRNAMT>-420.00</TRNAMT>
+            <FITID>syn-no-name</FITID>
+            <NAME></NAME>
+            <MEMO>Супермаркеты</MEMO>
+            <CURRENCY>
+              <CURSYM>RUB</CURSYM>
+              <CURRATE>1.0</CURRATE>
+            </CURRENCY>
+          </STMTTRN>
+<STMTTRN>
+            <TRNTYPE>DEBIT</TRNTYPE>
+            <DTPOSTED>20260918120000.000[+3:MSK]</DTPOSTED>
+            <TRNAMT>-90.00</TRNAMT>
+            <FITID>syn-fee</FITID>
+            <NAME>Комиссия за перевод</NAME>
+            <MEMO>Финансы</MEMO>
+            <CURRENCY>
+              <CURSYM>RUB</CURSYM>
+              <CURRATE>1.0</CURRATE>
+            </CURRENCY>
+          </STMTTRN>
+<STMTTRN>
+            <TRNTYPE>DEBIT</TRNTYPE>
+            <DTPOSTED>20260910120000.000[+3:MSK]</DTPOSTED>
+            <TRNAMT>-180.00</TRNAMT>
+            <FITID>syn-broken-amount</FITID>
+            <NAME>Аптека</NAME>
+            <MEMO>Аптеки</MEMO>
+            <CURRENCY>
+              <CURSYM>RUB</CURSYM>
+              <CURRATE>1.0</CURRATE>
+            </CURRENCY>
+          </STMTTRN>
+<STMTTRN>
+            <TRNTYPE>DEBIT</TRNTYPE>
+            <DTPOSTED>20260912100000.000[+3:MSK]</DTPOSTED>
+            <TRNAMT>-55.00</TRNAMT>
+            <FITID>syn-buffet</FITID>
+            <NAME>Буфет</NAME>
+            <MEMO>Фастфуд</MEMO>
+            <CURRENCY>
+              <CURSYM>RUB</CURSYM>
+              <CURRATE>1.0</CURRATE>
+            </CURRENCY>
+          </STMTTRN>
+        </BANKTRANLIST>
+      </STMTRS>
+    </STMTTRNRS>
+  </BANKMSGSRSV1>
+</OFX>
