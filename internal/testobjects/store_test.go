@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -18,10 +20,20 @@ import (
 // The same fixture underlies full-service API claims. Assert its refusal and CAS
 // semantics independently, so a permissive fake cannot turn an unsafe service green.
 func TestUnitFixturePreservesCloudConditionalWriteAndErasureSemantics(t *testing.T) {
+	fixture, client := memoryFixture(t)
+	verifyFixtureCAS(t, fixture, client)
+}
+
+func TestIntegrationFixturePreservesActualTLSCloudBoundary(t *testing.T) {
 	fixture := New(t)
+	verifyFixtureCAS(t, fixture, fixture.Server.Client())
+}
+
+func verifyFixtureCAS(t *testing.T, fixture *Store, client *http.Client) {
+	t.Helper()
 	var cfg config.Config
 	fixture.Configure(&cfg)
-	store, err := objectstore.New(objectstore.Config{Endpoint: cfg.ObjectStorage.Endpoint, Bucket: cfg.ObjectStorage.Bucket, KMSKeyID: cfg.ObjectStorage.KMSKeyID, Token: objectstore.FileToken(cfg.ObjectStorage.IAMTokenFile), Client: fixture.Server.Client()})
+	store, err := objectstore.New(objectstore.Config{Endpoint: cfg.ObjectStorage.Endpoint, Bucket: cfg.ObjectStorage.Bucket, KMSKeyID: cfg.ObjectStorage.KMSKeyID, Token: objectstore.FileToken(cfg.ObjectStorage.IAMTokenFile), Client: client})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +133,7 @@ func TestUnitFixturePreservesCloudConditionalWriteAndErasureSemantics(t *testing
 }
 
 func TestUnitFixtureDoesNotAcceptInvalidObjectRequests(t *testing.T) {
-	fixture := New(t)
+	fixture, _ := memoryFixture(t)
 	for _, tc := range []struct {
 		name, method, target, token, kms, body string
 		length                                 int64
@@ -154,4 +166,24 @@ func TestUnitFixtureDoesNotAcceptInvalidObjectRequests(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A declared in-memory HTTP transport exercises protocol behavior without a socket.
+// Runtime/New and the TLS path above retain their real listener in Integration/API.
+type fixtureTransport func(*http.Request) (*http.Response, error)
+
+func (f fixtureTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+func memoryFixture(t *testing.T) (*Store, *http.Client) {
+	t.Helper()
+	s := &Store{data: map[string][]byte{}, modified: map[string]time.Time{}, TokenFile: filepath.Join(t.TempDir(), "iam")}
+	if err := os.WriteFile(s.TokenFile, []byte("fixture-iam-token"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s.Server = &httptest.Server{Config: &http.Server{Handler: http.HandlerFunc(s.serve)}, URL: "https://objects.test"}
+	client := &http.Client{Transport: fixtureTransport(func(r *http.Request) (*http.Response, error) {
+		recorder := httptest.NewRecorder()
+		s.serve(recorder, r)
+		return recorder.Result(), nil
+	})}
+	return s, client
 }
