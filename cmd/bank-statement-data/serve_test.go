@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"testing"
@@ -24,6 +25,7 @@ func TestUnitServeFailsBeforeConnectingWithoutVerifiers(t *testing.T) {
 // readiness and an orderly stop on cancel.
 func TestIntegrationServeRunsAndStops(t *testing.T) {
 	dsn := testdb.DSN(t)
+	options := commandObjectOptions(t)
 	for k, v := range map[string]string{
 		"SERVICE_NAME": "user", "ENV": "dev", "AUTH_MODE": "insecure-dev", "LOG_LEVEL": "error",
 		"DB_PRIMARY_DSN": dsn, "GRPC_ADDR": "127.0.0.1:0", "HTTP_ADDR": "127.0.0.1:0",
@@ -32,8 +34,11 @@ func TestIntegrationServeRunsAndStops(t *testing.T) {
 		t.Setenv(k, v)
 	}
 	ctx, cancel := context.WithCancel(t.Context())
+	if err := runMigrate(t.Context(), []string{"up"}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
 	errc := make(chan error, 1)
-	go func() { errc <- runServe(ctx) }()
+	go func() { errc <- runServe(ctx, options) }()
 	// No port to probe (":0"), so give the readiness check its first round, then stop.
 	time.AfterFunc(500*time.Millisecond, cancel)
 	select {
@@ -55,13 +60,14 @@ func TestIntegrationServeFailsOnBadInput(t *testing.T) {
 	}
 	for name, extra := range cases {
 		t.Run(name, func(t *testing.T) {
+			options := commandObjectOptions(t)
 			for k, v := range base {
 				t.Setenv(k, v)
 			}
 			for k, v := range extra {
 				t.Setenv(k, v)
 			}
-			if err := runServe(t.Context()); err == nil {
+			if err := runServe(t.Context(), options); err == nil {
 				t.Fatal("want an error")
 			}
 		})

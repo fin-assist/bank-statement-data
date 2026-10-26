@@ -5,6 +5,7 @@ import (
 	"context"
 	"log/slog"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ func TestAPIProcessBindFailureClosesApplicationPoolsAndNeverStartsHTTP(t *testin
 	previous := slog.Default()
 	t.Cleanup(func() { slog.SetDefault(previous) })
 	dsn := testdb.DSN(t)
+	options := commandObjectOptions(t)
 	occupied, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -32,7 +34,7 @@ func TestAPIProcessBindFailureClosesApplicationPoolsAndNeverStartsHTTP(t *testin
 		t.Setenv(key, value)
 	}
 	var stderr bytes.Buffer
-	if code := mainExit([]string{"serve"}, &stderr); code != 1 {
+	if code := mainExit([]string{"serve"}, &stderr, options); code != 1 || !strings.Contains(stderr.String(), "listen") {
 		t.Fatalf("bind conflict accepted: code=%d log=%q", code, stderr.String())
 	}
 	probe, err := net.DialTimeout("tcp", address, time.Second)

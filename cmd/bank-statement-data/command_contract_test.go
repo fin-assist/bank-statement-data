@@ -34,11 +34,12 @@ func TestUnitProcessBoundaryReportsUsageAndConfigurationFailures(t *testing.T) {
 }
 
 func TestAPICommandConfigurationAndUsageAreRealExitStatuses(t *testing.T) {
+	options := commandObjectOptions(t)
 	previous := slog.Default()
 	t.Cleanup(func() { slog.SetDefault(previous) })
 	for _, args := range [][]string{nil, {"not-a-command"}, {"serve", "unexpected"}, {"migrate"}} {
 		var stderr bytes.Buffer
-		if code := mainExit(args, &stderr); code != 2 || !strings.Contains(stderr.String(), "bank-statement-data migrate") {
+		if code := mainExit(args, &stderr, options); code != 2 || !strings.Contains(stderr.String(), "bank-statement-data migrate") {
 			t.Fatalf("args=%v code=%d stderr=%q", args, code, stderr.String())
 		}
 	}
@@ -84,7 +85,7 @@ func TestAPICommandConfigurationAndUsageAreRealExitStatuses(t *testing.T) {
 				t.Setenv("MIGRATE_LOCK_TIMEOUT", "later")
 			}
 			var stderr bytes.Buffer
-			if code := mainExit(args, &stderr); code != 1 || !strings.Contains(stderr.String(), "failed") {
+			if code := mainExit(args, &stderr, options); code != 1 || !strings.Contains(stderr.String(), "failed") {
 				t.Fatalf("configuration accepted: code=%d stderr=%q", code, stderr.String())
 			}
 		})
@@ -99,7 +100,7 @@ func TestIntegrationCommandServiceMigrationsAndVersions(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	if err := runMigrate(t.Context(), []string{"version"}, &out); err != nil || out.String() != "tombstone\t1\nservice\t3\n" {
+	if err := runMigrate(t.Context(), []string{"version"}, &out); err != nil || out.String() != "tombstone\t1\nidempotency\t5\nservice\t3\n" {
 		t.Fatalf("version=%q err=%v", out.String(), err)
 	}
 	for _, args := range [][]string{{"down", "service", "1"}, {"up"}, {"force", "service", "3"}} {
@@ -108,7 +109,7 @@ func TestIntegrationCommandServiceMigrationsAndVersions(t *testing.T) {
 		}
 	}
 	out.Reset()
-	if err := runMigrate(t.Context(), []string{"version"}, &out); err != nil || out.String() != "tombstone\t1\nservice\t3\n" {
+	if err := runMigrate(t.Context(), []string{"version"}, &out); err != nil || out.String() != "tombstone\t1\nidempotency\t5\nservice\t3\n" {
 		t.Fatalf("version=%q err=%v", out.String(), err)
 	}
 	for _, args := range [][]string{{"force", "service", "-2"}, {"down", "service", "0"}, {"version", "extra"}, {"force", "service", "not-a-number"}} {

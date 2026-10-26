@@ -25,10 +25,11 @@ import (
 	"github.com/fin-assist/bank-statement-data/internal/testdb"
 )
 
-// The actual binary assembly currently exposes operations and health only. This
-// test does not register fixture RPCs or replace its empty production policy.
+// Exercise the actual binary assembly and its declared access policy without
+// registering fixture RPCs in place of the production services.
 func TestAPICommandMigrationDeploymentServesOperationsAndStops(t *testing.T) {
 	dsn := testdb.DSN(t)
+	options := commandObjectOptions(t)
 	dsnFile := filepath.Join(t.TempDir(), "primary-dsn")
 	if err := os.WriteFile(dsnFile, []byte(dsn), 0600); err != nil {
 		t.Fatal(err)
@@ -53,14 +54,14 @@ func TestAPICommandMigrationDeploymentServesOperationsAndStops(t *testing.T) {
 		t.Fatal(err)
 	}
 	var versions bytes.Buffer
-	if err := runMigrate(t.Context(), []string{"version"}, &versions); err != nil || versions.String() != "tombstone\t1\nservice\t3\n" {
+	if err := runMigrate(t.Context(), []string{"version"}, &versions); err != nil || versions.String() != "tombstone\t1\nidempotency\t5\nservice\t3\n" {
 		t.Fatalf("deployment migration version: %q %v", versions.String(), err)
 	}
 	_ = grpcPort.Close()
 	_ = httpPort.Close()
 	serveCtx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
-	go func() { done <- run(serveCtx, []string{"serve"}) }()
+	go func() { done <- run(serveCtx, []string{"serve"}, options) }()
 	var once sync.Once
 	stop := func() {
 		once.Do(func() {
@@ -214,7 +215,7 @@ func TestAPICommandMigrationDeploymentServesOperationsAndStops(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 			defer cancel()
-			if err := run(ctx, []string{"serve"}); err == nil {
+			if err := run(ctx, []string{"serve"}, options); err == nil {
 				t.Fatal("failed rollout unexpectedly started")
 			}
 			// A new channel must attempt this deployment's listener rather than

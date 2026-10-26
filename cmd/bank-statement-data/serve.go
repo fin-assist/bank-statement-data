@@ -21,7 +21,7 @@ import (
 
 // runServe starts the gRPC server, the ops listener and the background jobs, and stops
 // them in order on SIGTERM: NOT_SERVING (gRPC health and /readyz), a pause for balancers, graceful stop, jobs, pools.
-func runServe(ctx context.Context) error {
+func runServe(ctx context.Context, options ...app.Options) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -33,7 +33,7 @@ func runServe(ctx context.Context) error {
 	}
 
 	reg := ops.NewRegistry()
-	a, err := app.New(ctx, cfg, log, reg)
+	a, err := app.New(ctx, cfg, log, reg, options...)
 	if err != nil {
 		return err
 	}
