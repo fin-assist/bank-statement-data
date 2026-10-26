@@ -4,6 +4,7 @@
 
 ### Изменено
 
+- FIN-347: версии библиотек в `AGENTS.md`, README, `docs/server.md` и `docs/migrations.md` приведены к `go.mod`: go-postgres v0.3.0, go-grpc v0.2.0, go-migrate v0.1.1; шапка unit-файла стенда называет режимы файлов ключей стенда (ключ подписи 0600 root, общий JWKS 0644). Только документация: код и поведение сервиса не менялись.
 - FIN-267: `AUTH_MODE=verify` работает: проверка токенов — `go-identity v0.2.0` (`NewAssembly`; prod — ServiceAccount Kubernetes, stage — JWT стенда с ключами из файлов, пользователи — ключи `user.GetSigningKeys`, задание `identity-keys`). Новые переменные `AUTH_USER_*`, `AUTH_KUBERNETES_*`, `AUTH_STAGE_*`; `PEER_USER_ADDR` обязателен. Удалённые пользователи — `go-tombstone v0.1.0`: источник миграций `tombstone` перед сервисным и `TOKEN_REVOKED` на admission. `verify` с `ENV=dev` — ошибка старта.
 - FIN-290: `make test-names` проверяет fuzz-цели (`FuzzUnit…`/`FuzzIntegration…`/`FuzzAPI…`, seed-корпус — в своём наборе) и отклоняет `Example…`.
 
