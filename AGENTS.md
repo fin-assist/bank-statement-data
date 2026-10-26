@@ -104,8 +104,11 @@ the PR with why it is needed.
   `T=$(go env GOTOOLDIR); chmod u+w "$T"; go build -o "$T/covdata" cmd/covdata`.
 - The image needs Docker; without it say in the PR that the image was built only by the CI job `image`.
 - Every test or lint run gets a timeout (`timeout 600 make test` or the tool's own): a hung run blocks the session.
-- A local `serve` for a smoke check: `ENV=dev AUTH_MODE=insecure-dev SERVICE_NAME=bank-statement-data DB_PRIMARY_DSN=… make run`;
-  `/readyz` on `HTTP_ADDR` answers when the database does and drops to 503 at SIGTERM, before `SHUTDOWN_DELAY` (FIN-289).
+- A local `serve` smoke check additionally requires `OBJECT_STORAGE_BUCKET`, `OBJECT_STORAGE_KMS_KEY_ID` and
+  `OBJECT_STORAGE_IAM_TOKEN_FILE`, a reachable private Yandex bucket and IAM permissions for `CheckBucket`.
+  With those configured: `ENV=dev AUTH_MODE=insecure-dev SERVICE_NAME=bank-statement-data DB_PRIMARY_DSN=… make run`.
+  There is no production dev-memory/local-file object store; CheckBucket runs before listeners. For isolated validation
+  use the real-PostgreSQL/TLS API fixtures, not a claimed local serve without cloud prerequisites. `/readyz` on `HTTP_ADDR` answers when the database does and drops to 503 at SIGTERM, before `SHUTDOWN_DELAY` (FIN-289).
 
 ## Principles
 

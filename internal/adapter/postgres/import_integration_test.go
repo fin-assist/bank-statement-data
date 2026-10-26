@@ -186,7 +186,11 @@ func TestIntegrationRepositoryConditionalTerminalWritesAndMissingRows(t *testing
 	if err := f.db.Run(t.Context(), func(c context.Context) error { return f.repo.PromoteUpload(c, user, id, f.now) }); !errors.Is(err, importing.ErrNotFound) {
 		t.Fatal("terminal row promoted", err)
 	}
-	if _, err := f.repo.Upload(t.Context(), uuid.NewString(), id); !errors.Is(err, importing.ErrNotFound) {
+	foreign := uuid.NewString()
+	if err := f.db.Run(t.Context(), func(c context.Context) error { _, err := f.repo.LockUser(c, foreign, true); return err }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.repo.Upload(t.Context(), foreign, id); !errors.Is(err, importing.ErrNotFound) {
 		t.Fatal("foreign row visible", err)
 	}
 	if err := f.db.Run(t.Context(), func(c context.Context) error { _, err := f.repo.Remove(c, user, id, f.now); return err }); err == nil {

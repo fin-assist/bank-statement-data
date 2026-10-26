@@ -71,6 +71,9 @@ func TestAPIImportConfigUsesActualLoadedRangeAndProfileCalendar(t *testing.T) {
 	if err != nil || history.TimeZone != "Asia/Tokyo" || len(history.Uploads) != 1 || history.Uploads[0].Status != pb.UploadStatus_UPLOAD_STATUS_DONE || history.Summary == nil || history.Summary.OperationCount != 1 {
 		t.Fatal(history, err)
 	}
+	if _, err := settingspb.NewUserSettingsSyncServiceClient(env.Conn).SetUserTimezone(apitest.Caller(t.Context(), "user"), &settingspb.SetUserTimezoneRequest{UserId: apiOther, Timezone: "UTC", SettingsVersion: 1}); err != nil {
+		t.Fatal(err)
+	}
 	foreign, err := c.ListUploads(apitest.User(t.Context(), apiOther), &pb.ListUploadsRequest{})
 	if err != nil || len(foreign.Uploads) != 0 || foreign.Summary != nil {
 		t.Fatal("foreign history leaked", foreign, err)
@@ -166,6 +169,9 @@ func TestAPIInvalidStoredUploadMetadataNeverLeaksOrChangesUnrelatedUser(t *testi
 			readAPIInternal(t, err)
 			if reply != nil {
 				t.Fatal("malformed row partially returned")
+			}
+			if _, err := settingspb.NewUserSettingsSyncServiceClient(env.Conn).SetUserTimezone(apitest.Caller(t.Context(), "user"), &settingspb.SetUserTimezoneRequest{UserId: apiOther, Timezone: "UTC", SettingsVersion: 1}); err != nil {
+				t.Fatal(err)
 			}
 			foreign, err := c.ListUploads(apitest.User(t.Context(), apiOther), &pb.ListUploadsRequest{})
 			if err != nil || len(foreign.Uploads) != 0 {

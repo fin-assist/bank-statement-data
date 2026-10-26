@@ -56,6 +56,8 @@ make up
 make run
 ```
 
+Без настроенного облачного ведра `serve` не запускается даже в dev: CheckBucket выполняется до listener. Локального production-адаптера файлов/памяти нет; API-тесты используют явно внедрённый TLS fixture и настоящий PostgreSQL, без облачных credentials.
+
 - **Образ** — `Dockerfile`: статический бинарь на distroless, пользователь `nonroot`. Один бинарь: `serve` в Deployment, `migrate up` в Job. Публикация в GHCR — FIN-148.
 - **Стенд** (FIN-149) — тот же бинарь под systemd: пример unit-файла с секретами через `LoadCredential` — [deploy/systemd/bank-statement-data.service](deploy/systemd/bank-statement-data.service). Скрипт деплоя запускает `migrate up` перед перезапуском unit.
 - **k3s** — манифесты в `fin-assist/infra` (FIN-147): ServiceAccount, projected token, headless Service, пробы `grpc`.

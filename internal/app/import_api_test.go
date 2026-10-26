@@ -145,6 +145,9 @@ func TestAPIImportRealDurabilityDedupDeletionAndPurge(t *testing.T) {
 	if err != nil || len(unread.Lines) == 0 {
 		t.Fatalf("unread: %v %v", unread, err)
 	}
+	if _, err := settings.SetUserTimezone(apitest.Caller(t.Context(), "user"), &settingspb.SetUserTimezoneRequest{UserId: apiOther, Timezone: "UTC", SettingsVersion: 1}); err != nil {
+		t.Fatal(err)
+	}
 	_, err = c.DeleteUpload(apitest.User(t.Context(), apiOther), &pb.DeleteUploadRequest{UploadId: first.UploadId})
 	if apitest.Reason(err) != "NOT_FOUND" {
 		t.Fatalf("foreign delete: %v", err)
