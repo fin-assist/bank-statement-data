@@ -669,6 +669,11 @@ func TestUnitPurgeRetiresThenFencesAllPagesBeforeDeletingDatabase(t *testing.T) 
 		}
 	}
 	order := []string{"retire", "commit", "exclusive", "intents", "fence", "confirmed", "purge-db"}
+	for _, event := range order {
+		if _, present := positions[event]; !present {
+			t.Fatal("missing required purge phase", event, f.trace.events)
+		}
+	}
 	for i := 1; i < len(order); i++ {
 		if positions[order[i-1]] >= positions[order[i]] {
 			t.Fatal("unsafe purge phase order", f.trace.events)
