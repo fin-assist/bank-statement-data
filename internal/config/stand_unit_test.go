@@ -38,18 +38,26 @@ func readStandUnit(t *testing.T) standUnit {
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if value, ok := strings.CutPrefix(line, "Environment="); ok {
+		// systemd ignores spaces around the key's "="; read the key the same way so no
+		// directive escapes the checks below.
+		key, value, _ := strings.Cut(line, "=")
+		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
+		switch key {
+		case "Environment":
+			// Only the plain NAME=value form: systemd also accepts quoted and space-separated
+			// assignments, which this parser would misread and which could hide a secret.
+			if strings.ContainsAny(value, "\"' \t\\") {
+				t.Fatalf("unit line %q: use one plain NAME=value per Environment=, without quotes, spaces or backslashes", line)
+			}
 			name, setting, found := strings.Cut(value, "=")
 			if !found {
 				t.Fatalf("malformed unit line %q", line)
 			}
 			unit.env[name] = strings.ReplaceAll(setting, "%d", standCredentials)
-		}
-		if value, ok := strings.CutPrefix(line, "LoadCredential="); ok {
+		case "LoadCredential":
 			name, source, _ := strings.Cut(value, ":")
 			unit.credentials[name] = source
-		}
-		if value, ok := strings.CutPrefix(line, "EnvironmentFile="); ok {
+		case "EnvironmentFile":
 			unit.envFiles = append(unit.envFiles, value)
 		}
 	}
@@ -91,10 +99,17 @@ func TestUnitStandUnitSatisfiesStageIdentity(t *testing.T) {
 	if got := unit.env["AUTH_STAGE_PUBLIC_KEYS_FILE"]; got != standPublicKeys {
 		t.Fatalf("unit AUTH_STAGE_PUBLIC_KEYS_FILE=%q, want the shared %s", got, standPublicKeys)
 	}
-	// The public JWKS is read directly; a credential copy would be the old per-service path.
+	// Every credential is read by some variable: an unread copy of the public JWKS (the old
+	// per-service path) or a leftover one only makes the start depend on a file nobody reads.
 	for name, source := range unit.credentials {
-		if strings.Contains(name, "public") || strings.Contains(source, "stage-public") {
-			t.Fatalf("unit loads the public JWKS as credential %s:%s; it must read %s directly", name, source, standPublicKeys)
+		used := false
+		for _, value := range unit.env {
+			if value == standCredentials+"/"+name {
+				used = true
+			}
+		}
+		if !used {
+			t.Fatalf("unit loads credential %s:%s that no variable reads; the public JWKS is read directly from %s", name, source, standPublicKeys)
 		}
 	}
 	for name, value := range unit.env {
@@ -110,10 +125,13 @@ func TestUnitStandUnitSatisfiesStageIdentity(t *testing.T) {
 			t.Fatalf("unit sets secret %s by value; pass it as %s_FILE from a credential", v.Name, v.Name)
 		}
 	}
-	// Credentials come from this service's own directory of root-owned files.
+	// Credentials come from this service's own directory of root-owned files, one file per
+	// credential named after it: <name> or <name>.<ext>, directly in that directory.
 	for name, source := range unit.credentials {
-		if !strings.HasPrefix(source, "/etc/finassist/"+standServiceName+"/") {
-			t.Fatalf("credential %s comes from %q, outside /etc/finassist/%s/", name, source, standServiceName)
+		clean := filepath.Clean(source)
+		file := filepath.Base(clean)
+		if !filepath.IsAbs(source) || filepath.Dir(clean) != "/etc/finassist/"+standServiceName || strings.TrimSuffix(file, filepath.Ext(file)) != name {
+			t.Fatalf("credential %s comes from %q, want /etc/finassist/%s/%s[.ext]", name, source, standServiceName, name)
 		}
 	}
 	for _, name := range secretFileVars() {
@@ -146,16 +164,14 @@ func TestUnitStandUnitSatisfiesStageIdentity(t *testing.T) {
 		}
 		vars[name] = value
 	}
-	// Files exist only where systemd puts the declared credentials; db-primary-dsn holds the DSN.
+	// Files exist only where systemd puts the declared credentials; each one names its
+	// credential, so the DSN below proves which credential DB_PRIMARY_DSN_FILE points at.
 	readFile := func(path string) ([]byte, error) {
 		name, ok := strings.CutPrefix(path, standCredentials+"/")
 		if _, loaded := unit.credentials[name]; !ok || !loaded {
 			return noFiles(path)
 		}
-		if name == "db-primary-dsn" {
-			return []byte("postgres://primary/" + standServiceName), nil
-		}
-		return []byte("credential " + name), nil
+		return []byte("postgres://" + name + "/" + standServiceName), nil
 	}
 	get, list := env(vars)
 	c, err := load(get, readFile, list)
@@ -164,6 +180,9 @@ func TestUnitStandUnitSatisfiesStageIdentity(t *testing.T) {
 	}
 	if c.Env != EnvStage || c.Auth.Mode != AuthVerify || c.Service != standServiceName {
 		t.Fatalf("stand runs ENV=%s AUTH_MODE=%s SERVICE_NAME=%s, want stage, verify and %s", c.Env, c.Auth.Mode, c.Service, standServiceName)
+	}
+	if want := "postgres://db-primary-dsn/" + standServiceName; c.DB.PrimaryDSN != want {
+		t.Fatalf("primary DSN %q, want %q from the db-primary-dsn credential", c.DB.PrimaryDSN, want)
 	}
 	stage := c.Auth.Identity.Stage
 	if stage.SigningKeyFile != standCredentials+"/stage-signing-key" || stage.PublicKeysFile != standPublicKeys {

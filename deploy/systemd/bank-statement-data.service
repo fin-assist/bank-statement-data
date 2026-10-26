@@ -10,6 +10,9 @@
 #   /etc/finassist/bank-statement-data/stage-signing-key.pem  stand signing key, mode 0600, owner root (LoadCredential)
 #   /etc/finassist/stage-public.jwks                  stand public JWKS shared by all services, mode 0644, owner root
 #                                                     (/etc/finassist 0755): DynamicUser reads it directly
+#
+# Environment= uses only the plain form Environment=NAME=value, one per line, without quotes,
+# spaces or backslashes; internal/config/stand_unit_test.go insists on it.
 [Unit]
 Description=fin-assist bank-statement-data
 After=network-online.target postgresql.service
