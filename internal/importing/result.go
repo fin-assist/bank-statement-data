@@ -34,6 +34,7 @@ type Result struct {
 	Accounts                                               []Account
 	CategorizedCount, OwnTransferCount, UncategorizedCount int64
 	UncategorizedRange                                     *TimeRange
+	UncategorizedSelection, UncategorizedSelectionName     string
 	Coverage                                               Coverage
 	Notices                                                []string
 }
@@ -155,6 +156,10 @@ func BuildResult(ctx context.Context, in ResultInput) (Result, error) {
 	}
 	if result.UncategorizedCount > 0 {
 		result.UncategorizedRange = &TimeRange{From: startDay(*firstNew, in.Zone), To: startDay(*lastNew, in.Zone).AddDate(0, 0, 1)}
+		// This published built-in selection includes untargeted refunds too;
+		// filtering only by cat_uncategorized would return a different set.
+		result.UncategorizedSelection = "s_uncategorized"
+		result.UncategorizedSelectionName = "Без категории"
 	}
 	coverage, err := EvaluateCoverage(ctx, in.Before, in.After, allTimes, in.Now, in.Zone)
 	if err != nil {

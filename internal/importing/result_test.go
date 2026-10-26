@@ -70,6 +70,9 @@ func TestUnitResultUsesNewNativeFactsAndSignedRUBTotals(t *testing.T) {
 	if got.UncategorizedRange == nil || got.UncategorizedRange.From.Day() != 15 || got.UncategorizedRange.To.Day() != 16 {
 		t.Fatal("uncategorized day range")
 	}
+	if got.UncategorizedSelection != "s_uncategorized" || got.UncategorizedSelectionName != "Без категории" {
+		t.Fatal("wrong uncategorized selector")
+	}
 	if got.Coverage.FullMonths != 1 || len(got.Coverage.NewlyFullMonths) != 1 || len(got.Notices) != 0 {
 		t.Fatal("coverage/notices")
 	}
