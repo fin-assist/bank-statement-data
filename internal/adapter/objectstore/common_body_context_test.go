@@ -78,7 +78,7 @@ func TestUnitObjectLimitProbeKeepsTransferErrorAndDiscardsExtraByte(t *testing.T
 			p := []byte{'s'}
 			n, err := body.Read(p)
 			want := outcome
-			if outcome == io.EOF {
+			if errors.Is(outcome, io.EOF) {
 				want = ErrUnavailable
 			}
 			if n != 0 || !errors.Is(err, want) || p[0] != 's' || raw.reads != 1 {
