@@ -121,16 +121,7 @@ func (s *Store) Open(ctx context.Context, key string) (io.ReadCloser, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Match Client.Timeout's HTTP phase, after token loading. Native cancellation
-	// interrupts I/O; the monotonic deadline also rejects an EOF/timeout race.
-	expires := time.Now().Add(s.client.Timeout)
 	resp, err := s.do(req)
-	if contextErr := objectReadContextErr(ctx, expires, false); contextErr != nil {
-		if resp != nil {
-			_ = resp.Body.Close()
-		}
-		return nil, contextErr
-	}
 	if err != nil {
 		return nil, err
 	}
@@ -141,7 +132,7 @@ func (s *Store) Open(ctx context.Context, key string) (io.ReadCloser, error) {
 		}
 		return nil, ErrUnavailable
 	}
-	return &limitedBody{ctx: ctx, expires: expires, body: resp.Body, left: maxObjectBytes}, nil
+	return &limitedBody{body: resp.Body, left: maxObjectBytes}, nil
 }
 
 // Delete erases file contents with a permanent encrypted zero-byte fence. A late
@@ -234,13 +225,20 @@ func (s *Store) request(ctx context.Context, method, key string, query url.Value
 }
 
 func (s *Store) do(req *http.Request) (*http.Response, error) {
+	// Match Client.Timeout's HTTP phase, after token loading. Native cancellation
+	// interrupts I/O; the monotonic deadline also rejects an EOF/timeout race.
+	expires := time.Now().Add(s.client.Timeout)
 	resp, err := s.client.Do(req)
-	if err != nil {
-		if req.Context().Err() != nil {
-			return nil, req.Context().Err()
+	if contextErr := objectReadContextErr(req.Context(), expires, false); contextErr != nil {
+		if resp != nil {
+			_ = resp.Body.Close()
 		}
+		return nil, contextErr
+	}
+	if err != nil {
 		return nil, ErrUnavailable
 	}
+	resp.Body = &transferBody{ctx: req.Context(), expires: expires, body: resp.Body}
 	return resp, nil
 }
 
@@ -286,31 +284,24 @@ func validKey(s string) bool {
 }
 
 type limitedBody struct {
-	ctx         context.Context
-	expires     time.Time
-	finishedEOF bool
-	body        io.ReadCloser
-	left        int64
+	body io.ReadCloser
+	left int64
 }
 
 func (b *limitedBody) Read(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
-	if err := objectReadContextErr(b.ctx, b.expires, b.finishedEOF); err != nil {
-		return 0, err
-	}
 	if b.left == 0 {
 		var extra [1]byte
 		n, err := b.body.Read(extra[:])
-		if contextErr := objectReadContextErr(b.ctx, b.expires, b.finishedEOF); contextErr != nil {
-			return 0, contextErr
+		// A failed transfer remains a failed transfer even when the discarded
+		// probe byte arrived with its error. A byte with EOF still exceeds size.
+		if err != nil && err != io.EOF {
+			return 0, err
 		}
 		if n > 0 {
 			return 0, ErrUnavailable
-		}
-		if err == io.EOF {
-			b.finishedEOF = true
 		}
 		return 0, err
 	}
@@ -319,6 +310,27 @@ func (b *limitedBody) Read(p []byte) (int, error) {
 	}
 	n, err := b.body.Read(p)
 	b.left -= int64(n)
+	return n, err
+}
+func (b *limitedBody) Close() error { return b.body.Close() }
+
+// transferBody keeps the existing caller/HTTP budgets observable when a raw
+// transport returns bytes plus EOF at cancellation. It adds no timer or context.
+type transferBody struct {
+	ctx         context.Context
+	expires     time.Time
+	finishedEOF bool
+	body        io.ReadCloser
+}
+
+func (b *transferBody) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if err := objectReadContextErr(b.ctx, b.expires, b.finishedEOF); err != nil {
+		return 0, err
+	}
+	n, err := b.body.Read(p)
 	if contextErr := objectReadContextErr(b.ctx, b.expires, b.finishedEOF); contextErr != nil {
 		return n, contextErr
 	}
@@ -328,7 +340,7 @@ func (b *limitedBody) Read(p []byte) (int, error) {
 	}
 	return n, err
 }
-func (b *limitedBody) Close() error { return b.body.Close() }
+func (b *transferBody) Close() error { return b.body.Close() }
 
 func objectReadContextErr(caller context.Context, expires time.Time, finishedEOF bool) error {
 	if err := caller.Err(); err != nil {
