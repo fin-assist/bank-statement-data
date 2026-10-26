@@ -24,11 +24,27 @@ type Parser struct{}
 var _ importing.Parser = Parser{}
 
 var errMalformed = errors.New("malformed OFX statement")
+var errInputTooLarge = errors.New("OFX parser input budget exceeded")
+
+// These are parser resource ceilings, not new client-facing refusal codes.
+const maxInputBytes = 10 << 20
+const maxXMLDepth = 64
+
+func readSource(r io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, maxInputBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxInputBytes {
+		return nil, errInputTooLarge
+	}
+	return data, nil
+}
 
 // Validate checks source format and bank without interpreting transactions.
 // Incomplete transaction XML is left to Parse, after durable admission.
 func (Parser) Validate(r io.Reader) error {
-	data, err := io.ReadAll(r)
+	data, err := readSource(r)
 	if err != nil {
 		return err
 	}
@@ -129,7 +145,7 @@ type row struct {
 // Parse validates XML structure and returns neutral source rows. Reader errors,
 // cancellation and malformed XML never include source data in the returned error.
 func (p Parser) Parse(ctx context.Context, r io.Reader) (importing.Document, error) {
-	data, err := io.ReadAll(contextReader{ctx, r})
+	data, err := readSource(contextReader{ctx, r})
 	if err != nil {
 		return importing.Document{}, err
 	}
@@ -157,7 +173,7 @@ func (p Parser) Parse(ctx context.Context, r io.Reader) (importing.Document, err
 		}
 		offset := int(decoder.InputOffset())
 		token, err := decoder.Token()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -167,21 +183,29 @@ func (p Parser) Parse(ctx context.Context, r io.Reader) (importing.Document, err
 		case xml.Directive:
 			return importing.Document{}, errMalformed
 		case xml.StartElement:
-			if v.Name.Space != "" || len(v.Attr) != 0 || len(stack) == 0 && (rootSeen || v.Name.Local != "OFX") {
+			if len(stack) >= maxXMLDepth || v.Name.Space != "" || len(v.Attr) != 0 || len(stack) == 0 && (rootSeen || v.Name.Local != "OFX") {
 				return importing.Document{}, errMalformed
 			}
 			if len(stack) == 0 {
 				rootSeen = true
 			}
 			stack = append(stack, &node{name: v.Name.Local})
+			parent := ""
+			if len(stack) > 1 {
+				parent = stack[len(stack)-2].name
+			}
 			switch v.Name.Local {
 			case "STMTTRNRS":
-				if account != nil {
+				if account != nil || parent != "BANKMSGSRSV1" {
 					return importing.Document{}, errMalformed
 				}
 				account, period, rows = map[string]string{}, map[string]string{}, nil
+			case "BANKACCTFROM", "BANKTRANLIST":
+				if account == nil || parent != "STMTRS" {
+					return importing.Document{}, errMalformed
+				}
 			case "STMTTRN":
-				if fields != nil || account == nil {
+				if fields != nil || account == nil || parent != "BANKTRANLIST" {
 					return importing.Document{}, errMalformed
 				}
 				fields = map[string]string{}
@@ -204,11 +228,20 @@ func (p Parser) Parse(ctx context.Context, r io.Reader) (importing.Document, err
 			n := stack[len(stack)-1]
 			stack = stack[:len(stack)-1]
 			value := strings.TrimSpace(n.text.String())
+			parent := ""
+			if len(stack) > 0 {
+				parent = stack[len(stack)-1].name
+			}
 			if fields != nil {
-				fields[n.name] = value
+				// Transaction fields are direct children, except CURSYM under CURRENCY.
+				if parent == "STMTTRN" || parent == "CURRENCY" && n.name == "CURSYM" && len(stack) > 1 && stack[len(stack)-2].name == "STMTTRN" {
+					fields[n.name] = value
+				}
 			} else if account != nil {
-				account[n.name] = value
-				if n.name == "DTSTART" || n.name == "DTEND" {
+				if parent == "BANKACCTFROM" {
+					account[n.name] = value
+				}
+				if parent == "BANKTRANLIST" && (n.name == "DTSTART" || n.name == "DTEND") {
 					period[n.name] = value
 				}
 			}
@@ -249,19 +282,16 @@ func appendStatement(doc *importing.Document, account, period map[string]string,
 	}
 	chars := []rune(key)
 	other := strings.HasPrefix(key, "OB$")
-	if len(chars) > 64 || !other && len(chars) < 4 {
+	if len(chars) > 64 {
 		return errMalformed
 	}
 	kind := strings.ToLower(account["ACCTTYPE"])
 	if kind == "" {
 		kind = "checking"
 	}
-	if !regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`).MatchString(kind) {
-		return errMalformed
-	}
 	a := importing.Account{Key: key, Type: kind, OtherBank: other}
 	if !other {
-		mask := string(chars[len(chars)-4:])
+		mask := string(chars[max(0, len(chars)-4):])
 		a.Mask = &mask
 	}
 	doc.Accounts = append(doc.Accounts, a)
@@ -317,6 +347,13 @@ func parseMoney(raw string) (int64, bool, bool) {
 	negative := strings.HasPrefix(raw, "-") && strings.Trim(raw, "-0.") != ""
 	raw = strings.TrimPrefix(strings.TrimPrefix(raw, "-"), "+")
 	whole, fraction, _ := strings.Cut(raw, ".")
+	whole = strings.TrimLeft(whole, "0")
+	if len(whole) > 17 { // Even before rounding, this cannot fit int64 minor units.
+		return 0, negative, false
+	}
+	if whole == "" {
+		whole = "0"
+	}
 	fraction += "00"
 	n := new(big.Int)
 	n.SetString(whole+fraction[:2], 10)
@@ -330,7 +367,7 @@ func parseMoney(raw string) (int64, bool, bool) {
 }
 
 func parseDate(raw string) *time.Time {
-	m := regexp.MustCompile(`^([0-9]{8})([0-9]{6})?(?:\.[0-9]+)?(?:\[([+-]?[0-9]{1,2})(?::[A-Za-z]+)?\])?$`).FindStringSubmatch(raw)
+	m := regexp.MustCompile(`^([0-9]{8})([0-9]{6})?(?:\.([0-9]+))?(?:\[([+-]?[0-9]{1,2})(?::[A-Za-z]+)?\])?$`).FindStringSubmatch(raw)
 	if m == nil {
 		return nil
 	}
@@ -339,13 +376,17 @@ func parseDate(raw string) *time.Time {
 		clock = "000000"
 	}
 	offset := 3
-	if m[3] != "" {
-		offset, _ = strconv.Atoi(m[3])
+	if m[4] != "" {
+		offset, _ = strconv.Atoi(m[4])
 	}
 	if offset < -23 || offset > 23 {
 		return nil
 	}
-	t, err := time.ParseInLocation("20060102150405", m[1]+clock, time.FixedZone("", offset*3600))
+	value := m[1] + clock
+	if m[3] != "" {
+		value += "." + m[3]
+	}
+	t, err := time.ParseInLocation("20060102150405", value, time.FixedZone("", offset*3600))
 	if err != nil {
 		return nil
 	}

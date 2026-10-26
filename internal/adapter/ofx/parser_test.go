@@ -80,6 +80,10 @@ func TestUnitRawTextAndPhysicalLines(t *testing.T) {
 	if got := parse(t, statement(transaction("<NAME><![CDATA[&amp; <literal>]]></NAME>"))).Lines[0].Description; got != "&amp; <literal>" {
 		t.Fatal("CDATA literal was unescaped")
 	}
+	line = parse(t, strings.ReplaceAll(source, ".000[+3:MSK]", ".123456")).Lines[0]
+	if line.OccurredAt == nil || line.OccurredAt.Format(time.RFC3339Nano) != "2026-01-02T12:34:56.123456+03:00" {
+		t.Fatal("fractional timestamp or default zone lost")
+	}
 }
 
 func TestUnitMoneyAndUnreadPriority(t *testing.T) {
@@ -131,6 +135,71 @@ func TestUnitAccountSkipAndOtherBank(t *testing.T) {
 	doc = parse(t, strings.ReplaceAll(statement(transaction("")), "00001111", "OB$synthetic"))
 	if !doc.Accounts[0].OtherBank || doc.Accounts[0].Mask != nil {
 		t.Fatal("external account identity mapping failed")
+	}
+	source = strings.ReplaceAll(statement(transaction("")), "00001111", "x")
+	source = strings.ReplaceAll(source, "CHECKING", "Future-Account-Type")
+	doc = parse(t, source)
+	if doc.Accounts[0].Key != "x" || doc.Accounts[0].Type != "future-account-type" || doc.Accounts[0].Mask == nil || *doc.Accounts[0].Mask != "x" {
+		t.Fatal("opaque short identity or unknown account type rejected")
+	}
+}
+
+func TestUnitParserResourceBudgets(t *testing.T) {
+	p := ofx.Parser{}
+	// Five existing ancestor elements plus 59 extension elements reach depth 64.
+	parse(t, statement(strings.Repeat("<X>", 59)+strings.Repeat("</X>", 59)))
+	deep := statement(strings.Repeat("<X>", 60) + strings.Repeat("</X>", 60))
+	if _, err := p.Parse(context.Background(), strings.NewReader(deep)); err == nil {
+		t.Fatal("excessive XML nesting accepted")
+	}
+	const budget = 10 << 20
+	valid := statement("")
+	if err := p.Validate(strings.NewReader(valid + strings.Repeat(" ", budget-len(valid)))); err != nil {
+		t.Fatal("exact input budget rejected", err)
+	}
+	for _, background := range []bool{false, true} {
+		r := &countingReader{Reader: strings.NewReader(strings.Repeat(" ", budget+1000))}
+		var err error
+		if background {
+			_, err = p.Parse(context.Background(), r)
+		} else {
+			err = p.Validate(r)
+		}
+		var refusal importing.Refusal
+		if err == nil || errors.As(err, &refusal) || r.read != budget+1 {
+			t.Fatal("input resource ceiling not bounded independently of transport refusal", r.read, err)
+		}
+	}
+}
+
+type countingReader struct {
+	*strings.Reader
+	read int
+}
+
+func (r *countingReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	r.read += n
+	return n, err
+}
+
+func TestUnitFieldsRemainInTheirSourceContainers(t *testing.T) {
+	// An extension cannot supply the ACCTID missing from BANKACCTFROM.
+	source := strings.ReplaceAll(statement(transaction("")), "<ACCTID>00001111</ACCTID>", "")
+	source = strings.ReplaceAll(source, "</BANKTRANLIST>", "</BANKTRANLIST><EXT><ACCTID>99992222</ACCTID></EXT>")
+	if doc := parse(t, source); len(doc.Accounts)+len(doc.Lines)+len(doc.Periods) != 0 {
+		t.Fatal("extension account ID bypassed missing-account skip")
+	}
+	source = statement(transaction("<EXT><FITID>unrelated</FITID><NAME>unrelated</NAME><CURSYM>USD</CURSYM></EXT>"))
+	source = strings.ReplaceAll(source, "</BANKTRANLIST>", "</BANKTRANLIST><EXT><DTSTART>19990101</DTSTART><DTEND>19990131</DTEND></EXT>")
+	doc := parse(t, source)
+	if doc.Lines[0].FITID != "synthetic" || doc.Lines[0].Description != "" || doc.Lines[0].Currency != "RUB" || doc.Periods[0].From.Year() != 2026 {
+		t.Fatal("extension fields changed transaction or source period")
+	}
+	// A transaction outside BANKTRANLIST must not become an accepted source row.
+	source = strings.ReplaceAll(statement(""), "</STMTRS>", transaction("")+"</STMTRS>")
+	if _, err := (ofx.Parser{}).Parse(context.Background(), strings.NewReader(source)); err == nil {
+		t.Fatal("misplaced transaction accepted")
 	}
 }
 
