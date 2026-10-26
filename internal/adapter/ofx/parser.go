@@ -10,7 +10,6 @@ import (
 	"io"
 	"math/big"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -273,17 +272,14 @@ func (p Parser) Parse(ctx context.Context, r io.Reader) (importing.Document, err
 	decoder := xml.NewDecoder(bytes.NewReader(bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))))
 	// Keep offsets against the exact decoder input, including original newlines.
 	data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
-	starts := []int{0}
-	for i, c := range data {
-		if c == '\n' {
-			starts = append(starts, i+1)
-		}
-	}
+	// Decoder offsets are monotonic; count only the range since the previous row
+	// instead of retaining one index per source newline.
+	lineOffset := 0
 	var doc importing.Document
 	var stack []*node
 	var account, period, fields map[string]string
 	var rows []row
-	lineNumber := 0
+	lineNumber := 1
 	rootSeen := false
 	for {
 		if err := ctx.Err(); err != nil {
@@ -327,7 +323,8 @@ func (p Parser) Parse(ctx context.Context, r io.Reader) (importing.Document, err
 					return importing.Document{}, errMalformed
 				}
 				fields = map[string]string{}
-				lineNumber = sort.Search(len(starts), func(i int) bool { return starts[i] > offset })
+				lineNumber += bytes.Count(data[lineOffset:offset], []byte{'\n'})
+				lineOffset = offset
 			}
 		case xml.CharData:
 			if len(stack) == 0 {

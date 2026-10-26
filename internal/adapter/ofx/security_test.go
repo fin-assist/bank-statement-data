@@ -157,3 +157,48 @@ func FuzzUnitSecurityHeaderAttributesPreserveLegacyMatching(f *testing.F) {
 		}
 	})
 }
+
+func TestUnitSecurityParseDoesNotIndexEverySourceNewline(t *testing.T) {
+	empty := securityEmpty("")
+	source := securityEmpty(strings.Repeat("\n", maxInputBytes-len(empty)))
+	if len(source) != maxInputBytes {
+		t.Fatal("fixture must reach the exact parser byte budget")
+	}
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	document, err := (Parser{}).Parse(context.Background(), strings.NewReader(source))
+	runtime.ReadMemStats(&after)
+	if err != nil || len(document.Accounts) != 0 || len(document.Lines) != 0 || len(document.Periods) != 0 {
+		t.Fatal("successful whitespace-only export changed", err)
+	}
+	allocated := after.TotalAlloc - before.TotalAlloc
+	t.Logf("Parse allocated %d bytes for %d-byte newline input", allocated, len(source))
+	// The bounded input copies, XML token buffer and raw character span remain
+	// linear in bytes. A growing []int entry per newline exceeds this margin.
+	if allocated > uint64(24*maxInputBytes) {
+		t.Fatalf("Parse allocated %d bytes for %d-byte input", allocated, len(source))
+	}
+}
+
+func TestUnitSecurityMonotonicLineCursorPreservesPhysicalCRLFAndTokenOffsets(t *testing.T) {
+	const header = "\ufeff<?OFX OFXHEADER=\"200\" VERSION=\"202\"?>\r\n<OFX>\r\n<BANKMSGSRSV1><STMTTRNRS><STMTRS><BANKACCTFROM><BANKID>T-BANK</BANKID><ACCTID>synthetic0001</ACCTID><ACCTTYPE>CHECKING</ACCTTYPE></BANKACCTFROM><BANKTRANLIST><DTSTART>20260901</DTSTART><DTEND>20260930</DTEND>\r\n"
+	first := `<STMTTRN><DTPOSTED>20260912</DTPOSTED><TRNAMT>1</TRNAMT><FITID>first</FITID><NAME><![CDATA[synthetic` + "\r\n" + `line]]></NAME></STMTTRN>`
+	second := `<STMTTRN><DTPOSTED>20260913</DTPOSTED><TRNAMT>2</TRNAMT><FITID>second</FITID><NAME>&amp;lt; &#10;</NAME></STMTTRN>`
+	source := header + first + "\r\n<!-- comment\r\n<ignored/> -->\r\n" + second + `</BANKTRANLIST></STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>`
+	document, err := (Parser{}).Parse(context.Background(), strings.NewReader(source))
+	if err != nil || len(document.Lines) != 2 {
+		t.Fatal("valid synthetic rows lost", err)
+	}
+	firstStart := strings.Index(source, "<STMTTRN>")
+	secondStart := firstStart + len(first) + strings.Index(source[firstStart+len(first):], "<STMTTRN>")
+	for i, start := range []int{firstStart, secondStart} {
+		expected := 1 + strings.Count(source[:start], "\n")
+		if document.Lines[i].Number != expected {
+			t.Fatalf("row %d has physical line %d, expected %d", i, document.Lines[i].Number, expected)
+		}
+	}
+	if document.Lines[1].Description != "&lt; &#10;" {
+		t.Fatal("line accounting changed single-pass entity semantics")
+	}
+}
