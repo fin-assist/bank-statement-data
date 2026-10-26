@@ -108,9 +108,14 @@ func (r *Imports) FileDeleted(ctx context.Context, user, id string, now time.Tim
 	return importError(ctx, err)
 }
 
-// Pending enumerates durable jobs; a pod crash never loses the need to process one.
+// Pending selects one oldest durable head per user before the global limit.
+// A backlog from one user cannot occupy both workers or hide other users.
 func (r *Imports) Pending(ctx context.Context, limit int) ([]importing.Upload, error) {
-	return r.candidates(ctx, `SELECT user_id::text,id::text FROM upload WHERE status='processing' AND NOT EXISTS(SELECT 1 FROM tombstone_users t WHERE t.user_id=upload.user_id) ORDER BY uploaded_at,id LIMIT $1`, limit)
+	return r.candidates(ctx, `SELECT user_id::text,id::text FROM (
+ SELECT DISTINCT ON(user_id) user_id,id,uploaded_at FROM upload
+ WHERE status='processing' AND NOT EXISTS(SELECT 1 FROM tombstone_users t WHERE t.user_id=upload.user_id)
+ ORDER BY user_id,uploaded_at,id
+) heads ORDER BY uploaded_at,id LIMIT $1`, limit)
 }
 
 // Cleanup enumerates durable retirement work left by a crash or object-store failure.

@@ -65,14 +65,14 @@ func TestIntegrationDurableQueueSurvivesWorkerStopAndRestart(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- a.Imports.Run(ctx) }()
-	// Two real provider reads prove the bounded pair of processing workers started.
-	for range 2 {
+	// Only this user's oldest durable head is processed until it completes.
+	for range 1 {
 		select {
 		case <-entered:
 		case <-time.After(3 * time.Second):
 			cancel()
 			close(resume)
-			t.Fatal("both workers did not reach real source reads")
+			t.Fatal("oldest head did not reach real source read")
 		}
 	}
 	recoveryStop(t, cancel, done)

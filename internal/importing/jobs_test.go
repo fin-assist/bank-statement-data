@@ -51,13 +51,13 @@ func TestUnitRunBoundsWorkersDeduplicatesActiveJobsAndJoinsOnCancel(t *testing.T
 	var mu sync.Mutex
 	calls := map[string]int{}
 	r := &jobRepo{lifeRepo: f.repo}
-	r.get = func(ctx context.Context, _, id string) (Upload, error) {
+	r.get = func(ctx context.Context, user, id string) (Upload, error) {
 		active.Add(1)
 		defer active.Add(-1)
 		mu.Lock()
 		calls[id]++
 		mu.Unlock()
-		entered <- id
+		entered <- user
 		<-ctx.Done()
 		return Upload{}, ctx.Err()
 	}
@@ -66,14 +66,14 @@ func TestUnitRunBoundsWorkersDeduplicatesActiveJobsAndJoinsOnCancel(t *testing.T
 			t.Error("queue read lacks bounded context")
 		}
 		polled <- struct{}{}
-		return []Upload{{UserID: lifeUser, ID: "a"}, {UserID: lifeUser, ID: "a"}, {UserID: lifeUser, ID: "b"}, {UserID: lifeUser, ID: "c"}, {UserID: lifeUser, ID: "d"}}, nil
+		return []Upload{{UserID: lifeUser, ID: "a"}, {UserID: lifeUser, ID: "a"}, {UserID: "22222222-2222-4222-8222-222222222222", ID: "b"}, {UserID: "33333333-3333-4333-8333-333333333333", ID: "c"}, {UserID: "44444444-4444-4444-8444-444444444444", ID: "d"}}, nil
 	}
 	f.s.repo = r
 	done := make(chan error, 1)
 	go func() { done <- f.s.Run(ctx) }()
 	a, b := jobReceive(t, entered), jobReceive(t, entered)
 	if a == b {
-		t.Fatal("duplicate active job was scheduled")
+		t.Fatal("distinct user heads did not occupy the available workers")
 	}
 	jobReceive(t, polled)
 	jobReceive(t, polled)
