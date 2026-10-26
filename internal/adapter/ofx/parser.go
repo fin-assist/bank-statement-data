@@ -31,6 +31,12 @@ var errInputTooLarge = errors.New("OFX parser input budget exceeded")
 const maxInputBytes = 10 << 20
 const maxXMLDepth = 64
 
+// A shortest complete transaction uses 82 bytes for four elements. At 10 MiB
+// that is fewer than 512k elements. The independent work budget has twice that
+// headroom while rejecting millions of tiny extension elements; it does not
+// replace the HTTP file-size or domain limits.
+const maxXMLElements = 1 << 20
+
 func readSource(r io.Reader) ([]byte, error) {
 	data, err := io.ReadAll(io.LimitReader(r, maxInputBytes+1))
 	if err != nil {
@@ -66,16 +72,28 @@ func (Parser) Validate(r io.Reader) error {
 		return importing.ErrWrongFormat
 	}
 	// Lexical scanning intentionally does not validate nesting of transaction bodies.
-	tokens := regexp.MustCompile(`(?s)<!--.*?-->|<!\[CDATA\[.*?\]\]>|<\?.*?\?>|<[^>]*>`).FindAllStringIndex(text, -1)
 	root, header, accounts, banks, inAccount := false, false, 0, 0, false
 	firstElement := true
-	for _, span := range tokens {
-		tag := text[span[0]:span[1]]
+	elements := 0
+	scanner := tagScanner{text: text}
+	for {
+		start, end, found := scanner.next()
+		if !found {
+			break
+		}
+		cursor := end
+		tag := text[start:end]
 		if strings.HasPrefix(tag, "<!--") || strings.HasPrefix(tag, "<![CDATA[") {
 			continue
 		}
 		if strings.HasPrefix(tag, "<!") {
 			return importing.ErrWrongFormat
+		}
+		if !strings.HasPrefix(tag, "<?") && !strings.HasPrefix(tag, "</") {
+			elements++
+			if elements > maxXMLElements {
+				return importing.ErrWrongFormat
+			}
 		}
 		if !strings.HasPrefix(tag, "<?") && firstElement {
 			if tag != "<OFX>" {
@@ -96,11 +114,11 @@ func (Parser) Validate(r io.Reader) error {
 			inAccount = false
 		case "<BANKID>":
 			if inAccount {
-				end := strings.IndexByte(text[span[1]:], '<')
+				end := strings.IndexByte(text[cursor:], '<')
 				if end < 0 {
 					return importing.ErrWrongFormat
 				}
-				if strings.TrimSpace(text[span[1]:span[1]+end]) != "T-BANK" {
+				if strings.TrimSpace(text[cursor:cursor+end]) != "T-BANK" {
 					return importing.ErrWrongBank
 				}
 				banks++
@@ -119,13 +137,96 @@ func (Parser) Validate(r io.Reader) error {
 	return nil
 }
 
+// tagScanner retains only its cursor and three failed-terminator flags. Once a
+// terminator is absent from the suffix it cannot occur in any later suffix;
+// remembering that fact keeps repeated incomplete special tokens linear too.
+type tagScanner struct {
+	text    string
+	cursor  int
+	missing [3]bool
+}
+
+// next returns original byte offsets without collecting or allocating tag indexes.
+// Incomplete special tokens retain the old generic-tag fallback: malformed
+// transaction XML still belongs to Parse rather than synchronous admission.
+func (s *tagScanner) next() (start, end int, found bool) {
+	relative := strings.IndexByte(s.text[s.cursor:], '<')
+	if relative < 0 {
+		return 0, 0, false
+	}
+	start = s.cursor + relative
+	tail := s.text[start:]
+	skip, terminator, kind := 1, ">", -1
+	switch {
+	case strings.HasPrefix(tail, "<!--"):
+		skip, terminator, kind = 4, "-->", 0
+	case strings.HasPrefix(tail, "<![CDATA["):
+		skip, terminator, kind = 9, "]]>", 1
+	case strings.HasPrefix(tail, "<?"):
+		skip, terminator, kind = 2, "?>", 2
+	}
+	if kind < 0 || !s.missing[kind] {
+		if offset := strings.Index(tail[skip:], terminator); offset >= 0 {
+			s.cursor = start + skip + offset + len(terminator)
+			return start, s.cursor, true
+		}
+		if kind >= 0 {
+			s.missing[kind] = true
+		}
+	}
+	if kind >= 0 {
+		if offset := strings.IndexByte(tail, '>'); offset >= 0 {
+			s.cursor = start + offset + 1
+			return start, s.cursor, true
+		}
+	}
+	return 0, 0, false
+}
+
 func attribute(tag, key string) string {
-	re := regexp.MustCompile(`\b` + key + `\s*=\s*["']([^"']*)["']`)
-	m := re.FindStringSubmatch(tag)
-	if len(m) != 2 {
+	if key == "" {
 		return ""
 	}
-	return m[1]
+	for cursor := 0; cursor < len(tag); {
+		relative := strings.Index(tag[cursor:], key)
+		if relative < 0 {
+			return ""
+		}
+		start := cursor + relative
+		cursor = start + len(key)
+		// Preserve the old RE2 ASCII word boundary, including attribute-like text
+		// inside PI data; this helper intentionally is not a new XML schema parser.
+		if start > 0 && attributeWord(tag[start-1]) {
+			continue
+		}
+		end := cursor
+		for end < len(tag) && attributeSpace(tag[end]) {
+			end++
+		}
+		if end >= len(tag) || tag[end] != '=' {
+			continue
+		}
+		end++
+		for end < len(tag) && attributeSpace(tag[end]) {
+			end++
+		}
+		if end >= len(tag) || tag[end] != '\'' && tag[end] != '"' {
+			continue
+		}
+		end++
+		if close := strings.IndexAny(tag[end:], "\"'"); close >= 0 {
+			return tag[end : end+close]
+		}
+	}
+	return ""
+}
+
+func attributeWord(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '_'
+}
+
+func attributeSpace(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\n' || b == '\r' || b == '\f'
 }
 
 func looksCSV(text string) bool {
