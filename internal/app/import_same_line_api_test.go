@@ -23,7 +23,7 @@ func TestAPISamePhysicalLineKeepsUnreadOperationsAndIndependentClosures(t *testi
 	if result.NewCount != 1 || result.OperationCount != 1 || result.UnreadCount != 2 {
 		t.Fatalf("valid operation or independent unread facts lost: %v", result)
 	}
-	check := func(want int) {
+	check := func(want int) *pb.ListUnreadLinesResponse {
 		t.Helper()
 		rows, err := c.ListUnreadLines(apitest.User(t.Context(), apiUser), &pb.ListUnreadLinesRequest{Scope: &pb.ListUnreadLinesRequest_UploadId{UploadId: accepted.UploadId}})
 		if err != nil || len(rows.Lines) != want {
@@ -34,8 +34,16 @@ func TestAPISamePhysicalLineKeepsUnreadOperationsAndIndependentClosures(t *testi
 				t.Fatalf("physical line was renumbered: %v", row)
 			}
 		}
+		return rows
 	}
-	check(2)
+	initial := check(2)
+	reasons := map[pb.UnreadReason]bool{}
+	for _, row := range initial.Lines {
+		reasons[row.Reason] = true
+	}
+	if !reasons[pb.UnreadReason_UNREAD_REASON_NO_DATE] || !reasons[pb.UnreadReason_UNREAD_REASON_BAD_AMOUNT] {
+		t.Fatal("distinct failure reasons were merged", initial)
+	}
 	// Only the first unread FITID is repaired. The second fact on that same
 	// physical line must remain open, with its own reason and future resolution.
 	fixed := strings.Replace(apiOFX, "<TRNAMT>-1</TRNAMT>", "<DTPOSTED>20260912120000[+3:MSK]</DTPOSTED><TRNAMT>-1</TRNAMT>", 1)
@@ -44,7 +52,10 @@ func TestAPISamePhysicalLineKeepsUnreadOperationsAndIndependentClosures(t *testi
 		t.Fatal(err)
 	}
 	_ = apiComplete(t, c, repair.UploadId)
-	check(1)
+	remaining := check(1)
+	if remaining.Lines[0].Reason != pb.UnreadReason_UNREAD_REASON_BAD_AMOUNT {
+		t.Fatal("repair closed the wrong fact on the shared physical line", remaining)
+	}
 	if _, err := c.DeleteUpload(apitest.User(t.Context(), apiUser), &pb.DeleteUploadRequest{UploadId: repair.UploadId}); err != nil {
 		t.Fatal(err)
 	}
