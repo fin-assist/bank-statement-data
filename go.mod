@@ -9,7 +9,7 @@ require (
 	github.com/fin-assist/go-migrate v0.1.1
 	github.com/fin-assist/go-postgres v0.3.0
 	github.com/fin-assist/go-tombstone v0.1.0
-	github.com/fin-assist/go-worker v0.1.0
+	github.com/fin-assist/go-worker v0.1.1
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/prometheus/client_golang v1.25.0
 	github.com/prometheus/client_model v0.6.3
