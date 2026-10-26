@@ -104,6 +104,18 @@ func TestUnitStandUnitSatisfiesStageIdentity(t *testing.T) {
 			}
 		}
 	}
+	// A secret value in Environment= would show up in "systemctl show"; only *_FILE is allowed.
+	for _, v := range Vars {
+		if _, set := unit.env[v.Name]; v.Secret && set {
+			t.Fatalf("unit sets secret %s by value; pass it as %s_FILE from a credential", v.Name, v.Name)
+		}
+	}
+	// Credentials come from this service's own directory of root-owned files.
+	for name, source := range unit.credentials {
+		if !strings.HasPrefix(source, "/etc/finassist/"+standServiceName+"/") {
+			t.Fatalf("credential %s comes from %q, outside /etc/finassist/%s/", name, source, standServiceName)
+		}
+	}
 	for _, name := range secretFileVars() {
 		value, set := unit.env[name]
 		if !set {
@@ -134,16 +146,16 @@ func TestUnitStandUnitSatisfiesStageIdentity(t *testing.T) {
 		}
 		vars[name] = value
 	}
-	// The DSN exists only where systemd puts the declared db-primary-dsn credential.
-	dsnPath := ""
-	if _, ok := unit.credentials["db-primary-dsn"]; ok {
-		dsnPath = standCredentials + "/db-primary-dsn"
-	}
+	// Files exist only where systemd puts the declared credentials; db-primary-dsn holds the DSN.
 	readFile := func(path string) ([]byte, error) {
-		if dsnPath != "" && path == dsnPath {
+		name, ok := strings.CutPrefix(path, standCredentials+"/")
+		if _, loaded := unit.credentials[name]; !ok || !loaded {
+			return noFiles(path)
+		}
+		if name == "db-primary-dsn" {
 			return []byte("postgres://primary/" + standServiceName), nil
 		}
-		return noFiles(path)
+		return []byte("credential " + name), nil
 	}
 	get, list := env(vars)
 	c, err := load(get, readFile, list)
