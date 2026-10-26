@@ -25,6 +25,7 @@ const (
 var standEnvFileContents = map[string]string{
 	"AUTH_STAGE_ISSUER": "stage-services", "AUTH_USER_ISSUER": "https://user.example",
 	"AUTH_USER_AUDIENCE": "finassist", "PEER_USER_ADDR": "dns:///user:9090",
+	"OBJECT_STORAGE_BUCKET": "fixture-private-bucket", "OBJECT_STORAGE_KMS_KEY_ID": "fixture-kms-key",
 }
 
 // standUnit is the settings the example systemd unit of the stand gives the process:
@@ -106,7 +107,7 @@ func declaredUnitVar(name string) bool {
 // secretFileVars is every *_FILE variable that names a secret: the Secret variables of
 // Vars and the stand signing key. The unit may pass them only as systemd credentials.
 func secretFileVars() []string {
-	names := []string{"AUTH_STAGE_SIGNING_KEY_FILE"}
+	names := []string{"AUTH_STAGE_SIGNING_KEY_FILE", "OBJECT_STORAGE_IAM_TOKEN_FILE"}
 	for _, v := range Vars {
 		if v.Secret {
 			names = append(names, v.Name+"_FILE")
@@ -131,7 +132,7 @@ func checkStandUnit(text string) error {
 	if unit.env["SERVICE_NAME"] != standServiceName {
 		return fmt.Errorf("unit SERVICE_NAME=%q, want %s", unit.env["SERVICE_NAME"], standServiceName)
 	}
-	for _, name := range []string{"AUTH_STAGE_SIGNING_KEY_FILE", "AUTH_STAGE_PUBLIC_KEYS_FILE", "DB_PRIMARY_DSN_FILE"} {
+	for _, name := range []string{"AUTH_STAGE_SIGNING_KEY_FILE", "AUTH_STAGE_PUBLIC_KEYS_FILE", "DB_PRIMARY_DSN_FILE", "OBJECT_STORAGE_IAM_TOKEN_FILE"} {
 		if unit.env[name] == "" {
 			return fmt.Errorf("unit does not set %s", name)
 		}

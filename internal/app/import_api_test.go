@@ -159,8 +159,12 @@ func TestAPIImportRealDurabilityDedupDeletionAndPurge(t *testing.T) {
 		t.Fatalf("deleted read: %v", err)
 	}
 	var rows, keys int
-	_ = db.QueryRow(t.Context(), "SELECT count(*) FROM user_state WHERE user_id=$1", apiUser).Scan(&rows)
-	_ = db.QueryRow(t.Context(), "SELECT count(*) FROM idempotency_keys WHERE scope=$1", apiUser).Scan(&keys)
+	if err = db.QueryRow(t.Context(), "SELECT count(*) FROM user_state WHERE user_id=$1", apiUser).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if err = db.QueryRow(t.Context(), "SELECT count(*) FROM idempotency_keys WHERE scope=$1", apiUser).Scan(&keys); err != nil {
+		t.Fatal(err)
+	}
 	if rows != 0 || keys != 0 {
 		t.Fatalf("purge personal rows: %d %d", rows, keys)
 	}
@@ -215,8 +219,12 @@ func TestAPIImportOversizeHintPrecedesStreamKeyValidation(t *testing.T) {
 	}
 	defer func() { _ = db.Close(context.Background()) }()
 	var keys, uploads int
-	_ = db.QueryRow(t.Context(), "SELECT count(*) FROM idempotency_keys").Scan(&keys)
-	_ = db.QueryRow(t.Context(), "SELECT count(*) FROM upload").Scan(&uploads)
+	if err = db.QueryRow(t.Context(), "SELECT count(*) FROM idempotency_keys").Scan(&keys); err != nil {
+		t.Fatal(err)
+	}
+	if err = db.QueryRow(t.Context(), "SELECT count(*) FROM upload").Scan(&uploads); err != nil {
+		t.Fatal(err)
+	}
 	if keys != 0 || uploads != 0 {
 		t.Fatalf("prekey refusal stored state: %d/%d", keys, uploads)
 	}
