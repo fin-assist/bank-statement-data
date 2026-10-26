@@ -4,6 +4,7 @@ package ofx
 import (
 	"bytes"
 	"context"
+	"encoding/csv"
 	"encoding/xml"
 	"errors"
 	"io"
@@ -129,7 +130,23 @@ func attribute(tag, key string) string {
 
 func looksCSV(text string) bool {
 	line, _, _ := strings.Cut(text, "\n")
-	return strings.Count(line, ";") >= 2 || strings.Count(line, ",") >= 2 || strings.Count(line, "\t") >= 2
+	if strings.Count(line, ";") >= 2 || strings.Count(line, ",") >= 2 || strings.Count(line, "\t") >= 2 {
+		return true
+	}
+	// Two-column CSV is still CSV. Require a consistent second record to avoid
+	// classifying an arbitrary sentence with one comma as a tabular export.
+	for _, delimiter := range []rune{';', ',', '\t'} {
+		reader := csv.NewReader(strings.NewReader(text))
+		reader.Comma = delimiter
+		first, err := reader.Read()
+		if err != nil || len(first) < 2 {
+			continue
+		}
+		if second, err := reader.Read(); err == nil && len(second) == len(first) {
+			return true
+		}
+	}
+	return false
 }
 
 type node struct {

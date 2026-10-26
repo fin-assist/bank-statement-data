@@ -7,6 +7,7 @@ Go-сервис «Понятных финансов»: приём выписок
 - [docs/server.md](docs/server.md) — gRPC-сервер и интерцепторы, идентичность, таблица доступа, клиенты, транзакции, логи и метрики.
 - [docs/config.md](docs/config.md) — переменные окружения.
 - [docs/migrations.md](docs/migrations.md) — миграции и запросы на pgx ([FIN-115](https://finassist.youtrack.cloud/issue/FIN-115)).
+- [docs/import.md](docs/import.md) — реализованный путь импорта, восстановление, объектное хранилище и удаление (FIN-342).
 - [docs/schema.md](docs/schema.md) — что держит схема БД и какие инварианты проверяет код ([FIN-111](https://finassist.youtrack.cloud/issue/FIN-111)).
 - [AGENTS.md](AGENTS.md) — карта и правила для агентов, Code Review Rules.
 
@@ -16,8 +17,7 @@ Go-сервис «Понятных финансов»: приём выписок
 
 ## Что ещё не сделано после переноса шаблона
 
-- `AccessPolicy()` и обработчики в `wire()` (`internal/app/wire.go`) — вместе с первыми RPC сервиса, строки из таблицы grpc-api.md 3.3.
-- Из `go-tombstone` подключены только источник миграций и admission (FIN-267); `Guard` в пишущих сценариях и `UserDeletionService.PurgeUserData` (grpc-api.md 7: «каждый реализует») — вместе с первыми RPC, которые пишут данные пользователя (решение владельца 25.10.2026). Outbox (FIN-109) и идемпотентность (FIN-78) — отдельные задачи подключения в бизнес-сборке.
+- FIN-342 реализует шесть RPC импорта и обязательные системные удаление/синхронизацию часового пояса; Guard, идемпотентность и долговечная очередь расчётов подключены. Публичные API операций/аналитики и доставка в analytics ещё не входят в этот путь. Условия объектного хранилища — [docs/import.md](docs/import.md).
 - Секреты репозитория (`CLAUDE_CODE_OAUTH_TOKEN` для ревью `@claude`, `GO_MODULES_TOKEN` для приватных модулей fin-assist), Claude GitHub App и Codex — владелец.
 
 ## Раскладка

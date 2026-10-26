@@ -67,7 +67,12 @@ or add dummy RPCs, SQL or jobs. FIN-267: AUTH_MODE=verify is go-identity v0.2.0 
 ServiceAccounts, stage: file-key stand JWTs; user JWTs by user.GetSigningKeys through PEER_USER_ADDR, refreshed by
 the identity-keys job); any other ENV with verify fails startup, insecure-dev stays dev-only in config and app.New.
 go-tombstone v0.1.0 supplies the first migration source and the primary-backed go-grpc admission (TOKEN_REVOKED).
-Guard in writing transactions and UserDeletionService.PurgeUserData come with the first RPC that writes user data.
+FIN-342 wires guarded import writes, UserDeletionService.PurgeUserData and settings sync.
+Import usecases/rules/results live in internal/importing; adapters in adapter/{ofx,objectstore,statementwire,grpc/statements,postgres}.
+Read docs/import.md before changing staged admission, permanent erasure fences or two-phase purge.
+Object barrier uses a separately owned pool; remote I/O is forbidden inside data transactions.
+The dedicated bucket must never enable versioning/Object Lock/marker expiration; CheckBucket precedes listeners.
+Shared TLS object fixtures live in internal/testobjects and remain counted in every profile.
 Pass the service logger, metric registry and worker clock/restart settings explicitly; library defaults
 are not a substitute for existing service behaviour. go-postgres is pinned at v0.3.0. Paths with <feature>, <peer>
 and <job> describe future application code only, not actual empty directories in the template.

@@ -45,6 +45,10 @@ func TestUnitSourceAdmission(t *testing.T) {
 		want         error
 	}{
 		{"csv", "date;amount;description\nsynthetic;1;none", importing.ErrCSVNotAccepted},
+		{"two column csv", "date,amount\n2026-01-01,1\n", importing.ErrCSVNotAccepted},
+		{"quoted csv", "date,amount\n\"2026-01-01\",\"1,23\"\n", importing.ErrCSVNotAccepted},
+		{"comma sentence", "hello, world", importing.ErrWrongFormat},
+		{"inconsistent table", "date,amount\n1,2,3\n", importing.ErrWrongFormat},
 		{"pdf", "%PDF-synthetic", importing.ErrWrongFormat},
 		{"bank", strings.ReplaceAll(statement(""), "T-BANK", "OTHER"), importing.ErrWrongBank},
 		{"missing-bank", strings.ReplaceAll(statement(""), "<BANKID>T-BANK</BANKID>", ""), importing.ErrWrongFormat},

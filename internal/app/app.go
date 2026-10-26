@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/fin-assist/bank-statement-data/internal/adapter/postgres"
 	"github.com/fin-assist/bank-statement-data/internal/config"
+	"github.com/fin-assist/bank-statement-data/internal/importing"
 )
 
 // App is the assembled service. Wire reads its fields to build adapters and usecases.
@@ -33,16 +35,23 @@ type App struct {
 	Clients *client.Metrics
 	Tokens  client.TokenSource
 	Jobs    []worker.Job
+	Imports *importing.Service
 
 	closers []func()
 }
 
-// New assembles the service from cfg. Close releases what it opened.
-func New(ctx context.Context, cfg config.Config, log *slog.Logger, reg prometheus.Registerer) (*App, error) {
-	return assemble(ctx, cfg, log, reg, postgres.Open)
+// Options supplies explicit network and time boundaries to the same production assembly.
+type Options struct {
+	ObjectClient *http.Client
+	Now          func() time.Time
 }
 
-func assemble(ctx context.Context, cfg config.Config, log *slog.Logger, reg prometheus.Registerer, openDB func(context.Context, postgres.Options) (*postgres.DB, error)) (*App, error) {
+// New assembles the service from cfg. Close releases what it opened.
+func New(ctx context.Context, cfg config.Config, log *slog.Logger, reg prometheus.Registerer, options ...Options) (*App, error) {
+	return assemble(ctx, cfg, log, reg, postgres.Open, options...)
+}
+
+func assemble(ctx context.Context, cfg config.Config, log *slog.Logger, reg prometheus.Registerer, openDB func(context.Context, postgres.Options) (*postgres.DB, error), options ...Options) (*App, error) {
 	// Client metrics come first: the identity connection to user reports into them too.
 	clients, err := client.NewMetrics(reg)
 	if err != nil {
@@ -73,7 +82,14 @@ func assemble(ctx context.Context, cfg config.Config, log *slog.Logger, reg prom
 	}); err != nil {
 		return fail(err)
 	}
-	jobs, closeWired, err := wire(a)
+	var opts Options
+	if len(options) > 1 {
+		return fail(errors.New("one assembly options value required"))
+	}
+	if len(options) == 1 {
+		opts = options[0]
+	}
+	jobs, closeWired, err := wire(ctx, a, reg, openDB, opts)
 	if err != nil {
 		return fail(err)
 	}

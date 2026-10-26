@@ -3,7 +3,11 @@ package app
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
+	"net/http"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -16,38 +20,48 @@ import (
 	"github.com/fin-assist/bank-statement-data/internal/config"
 )
 
-func TestUnitAssemblyPassesPoolConfigurationAndKeepsScaffoldEmpty(t *testing.T) {
+func TestUnitAssemblyWiresImportAndIndependentBarrierPool(t *testing.T) {
 	cfg := config.Config{Service: "bank-statement-data", Env: config.EnvDev,
 		Auth: config.AuthConfig{Mode: config.AuthInsecureDev},
 		DB:   config.DBConfig{PrimaryDSN: "primary", ReplicaDSN: "replica", MaxConns: 7}}
+	cfg.ObjectStorage = config.ObjectStorageConfig{Endpoint: "https://objects.test", Bucket: "private", KMSKeyID: "fixture", IAMTokenFile: filepath.Join(t.TempDir(), "iam")}
+	if err := os.WriteFile(cfg.ObjectStorage.IAMTokenFile, []byte("token"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	ctx := t.Context()
 	log := slog.New(slog.DiscardHandler)
 	db := &postgres.DB{}
 	calls := 0
 	a, err := assemble(ctx, cfg, log, prometheus.NewRegistry(), func(got context.Context, opts postgres.Options) (*postgres.DB, error) {
 		calls++
-		if got != ctx || opts.PrimaryDSN != "primary" || opts.ReplicaDSN != "replica" || opts.MaxConns != 7 || opts.AppName != "bank-statement-data" {
+		if got != ctx || opts.PrimaryDSN != "primary" || calls == 1 && (opts.ReplicaDSN != "replica" || opts.MaxConns != 7 || opts.AppName != "bank-statement-data") || calls == 2 && (opts.ReplicaDSN != "" || opts.MaxConns != 8 || opts.AppName != "bank-statement-data-object-barrier") {
 			t.Fatalf("pool configuration was not passed through: %+v", opts)
 		}
 		return db, nil
-	})
+	}, Options{ObjectClient: &http.Client{Transport: assemblyTransport(func(r *http.Request) (*http.Response, error) {
+		body := "<VersioningConfiguration/>"
+		code := 200
+		if !r.URL.Query().Has("versioning") {
+			body = ""
+			code = 404
+		}
+		return &http.Response{StatusCode: code, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
+	})}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer a.Close()
-	if calls != 1 || a.DB != db || a.Log != log || a.Cfg.Service != cfg.Service || a.Clients == nil || a.Tokens == nil || len(a.Jobs) != 0 {
+	if calls != 2 || a.DB != db || a.Log != log || a.Cfg.Service != cfg.Service || a.Clients == nil || a.Tokens == nil || len(a.Jobs) != 3 || a.Imports == nil {
 		t.Fatal("incomplete or unexpectedly populated assembly")
 	}
 	if err := a.GRPC.Check(); err != nil {
 		t.Fatal(err)
 	}
-	for name := range a.GRPC.GRPC().GetServiceInfo() {
-		if name != "grpc.health.v1.Health" {
-			t.Fatalf("unexpected business service %q", name)
-		}
+	if info := a.GRPC.GRPC().GetServiceInfo(); len(info) != 4 || info["finassist.statementdata.v1.StatementsService"].Methods == nil {
+		t.Fatalf("missing import RPCs: %v", info)
 	}
 	sources := MigrationSources()
-	if len(AccessPolicy()) != 0 || len(sources) != 2 || sources[0].Table != tombstone.MigrationsTable || sources[0].Name != tombstone.MigrationsName || sources[1].Table != "schema_migrations" {
+	if len(AccessPolicy()) != 3 || len(sources) != 3 || sources[0].Table != tombstone.MigrationsTable || sources[0].Name != tombstone.MigrationsName || sources[2].Table != "schema_migrations" {
 		t.Fatal("scaffold policy or migration sources changed: the tombstone source must precede the service")
 	}
 }
@@ -97,3 +111,7 @@ func TestUnitCloseReleasesInReverseOrderOnlyOnce(t *testing.T) {
 		t.Fatalf("cleanup order or ownership: %v", order)
 	}
 }
+
+type assemblyTransport func(*http.Request) (*http.Response, error)
+
+func (f assemblyTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
