@@ -29,3 +29,11 @@ type ObjectPage struct {
 	Objects []Object
 	Next    string
 }
+
+// ObjectBarrier fences cross-instance object writes against account purge without
+// holding a database transaction over network I/O. Implementations use a separate
+// bounded connection pool; release must unlock or destroy its session.
+type ObjectBarrier interface {
+	Shared(context.Context, string) (release func() error, err error)
+	Exclusive(context.Context, string) (release func() error, err error)
+}
