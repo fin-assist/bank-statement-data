@@ -9,15 +9,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fin-assist/go-migrate"
+	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/fin-assist/bank-statement-data/internal/adapter/postgres"
 	"github.com/fin-assist/bank-statement-data/internal/app"
 	"github.com/fin-assist/bank-statement-data/internal/config"
 	"github.com/fin-assist/bank-statement-data/internal/importing"
 	"github.com/fin-assist/bank-statement-data/internal/testdb"
 	"github.com/fin-assist/bank-statement-data/internal/testobjects"
-	"github.com/fin-assist/go-migrate"
-	"github.com/google/uuid"
-	"github.com/prometheus/client_golang/prometheus"
 )
 
 func importAssembly(t *testing.T) (*app.App, *testobjects.Store) {

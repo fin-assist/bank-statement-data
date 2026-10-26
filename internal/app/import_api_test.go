@@ -2,6 +2,7 @@ package app_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -64,7 +65,7 @@ func apiComplete(t *testing.T, c pb.StatementsServiceClient, id string) *pb.Impo
 			t.Fatalf("terminal error: %v", event.GetError())
 		}
 		if result := event.GetComplete(); result != nil {
-			if _, err = stream.Recv(); err != io.EOF {
+			if _, err = stream.Recv(); !errors.Is(err, io.EOF) {
 				t.Fatalf("terminal must close OK: %v", err)
 			}
 			return result
@@ -181,5 +182,42 @@ func TestAPIImport422IsCachedBeforeAnyObjectAdmission(t *testing.T) {
 	_, err := apiUpload(t, c, apiUser, key, "bad.csv", apiOFX)
 	if apitest.Reason(err) != "IDEMPOTENCY_CONFLICT" {
 		t.Fatalf("changed body reused rejected key: %v", err)
+	}
+}
+
+func TestAPIImportOversizeHintPrecedesStreamKeyValidation(t *testing.T) {
+	env := apitest.Start(t)
+	c := pb.NewStatementsServiceClient(env.Conn)
+	for _, keys := range [][]string{nil, {"not-a-key"}, {uuid.NewString(), uuid.NewString()}} {
+		ctx, cancel := context.WithTimeout(apitest.User(t.Context(), apiUser), 5*time.Second)
+		for _, key := range keys {
+			ctx = metadata.AppendToOutgoingContext(ctx, "idempotency-key", key)
+		}
+		stream, err := c.UploadStatement(ctx)
+		if err != nil {
+			cancel()
+			t.Fatal(err)
+		}
+		_ = stream.Send(&pb.UploadStatementRequest{Part: &pb.UploadStatementRequest_Header{Header: &pb.UploadHeader{FileName: "oversize", SizeBytes: 10<<20 + 1}}})
+		_, err = stream.CloseAndRecv()
+		cancel()
+		if apitest.Reason(err) != "FILE_TOO_LARGE" {
+			t.Fatalf("prekey size for %d keys: %v", len(keys), err)
+		}
+	}
+	_, err := apiUpload(t, c, apiUser, "not-a-key", "small", apiOFX)
+	if apitest.Reason(err) != "VALIDATION_ERROR" {
+		t.Fatalf("small file key refusal after EOF: %v", err)
+	}
+	db, err := pgx.Connect(t.Context(), env.DSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close(context.Background()) }()
+	var keys, uploads int
+	_ = db.QueryRow(t.Context(), "SELECT count(*) FROM idempotency_keys").Scan(&keys)
+	_ = db.QueryRow(t.Context(), "SELECT count(*) FROM upload").Scan(&uploads)
+	if keys != 0 || uploads != 0 {
+		t.Fatalf("prekey refusal stored state: %d/%d", keys, uploads)
 	}
 }
