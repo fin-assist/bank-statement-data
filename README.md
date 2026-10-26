@@ -67,7 +67,7 @@ make run
 3. Только после этого убрать из env-файла `SERVICE_NAME`: старый unit его не задаёт, и без него любой перезапуск старого unit (`Restart=on-failure`, перезагрузка) упадёт с `SERVICE_NAME is required`. `EnvironmentFile=` перекрывает `Environment=` независимо от порядка строк: значение, оставшееся в env-файле, тихо заменит значение из unit. Разное `SERVICE_NAME` разведёт `kid` ключа подписи с общим JWKS, и соседи начнут отклонять вызовы сервиса.
 4. Выполнить `migrate up` и перезапуск, как обычно.
 
-Тест `internal/config/stand_unit_test.go` проверяет сам unit, но не настоящий env-файл стенда: его в репозитории нет, поэтому чистка env-файла в шагах 2 и 3 — ручная.
+Тест `internal/config/stand_unit_test.go` отклоняет повтор имени `LoadCredential=`, а также `SetCredential=`, `SetCredentialEncrypted=`, `LoadCredentialEncrypted=` и `ImportCredential=`: секреты unit получает только из явно проверенных файлов `LoadCredential=` (FIN-351). Он проверяет сам unit, но не настоящий env-файл стенда: его в репозитории нет, поэтому чистка env-файла в шагах 2 и 3 — ручная.
 
 ## Библиотеки и обновления
 

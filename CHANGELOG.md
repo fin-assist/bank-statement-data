@@ -11,6 +11,7 @@
 
 ### Исправлено
 
+- FIN-351: проверка systemd unit стенда отклоняет повтор имени `LoadCredential=`, `LoadCredentialEncrypted=` и `ImportCredential=`; добавлены отрицательные мутации unit-файла, включая чужой источник перед правильным. Изменены только тесты, действующий unit и runtime не меняются.
 - FIN-289: во время `SHUTDOWN_DELAY` HTTP `/readyz` отвечает 503 вместе с gRPC health `NOT_SERVING`; `app.New` отказывает в `AUTH_MODE=insecure-dev` вне `ENV=dev` и без `config.Load`; `DB_MAX_CONNS` вне int32 — ошибка конфигурации, а не усечённое значение; глобальное исключение gosec G115 снято.
 
 - FIN-266: справка `usage` называет бинарь `bank-statement-data`; документация миграций и `AGENTS.md` приведены к решениям FIN-194/FIN-195 и шаблону, описание `GRPC_MAX_RECV_MSG_SIZE` уточнено; тест миграций проверяет up → down → up каждого источника `MigrationSources()`. Поведение сервиса не изменилось.
