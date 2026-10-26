@@ -63,11 +63,11 @@ make run
 С FIN-349 unit сам задаёт `ENV`, `SERVICE_NAME` и все `*_FILE`, а общий JWKS стенда читает напрямую по пути `/etc/finassist/stage-public.jwks`. Старый путь `/etc/finassist/stand/stage-public-keys.json` новый unit больше не читает; удалять его можно после перезапуска на новом unit. Порядок раскатки:
 
 1. Положить общий JWKS стенда в `/etc/finassist/stage-public.jwks`: владелец root, права `0644`, каталог `/etc/finassist` — `0755`.
-2. Установить новый unit и выполнить `systemctl daemon-reload`: работающий процесс это не трогает. Старый unit `SERVICE_NAME` не задаёт, поэтому чистить env-файл до установки нового нельзя: в этом окне любой перезапуск (`Restart=on-failure`, перезагрузка) упадёт с `SERVICE_NAME is required`.
-3. Убрать из `/etc/finassist/bank-statement-data/env` переменные, которые теперь задаёт unit: `SERVICE_NAME`, `ENV`, `DB_PRIMARY_DSN_FILE`, `AUTH_STAGE_SIGNING_KEY_FILE`, `AUTH_STAGE_PUBLIC_KEYS_FILE`. `EnvironmentFile=` перекрывает `Environment=` независимо от порядка строк: значение, оставшееся в env-файле, тихо заменит значение из unit. Разное `SERVICE_NAME` разведёт `kid` ключа подписи с общим JWKS, и соседи начнут отклонять вызовы сервиса.
+2. Убрать из `/etc/finassist/bank-statement-data/env` `ENV`, `DB_PRIMARY_DSN_FILE`, `AUTH_STAGE_SIGNING_KEY_FILE` и `AUTH_STAGE_PUBLIC_KEYS_FILE`: старый unit задаёт их сам с теми же именами, поэтому работающий и перезапущенный старый unit этого не заметит, а значение из env-файла (например, путь к credential `stage-public-keys`, который новый unit больше не загружает) не перекроет новый unit. Затем установить новый unit и выполнить `systemctl daemon-reload`: работающий процесс это не трогает.
+3. Только после этого убрать из env-файла `SERVICE_NAME`: старый unit его не задаёт, и без него любой перезапуск старого unit (`Restart=on-failure`, перезагрузка) упадёт с `SERVICE_NAME is required`. `EnvironmentFile=` перекрывает `Environment=` независимо от порядка строк: значение, оставшееся в env-файле, тихо заменит значение из unit. Разное `SERVICE_NAME` разведёт `kid` ключа подписи с общим JWKS, и соседи начнут отклонять вызовы сервиса.
 4. Выполнить `migrate up` и перезапуск, как обычно.
 
-Тест `internal/config/stand_unit_test.go` проверяет сам unit, но не настоящий env-файл стенда: его в репозитории нет, поэтому шаг 3 — ручной.
+Тест `internal/config/stand_unit_test.go` проверяет сам unit, но не настоящий env-файл стенда: его в репозитории нет, поэтому чистка env-файла в шагах 2 и 3 — ручная.
 
 ## Библиотеки и обновления
 
