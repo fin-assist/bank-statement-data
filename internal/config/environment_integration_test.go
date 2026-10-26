@@ -26,6 +26,9 @@ func isolatedEnvironment(t *testing.T) {
 		}
 	}
 	t.Setenv("SERVICE_NAME", "integration-service")
+	t.Setenv("OBJECT_STORAGE_BUCKET", "statement-fixture")
+	t.Setenv("OBJECT_STORAGE_KMS_KEY_ID", "test-kms-key")
+	t.Setenv("OBJECT_STORAGE_IAM_TOKEN_FILE", "/run/credentials/statement-iam")
 }
 
 func TestIntegrationEnvironmentAndMountedCredentials(t *testing.T) {

@@ -29,6 +29,7 @@ func base() map[string]string {
 		"SERVICE_NAME": "user", "DB_PRIMARY_DSN": "postgres://primary/user",
 		"AUTH_USER_ISSUER": "https://user.example", "AUTH_USER_AUDIENCE": "finassist",
 		"SERVICE_TOKEN_FILE": "/var/run/secrets/finassist/token", "PEER_USER_ADDR": "dns:///user:9090",
+		"OBJECT_STORAGE_BUCKET": "statement-fixture", "OBJECT_STORAGE_KMS_KEY_ID": "test-kms-key", "OBJECT_STORAGE_IAM_TOKEN_FILE": "/run/credentials/statement-iam",
 	}
 }
 
