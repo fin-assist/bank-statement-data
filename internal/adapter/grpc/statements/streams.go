@@ -29,7 +29,7 @@ func (h *handler) UploadStatement(stream statementdatav1.StatementsService_Uploa
 		return err
 	}
 	header, ok := first.GetPart().(*statementdatav1.UploadStatementRequest_Header)
-	if !ok || header.Header == nil {
+	if !ok || header == nil || header.Header == nil {
 		return invalid("header", "REQUIRED")
 	}
 	if header.Header.SizeBytes > importing.MaxFileBytes {
@@ -74,7 +74,7 @@ func (r *uploadReader) Read(p []byte) (int, error) {
 			return 0, err
 		}
 		part, ok := frame.GetPart().(*statementdatav1.UploadStatementRequest_Chunk)
-		if !ok || len(part.Chunk) > 256<<10 {
+		if !ok || part == nil || len(part.Chunk) > 256<<10 {
 			r.terminal = invalid("chunk", "INVALID_FORMAT")
 			return 0, r.terminal
 		}

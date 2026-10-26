@@ -114,10 +114,11 @@ func (h *handler) ListUploads(ctx context.Context, _ *statementdatav1.ListUpload
 		if err != nil {
 			return nil, err
 		}
-		if len(history.Uploads) > math.MaxInt32 {
+		uploadCount := len(history.Uploads)
+		if uploadCount > math.MaxInt32 {
 			return nil, errProjection
 		}
-		out.Summary = &statementdatav1.UploadsSummary{UploadCount: int32(len(history.Uploads)), OperationCount: loaded.OperationCount, FirstOperationAt: loaded.FirstOperationAt, LastOperationAt: loaded.LastOperationAt}
+		out.Summary = &statementdatav1.UploadsSummary{UploadCount: int32(uploadCount), OperationCount: loaded.OperationCount, FirstOperationAt: loaded.FirstOperationAt, LastOperationAt: loaded.LastOperationAt}
 		for _, gap := range history.Gaps {
 			if err := ctx.Err(); err != nil {
 				return nil, err
