@@ -191,6 +191,9 @@ func (s *Service) Watch(ctx context.Context, user, id string, send func(Event) e
 	defer cancel()
 	last := -1
 	for {
+		if err := s.watchAdmission(ctx, user); err != nil {
+			return err
+		}
 		var upload Upload
 		var zone string
 		err := s.tx.Read(ctx, func(read context.Context) error {
@@ -202,6 +205,11 @@ func (s *Service) Watch(ctx context.Context, user, id string, send func(Event) e
 			zone, err = s.repo.TimeZone(read, user)
 			return err
 		})
+		// A tombstone can commit while the coherent read is in flight. Recheck
+		// outside its RR snapshot, including NOT_FOUND after completed purge.
+		if admissionErr := s.watchAdmission(ctx, user); admissionErr != nil {
+			return admissionErr
+		}
 		if err != nil {
 			return err
 		}
@@ -248,6 +256,20 @@ func (s *Service) Watch(ctx context.Context, user, id string, send func(Event) e
 		case <-timer.C:
 		}
 	}
+}
+
+// watchAdmission uses the published primary reader, never Guard inside RR or
+// a lock held across network delivery. A response already in flight is not atomic
+// with revocation; this check admits each poll and each newly prepared event.
+func (s *Service) watchAdmission(ctx context.Context, user string) error {
+	deleted, err := s.deleted.Deleted(ctx, user)
+	if err != nil {
+		return err
+	}
+	if deleted {
+		return ErrDeleted
+	}
+	return nil
 }
 
 // Delete cancels active processing or removes only this upload's operation sources.

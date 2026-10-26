@@ -237,6 +237,16 @@ type lifeDeleted struct {
 	err   error
 }
 
+func (d *lifeDeleted) Deleted(ctx context.Context, _ string) (bool, error) {
+	d.trace.add("deleted")
+	if ctx.Value(lifeTxnKey{}) != nil {
+		return false, errors.New("watch admission inside a data transaction")
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	return !d.alive, d.err
+}
 func (d *lifeDeleted) Guard(context.Context, string) (bool, error) {
 	d.trace.add("guard")
 	return d.alive, d.err
@@ -771,7 +781,7 @@ func TestUnitWatchRetiredExpiredUploadStopsWithoutFailureLoop(t *testing.T) {
 	f.upload.UploadedAt = f.now.Add(-4 * time.Minute)
 	f.deleted.alive = false
 	err := f.s.Watch(t.Context(), lifeUser, lifeUpload, func(Event) error { t.Error("retired result emitted"); return nil })
-	if !errors.Is(err, ErrDeleted) || f.trace.count("upload") != 1 || f.trace.count("guard") != 1 || f.trace.count("fail") != 0 {
+	if !errors.Is(err, ErrDeleted) || f.trace.count("upload") != 0 || f.trace.count("guard") != 0 || f.trace.count("fail") != 0 {
 		t.Fatal("retired watch did not stop", err, f.trace)
 	}
 	if err := f.s.Process(t.Context(), lifeUser, lifeUpload); err != nil {

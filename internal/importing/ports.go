@@ -32,6 +32,8 @@ type Transactions interface {
 
 // Tombstones serializes first writes and committed account deletion across instances.
 type Tombstones interface {
+	// Deleted reads uncached primary admission outside any data transaction.
+	Deleted(context.Context, string) (bool, error)
 	Guard(context.Context, string) (bool, error)
 	Purge(context.Context, string, func(context.Context, string) error) error
 }
