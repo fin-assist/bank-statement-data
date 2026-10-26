@@ -24,6 +24,16 @@ var _ importing.Repository = (*Imports)(nil)
 // NewImports wires the service-owned transaction and primary routing adapter.
 func NewImports(db *DB) *Imports { return &Imports{db: db} }
 
+// TimeZone reads profile metadata without loading the user's entire history.
+func (r *Imports) TimeZone(ctx context.Context, user string) (string, error) {
+	var zone string
+	err := r.db.Writer(ctx).QueryRow(ctx, `SELECT timezone FROM user_state WHERE user_id=$1`, user).Scan(&zone)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", importing.ErrNotFound
+	}
+	return zone, importError(ctx, err)
+}
+
 // LockUser serializes import/delete/settings after the caller's tombstone guard.
 func (r *Imports) LockUser(ctx context.Context, user string, create bool) (string, error) {
 	if create {

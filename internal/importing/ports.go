@@ -50,8 +50,13 @@ type Keys interface {
 type Repository interface {
 	LockUser(context.Context, string, bool) (string, error)
 	Snapshot(context.Context, string) (Snapshot, error)
+	TimeZone(context.Context, string) (string, error)
 	Upload(context.Context, string, string) (Upload, error)
 	InsertUpload(context.Context, Upload) error
+	PromoteUpload(context.Context, string, string, time.Time) error
+	AbandonStaging(context.Context, string, string, time.Time) error
+	IntentKeys(context.Context, string) ([]string, error)
+	MarkFenced(context.Context, string, string, time.Time) error
 	Stage(context.Context, string, string, Document, time.Time) (Stage, error)
 	Complete(context.Context, string, string, Stage, []Operation, Result, *Period, time.Time) error
 	Remove(context.Context, string, string, time.Time) ([]Operation, error)
@@ -61,7 +66,7 @@ type Repository interface {
 	Progress(context.Context, string, string, int) error
 	FileDeleted(context.Context, string, string, time.Time) error
 	Pending(context.Context, int) ([]Upload, error)
-	Cleanup(context.Context, int) ([]Upload, error)
+	Cleanup(context.Context, int, time.Time) ([]Upload, error)
 	Referenced(context.Context, string, string) (bool, error)
 	Purge(context.Context, string) error
 	SetTimezone(context.Context, string, string, int32, time.Time) error

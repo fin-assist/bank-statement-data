@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -20,17 +21,19 @@ const MaxFileBytes int64 = 10 << 20
 
 // Service owns admission and durable import lifecycle, with no remote I/O in transactions.
 type Service struct {
-	tx      Transactions
-	repo    Repository
-	objects ObjectStore
-	barrier ObjectBarrier
-	parser  Parser
-	keys    Keys
-	deleted Tombstones
-	now     func() time.Time
-	newID   func() (string, error)
-	method  string
-	slots   chan struct{}
+	tx          Transactions
+	repo        Repository
+	objects     ObjectStore
+	barrier     ObjectBarrier
+	parser      Parser
+	keys        Keys
+	deleted     Tombstones
+	now         func() time.Time
+	newID       func() (string, error)
+	method      string
+	slots       chan struct{}
+	sweepMu     sync.Mutex
+	sweepCursor string
 }
 
 // New wires explicit ports. Four admitted buffers bound process memory even when
@@ -139,13 +142,33 @@ func (s *Service) Upload(ctx context.Context, user string, header Header, body i
 		if possibleObject {
 			// A lost COMMIT reply is not a proof of rollback. Serialize a fresh
 			// primary reference check before deleting; uncertainty leaves cleanup to the durable sweep.
-			_ = s.deleteUnreferenced(cleanup, user, objectKey)
+			retired := s.tx.Run(cleanup, func(txCtx context.Context) error {
+				if err := s.guard(txCtx, user, false); err != nil {
+					return err
+				}
+				return s.repo.AbandonStaging(txCtx, user, id, s.now())
+			})
+			if retired == nil {
+				_ = s.deleteUnreferenced(cleanup, user, objectKey)
+			}
 		}
 	}()
 	// A single deadline fits the published 15-second reservation. Network calls
 	// observe the caller; the library's detached completion is used only for the final transaction.
 	refusal := s.parser.Validate(bytes.NewReader(content))
 	if refusal == nil {
+		// The intent survives a lost PUT reply, pod crash and purge phase one.
+		if err := s.tx.Run(work, func(txCtx context.Context) error {
+			if err := s.guard(txCtx, user, true); err != nil {
+				return err
+			}
+			if err := s.keys.BindResource(txCtx, token, idem.Resource{Type: "upload", ID: id}); err != nil {
+				return err
+			}
+			return s.repo.InsertUpload(txCtx, Upload{ID: id, UserID: user, FileName: header.FileName, ObjectKey: objectKey, SizeBytes: int64(len(content)), Digest: digest, Status: "staging", UploadedAt: s.now()})
+		}); err != nil {
+			return Accepted{}, err
+		}
 		possibleObject = true
 		if err := s.objects.Put(work, objectKey, bytes.NewReader(content), int64(len(content))); err != nil {
 			return Accepted{}, err
@@ -170,7 +193,7 @@ func (s *Service) Upload(ctx context.Context, user string, header Header, body i
 			if err != nil {
 				return idem.Response{}, err
 			}
-			err = s.repo.InsertUpload(effectCtx, Upload{ID: id, UserID: user, FileName: header.FileName, ObjectKey: objectKey, SizeBytes: int64(len(content)), Digest: digest, Status: "processing", UploadedAt: s.now()})
+			err = s.repo.PromoteUpload(effectCtx, user, id, s.now())
 			return idem.Response{Body: payload, Resource: idem.Resource{Type: "upload", ID: id}}, err
 		})
 		return err
@@ -221,7 +244,7 @@ func (s *Service) deleteUnreferenced(ctx context.Context, user, key string) erro
 			referenced = false
 			return nil
 		}
-		if _, err = s.repo.LockUser(txCtx, user, false); err != nil {
+		if _, err = s.repo.LockUser(txCtx, user, false); err != nil && !errors.Is(err, ErrNotFound) {
 			return err
 		}
 		referenced, err = s.repo.Referenced(txCtx, user, key)

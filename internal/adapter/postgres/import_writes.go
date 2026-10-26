@@ -10,15 +10,68 @@ import (
 	"github.com/fin-assist/bank-statement-data/internal/importing"
 )
 
-// InsertUpload persists an admitted processing job atomically with its key response.
+// InsertUpload durably records every possible PUT key before any cloud submission.
+// Staging is private: neither history nor the parser worker exposes or processes it.
 func (r *Imports) InsertUpload(ctx context.Context, upload importing.Upload) error {
 	if _, err := r.transaction(ctx); err != nil {
 		return err
 	}
-	if upload.Status != "processing" || upload.SizeBytes <= 0 || upload.SizeBytes > importing.MaxFileBytes {
+	if upload.Status != "staging" || upload.SizeBytes <= 0 || upload.SizeBytes > importing.MaxFileBytes {
 		return errImportStorage
 	}
-	_, err := r.db.Writer(ctx).Exec(ctx, `INSERT INTO upload(user_id,id,source,file_name,size_bytes,content_sha256,object_key,status,uploaded_at) VALUES($1,$2,'tbank_ofx',$3,$4,$5,$6,'processing',$7)`, upload.UserID, upload.ID, upload.FileName, upload.SizeBytes, upload.Digest[:], upload.ObjectKey, upload.UploadedAt)
+	_, err := r.db.Writer(ctx).Exec(ctx, `INSERT INTO upload(user_id,id,source,file_name,size_bytes,content_sha256,object_key,status,uploaded_at) VALUES($1,$2,'tbank_ofx',$3,$4,$5,$6,'staging',$7)`, upload.UserID, upload.ID, upload.FileName, upload.SizeBytes, upload.Digest[:], upload.ObjectKey, upload.UploadedAt)
+	return importError(ctx, err)
+}
+
+// PromoteUpload admits a confirmed PUT as a recoverable parsing job in the key transaction.
+func (r *Imports) PromoteUpload(ctx context.Context, user, id string, now time.Time) error {
+	if _, err := r.transaction(ctx); err != nil {
+		return err
+	}
+	tag, err := r.db.Writer(ctx).Exec(ctx, `UPDATE upload SET status='processing',uploaded_at=$3 WHERE user_id=$1 AND id=$2 AND status='staging'`, user, id, now)
+	if err != nil {
+		return importError(ctx, err)
+	}
+	if tag.RowsAffected() != 1 {
+		return importing.ErrNotFound
+	}
+	return nil
+}
+
+// AbandonStaging cannot retire a processing upload after an uncertain successful COMMIT.
+func (r *Imports) AbandonStaging(ctx context.Context, user, id string, now time.Time) error {
+	if _, err := r.transaction(ctx); err != nil {
+		return err
+	}
+	_, err := r.db.Writer(ctx).Exec(ctx, `UPDATE upload SET status='failed',error_code='processing_failed',finished_at=$3,percent=100 WHERE user_id=$1 AND id=$2 AND status='staging'`, user, id, now)
+	return importError(ctx, err)
+}
+
+// IntentKeys enumerates every possible cloud key, including unknown PUT outcomes.
+func (r *Imports) IntentKeys(ctx context.Context, user string) ([]string, error) {
+	rows, err := r.db.Writer(ctx).Query(ctx, `SELECT object_key FROM upload WHERE user_id=$1 AND file_deleted_at IS NULL`, user)
+	if err != nil {
+		return nil, importError(ctx, err)
+	}
+	defer rows.Close()
+	var keys []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, importError(ctx, err)
+		}
+		keys = append(keys, key)
+	}
+	return keys, importError(ctx, rows.Err())
+}
+
+// MarkFenced is privileged purge bookkeeping, after the caller proved a committed
+// tombstone and acquired the exclusive object barrier. It never authorizes an erasure.
+func (r *Imports) MarkFenced(ctx context.Context, user, key string, now time.Time) error {
+	if _, err := r.transaction(ctx); err != nil {
+		return err
+	}
+	_, err := r.db.Writer(ctx).Exec(ctx, `UPDATE upload SET file_deleted_at=$3 WHERE user_id=$1 AND object_key=$2 AND file_deleted_at IS NULL`, user, key, now)
 	return importError(ctx, err)
 }
 
@@ -57,19 +110,20 @@ func (r *Imports) FileDeleted(ctx context.Context, user, id string, now time.Tim
 
 // Pending enumerates durable jobs; a pod crash never loses the need to process one.
 func (r *Imports) Pending(ctx context.Context, limit int) ([]importing.Upload, error) {
-	return r.candidates(ctx, `SELECT user_id::text,id::text FROM upload WHERE status='processing' ORDER BY uploaded_at,id LIMIT $1`, limit)
+	return r.candidates(ctx, `SELECT user_id::text,id::text FROM upload WHERE status='processing' AND NOT EXISTS(SELECT 1 FROM tombstone_users t WHERE t.user_id=upload.user_id) ORDER BY uploaded_at,id LIMIT $1`, limit)
 }
 
 // Cleanup enumerates durable retirement work left by a crash or object-store failure.
-func (r *Imports) Cleanup(ctx context.Context, limit int) ([]importing.Upload, error) {
-	return r.candidates(ctx, `SELECT user_id::text,id::text FROM upload WHERE status IN('failed','deleted') AND file_deleted_at IS NULL ORDER BY uploaded_at,id LIMIT $1`, limit)
+func (r *Imports) Cleanup(ctx context.Context, limit int, before time.Time) ([]importing.Upload, error) {
+	return r.candidates(ctx, `SELECT user_id::text,id::text FROM upload WHERE ((status IN('failed','deleted') AND file_deleted_at IS NULL) OR(status='staging' AND uploaded_at<$2)) AND NOT EXISTS(SELECT 1 FROM tombstone_users t WHERE t.user_id=upload.user_id) ORDER BY uploaded_at,id LIMIT $1`, limit, before)
 }
 
-func (r *Imports) candidates(ctx context.Context, query string, limit int) ([]importing.Upload, error) {
+func (r *Imports) candidates(ctx context.Context, query string, limit int, extra ...any) ([]importing.Upload, error) {
 	if limit < 1 || limit > 1000 {
 		return nil, errImportStorage
 	}
-	rows, err := r.db.Writer(ctx).Query(ctx, query, limit)
+	arguments := append([]any{limit}, extra...)
+	rows, err := r.db.Writer(ctx).Query(ctx, query, arguments...)
 	if err != nil {
 		return nil, importError(ctx, err)
 	}
@@ -105,7 +159,7 @@ func (r *Imports) candidates(ctx context.Context, query string, limit int) ([]im
 // Referenced is a primary check used before deleting a possible orphan.
 func (r *Imports) Referenced(ctx context.Context, user, key string) (bool, error) {
 	var exists bool
-	err := r.db.Writer(ctx).QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM upload WHERE user_id=$1 AND object_key=$2)`, user, key).Scan(&exists)
+	err := r.db.Writer(ctx).QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM upload WHERE user_id=$1 AND object_key=$2 AND status IN('staging','processing','done'))`, user, key).Scan(&exists)
 	return exists, importError(ctx, err)
 }
 
