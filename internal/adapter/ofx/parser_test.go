@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/fin-assist/bank-statement-data/internal/adapter/ofx"
 	"github.com/fin-assist/bank-statement-data/internal/importing"
@@ -83,6 +84,56 @@ func TestUnitRawTextAndPhysicalLines(t *testing.T) {
 	line = parse(t, strings.ReplaceAll(source, ".000[+3:MSK]", ".123456")).Lines[0]
 	if line.OccurredAt == nil || line.OccurredAt.Format(time.RFC3339Nano) != "2026-01-02T12:34:56.123456+03:00" {
 		t.Fatal("fractional timestamp or default zone lost")
+	}
+}
+
+func TestUnitDescriptionLimitCountsDecodedUnicodeRunes(t *testing.T) {
+	for name, tc := range map[string]struct{ raw, want string }{
+		"exact1000":                {strings.Repeat("界", 1000), strings.Repeat("界", 1000)},
+		"unicode1001":              {strings.Repeat("😀", 1001), strings.Repeat("😀", 1000)},
+		"decoded entity boundary":  {strings.Repeat("界", 999) + "&amp;尾", strings.Repeat("界", 999) + "&"},
+		"single unescape boundary": {strings.Repeat("界", 996) + "&amp;lt;尾", strings.Repeat("界", 996) + "&lt;"},
+		"literal numeric boundary": {strings.Repeat("界", 998) + "&#171;尾", strings.Repeat("界", 998) + "&#"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			line := parse(t, statement(transaction("<NAME> \t"+tc.raw+" \n</NAME><MEMO>unchanged</MEMO>"))).Lines[0]
+			if line.Reason != "" || line.Description != tc.want || utf8.RuneCountInString(line.Description) != 1000 || line.BankCategory != "unchanged" {
+				t.Fatal("description cap changed Unicode/entity/trim semantics or another source field")
+			}
+		})
+	}
+}
+
+func TestUnitFITIDBoundPreservesUnreadPrecedenceAndPrivacy(t *testing.T) {
+	validID, oversizedID := strings.Repeat("界", 255), strings.Repeat("界", 256)
+	for _, tc := range []struct {
+		name, date, amount, id, reason string
+		dateKnown                      bool
+	}{
+		{"exact255", "<DTPOSTED>20260102</DTPOSTED>", "1", validID, "", true},
+		{"over256", "<DTPOSTED>20260102</DTPOSTED>", "1", oversizedID, "truncated", true},
+		{"missing date first", "", "bad", oversizedID, "no_date", false},
+		{"bad date first", "<DTPOSTED>invalid</DTPOSTED>", "bad", oversizedID, "bad_date", false},
+		{"bad amount first", "<DTPOSTED>20260102</DTPOSTED>", "bad", oversizedID, "bad_amount", true},
+		{"valid unread ID retained", "<DTPOSTED>20260102</DTPOSTED>", "bad", validID, "bad_amount", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			row := "<STMTTRN>" + tc.date + "<TRNAMT>" + tc.amount + "</TRNAMT><FITID>" + tc.id + "</FITID><NAME>private description</NAME><MEMO>private category</MEMO></STMTTRN>"
+			line := parse(t, statement(row)).Lines[0]
+			if line.Reason != tc.reason || (line.OccurredAt != nil) != tc.dateKnown {
+				t.Fatal("FITID bound changed unread reason precedence or lost a usable date")
+			}
+			if tc.id == oversizedID {
+				if line.FITID != "" {
+					t.Fatal("invalid oversized FITID retained or shortened into an unrelated key")
+				}
+			} else if line.FITID != validID {
+				t.Fatal("valid 255-rune FITID changed")
+			}
+			if line.Reason != "" && (line.Description != "" || line.BankCategory != "" || line.Currency != "" || line.Direction != "" || line.AmountMinor != 0) {
+				t.Fatal("unread row retained non-metadata source fields")
+			}
+		})
 	}
 }
 

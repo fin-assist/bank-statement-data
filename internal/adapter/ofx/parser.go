@@ -301,7 +301,8 @@ func appendStatement(doc *importing.Document, account, period map[string]string,
 	}
 	for _, source := range rows {
 		f := source.fields
-		line := importing.Line{Number: source.line, AccountKey: key, FITID: f["FITID"], OccurredAt: parseDate(f["DTPOSTED"]), Currency: f["CURSYM"], Description: unescape(f["NAME"]), BankCategory: unescape(f["MEMO"])}
+		line := importing.Line{Number: source.line, AccountKey: key, FITID: f["FITID"], OccurredAt: parseDate(f["DTPOSTED"]), Currency: f["CURSYM"], Description: prefixRunes(unescape(f["NAME"]), 1000), BankCategory: unescape(f["MEMO"])}
+		oversizedFITID := utf8.RuneCountInString(line.FITID) > 255
 		if line.Currency == "" {
 			line.Currency = "RUB"
 		}
@@ -318,8 +319,12 @@ func appendStatement(doc *importing.Document, account, period map[string]string,
 			line.Reason = "bad_date"
 		case !ok:
 			line.Reason = "bad_amount"
-		case line.FITID == "":
+		case line.FITID == "" || oversizedFITID:
 			line.Reason = "truncated"
+		}
+		if oversizedFITID {
+			// Invalid source IDs cannot be persisted as unread metadata or shortened into a different key.
+			line.FITID = ""
 		}
 		if line.Reason != "" {
 			// Unread metadata must never persist raw descriptions or malformed source values.
@@ -333,6 +338,17 @@ func appendStatement(doc *importing.Document, account, period map[string]string,
 
 func unescape(text string) string {
 	return strings.NewReplacer("&amp;", "&", "&lt;", "<", "&gt;", ">", "&quot;", "\"", "&apos;", "'").Replace(text)
+}
+
+func prefixRunes(value string, limit int) string {
+	count := 0
+	for offset := range value {
+		if count == limit {
+			return strings.Clone(value[:offset])
+		}
+		count++
+	}
+	return value
 }
 
 func hasField(fields map[string]string, key string) bool {
