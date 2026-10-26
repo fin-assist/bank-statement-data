@@ -42,6 +42,15 @@ func verifyFixtureCAS(t *testing.T, fixture *Store, client *http.Client) {
 	}
 	key := "73ef1f95-14d5-453c-80ec-d0e2ac8c854d/b7a17bfd-cf78-44a3-95f7-09941c59e996"
 	original := []byte("private synthetic file")
+
+	fixture.SetCreationFailure(true)
+	if err = store.Put(t.Context(), key, bytes.NewReader(original), int64(len(original))); err == nil {
+		t.Fatal("fixture hid provider create refusal")
+	}
+	if _, ok := fixture.Bytes(key); ok {
+		t.Fatal("refused create retained data")
+	}
+	fixture.SetCreationFailure(false)
 	if err = store.Put(t.Context(), key, bytes.NewReader(original), int64(len(original))); err != nil {
 		t.Fatal(err)
 	}

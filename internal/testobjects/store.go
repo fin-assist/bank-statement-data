@@ -23,14 +23,15 @@ import (
 // Store serves a dedicated private fixture bucket, including conditional file writes
 // and permanent zero-byte erasure fences.
 type Store struct {
-	Server         *httptest.Server
-	mu             sync.Mutex
-	data           map[string][]byte
-	modified       map[string]time.Time
-	TokenFile      string
-	erasureFailure atomic.Bool
-	readEntered    chan<- struct{}
-	readResume     <-chan struct{}
+	Server          *httptest.Server
+	mu              sync.Mutex
+	data            map[string][]byte
+	modified        map[string]time.Time
+	TokenFile       string
+	erasureFailure  atomic.Bool
+	creationFailure atomic.Bool
+	readEntered     chan<- struct{}
+	readResume      <-chan struct{}
 }
 
 // PauseReads delays the response after its snapshot was captured, modelling a
@@ -43,6 +44,9 @@ func (s *Store) PauseReads(entered chan<- struct{}, resume <-chan struct{}) {
 
 // SetErasureFailure models a provider outage without changing the runtime adapter.
 func (s *Store) SetErasureFailure(fail bool) { s.erasureFailure.Store(fail) }
+
+// SetCreationFailure models a provider refusal after durable admission staging.
+func (s *Store) SetCreationFailure(fail bool) { s.creationFailure.Store(fail) }
 
 // New creates a real TLS S3 protocol fixture and an external token file.
 func New(t testing.TB) *Store {
@@ -134,6 +138,10 @@ func (s *Store) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if len(body) == 0 && s.erasureFailure.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		if len(body) > 0 && s.creationFailure.Load() {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}

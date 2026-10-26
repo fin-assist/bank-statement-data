@@ -641,3 +641,42 @@ func TestAPIEmptyAndNativeCurrenciesHaveHonestSummaries(t *testing.T) {
 		t.Fatalf("native amount changed: %d %v", usdAmount, err)
 	}
 }
+
+func TestAPIOriginalObjectWriteFailureIsFencedAndSameKeyCanRecover(t *testing.T) {
+	env := apitest.Start(t)
+	c := pb.NewStatementsServiceClient(env.Conn)
+	key := uuid.NewString()
+	env.Objects.SetCreationFailure(true)
+	if accepted, err := apiUpload(t, c, apiUser, key, "put-outage.ofx", apiOFX); status.Code(err) != codes.Internal || accepted != nil {
+		t.Fatalf("unconfirmed PUT was acknowledged: %v %v", accepted, err)
+	}
+	db, err := pgx.Connect(t.Context(), env.DSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close(context.Background()) }()
+	var failedID, objectKey, state string
+	if err = db.QueryRow(t.Context(), "SELECT id::text,object_key,status FROM upload WHERE user_id=$1", apiUser).Scan(&failedID, &objectKey, &state); err != nil || state != "failed" {
+		t.Fatalf("missing durable retired intent: %s %v", state, err)
+	}
+	if body, ok := env.Objects.Bytes(objectKey); !ok || len(body) != 0 {
+		t.Fatal("uncertain original write has no permanent late-write fence")
+	}
+	var keys int
+	if err = db.QueryRow(t.Context(), "SELECT count(*) FROM idempotency_keys WHERE scope=$1", apiUser).Scan(&keys); err != nil || keys != 0 {
+		t.Fatalf("failed reserved key was not conditionally released: %d %v", keys, err)
+	}
+	env.Objects.SetCreationFailure(false)
+	accepted, err := apiUpload(t, c, apiUser, key, "put-outage.ofx", apiOFX)
+	if err != nil || accepted.UploadId == failedID {
+		t.Fatalf("same-key recovery reused retired intent: %v %v", accepted, err)
+	}
+	result := apiComplete(t, c, accepted.UploadId)
+	if result.NewCount != 1 {
+		t.Fatalf("recovering upload duplicated/omitted data: %v", result)
+	}
+	history, err := c.ListUploads(apitest.User(t.Context(), apiUser), &pb.ListUploadsRequest{})
+	if err != nil || len(history.Uploads) != 1 || history.Uploads[0].UploadId != accepted.UploadId {
+		t.Fatalf("private failed intent leaked: %v %v", history, err)
+	}
+}
