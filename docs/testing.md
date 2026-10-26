@@ -3,7 +3,7 @@
 FIN-258 заменяет инфраструктурные копии опубликованными Go-библиотеками по канонике FIN-246. Бизнес-RPC не добавлены: AccessPolicy и wire остаются пустыми. Существующие PostgreSQL-тесты схемы и SQL-миграций сохранены, изолированный database harness теперь публичный go-migrate/migratetest.
 
 - Unit без БД/сети: конфигурация/валидация, CLI usage/exit status, порядок shutdown и worker restart через consumer-интерфейсы, routing/owned и foreign transaction, assembly cleanup, IO failures тестового harness.
-- Integration: реальные PostgreSQL18, up/down/up и service migration version3, существующие schema contracts, транзакции/constraint mapping, pool ownership и cleanup, HTTP/readiness, конфигурационные файлы и логирование.
+- Integration: реальные PostgreSQL18, up/down/up и service migration version6, существующие schema contracts, транзакции/constraint mapping, pool ownership и cleanup, HTTP/readiness, конфигурационные файлы и логирование.
 - API: полная CLI/сервисная assembly с настоящими миграциями, gRPC health Watch/Check/reflection, отказ отсутствующим RPC, HTTP healthz/readyz/metrics/404, outage/recovery БД, shutdown, неудачные старты с verify identity/недоступной БД/занятым listener. Тестовые бизнес-RPC/SQL/jobs в runtime не добавлены.
 
 `internal/testdb` выбирает PG18, публичный `migratetest.DSN(t, adminDSN)` владеет отдельной БД и cleanup, `CheckUpDownUp(t, dsn, src)` проверяет миграции на переданной БД. Ordinary .go сервисных testdb/apitest остаются во всех профилях. Три независимых80% по всему одинаковому модулю, race/count1/timeouts и guards сохранены. Combined информационный. Проценты текущего commit публикуются в CI artifacts; локальный TEST_DATABASE_URL не исполняет container branch, которая остаётся в знаменателе.
