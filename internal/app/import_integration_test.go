@@ -11,10 +11,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fin-assist/contracts/gen/go/finerr"
 	"github.com/fin-assist/go-migrate"
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/fin-assist/bank-statement-data/internal/adapter/objectstore"
 	"github.com/fin-assist/bank-statement-data/internal/adapter/postgres"
 	"github.com/fin-assist/bank-statement-data/internal/app"
 	"github.com/fin-assist/bank-statement-data/internal/config"
@@ -300,4 +302,55 @@ func TestIntegrationPurgeKeepsDurableIntentsAcrossCloudFailure(t *testing.T) {
 	if body, ok := objects.Bytes(apiUser + "/" + accepted.UploadID); !ok || len(body) != 0 {
 		t.Fatal("Purge lost permanent fence")
 	}
+}
+
+func TestIntegrationAdmissionCachesKnownRefusalsAndReplaysBoundSuccess(t *testing.T) {
+	a, objects := importAssembly(t)
+	for _, tc := range []struct{ name, body, reason string }{
+		{"not-ofx", "%PDF-1.0 synthetic", "WRONG_FORMAT"},
+		{"csv", "date,amount\n2026-01-01,1\n", "CSV_NOT_ACCEPTED"},
+		{"wrong-bank", strings.Replace(apiOFX, "<BANKID>T-BANK</BANKID>", "<BANKID>OTHER</BANKID>", 1), "WRONG_BANK"},
+	} {
+		key := uuid.NewString()
+		for range 2 {
+			_, err := a.Imports.Upload(t.Context(), apiUser, importing.Header{FileName: tc.name}, strings.NewReader(tc.body), []string{key})
+			mapped, ok := finerr.ToREST(err)
+			if !ok || mapped.Code != tc.reason || mapped.RequestRetryable != nil {
+				t.Fatalf("known cached refusal changed on replay: %+v %v", mapped, err)
+			}
+		}
+		_, err := a.Imports.Upload(t.Context(), apiUser, importing.Header{FileName: tc.name}, strings.NewReader(apiOFX), []string{key})
+		mapped, ok := finerr.ToREST(err)
+		if !ok || mapped.Code != "IDEMPOTENCY_CONFLICT" {
+			t.Fatalf("refused key lost original identity: %+v %v", mapped, err)
+		}
+	}
+	if state := importSnapshot(t, a, apiUser); len(state.Uploads) != 0 || len(state.Operations) != 0 {
+		t.Fatal("synchronous refusals created an upload intent")
+	}
+	key := uuid.NewString()
+	first, err := a.Imports.Upload(t.Context(), apiUser, importing.Header{FileName: "exact.ofx"}, strings.NewReader(apiOFX), []string{key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := a.Imports.Upload(t.Context(), apiUser, importing.Header{FileName: "exact.ofx"}, strings.NewReader(apiOFX), []string{key})
+	if err != nil || replay != first {
+		t.Fatalf("accepted resource binding changed on replay: %+v %+v %v", first, replay, err)
+	}
+	page, err := objectsStoreList(t, objects, apiUser+"/")
+	if err != nil || page != 1 {
+		t.Fatalf("replay duplicated private objects: %d %v", page, err)
+	}
+}
+
+func objectsStoreList(t *testing.T, fixture *testobjects.Store, prefix string) (int, error) {
+	t.Helper()
+	var cfg config.Config
+	fixture.Configure(&cfg)
+	store, err := objectstore.New(objectstore.Config{Endpoint: cfg.ObjectStorage.Endpoint, Bucket: cfg.ObjectStorage.Bucket, KMSKeyID: cfg.ObjectStorage.KMSKeyID, Token: objectstore.FileToken(cfg.ObjectStorage.IAMTokenFile), Client: fixture.Server.Client()})
+	if err != nil {
+		return 0, err
+	}
+	page, err := store.List(t.Context(), prefix, "")
+	return len(page.Objects), err
 }

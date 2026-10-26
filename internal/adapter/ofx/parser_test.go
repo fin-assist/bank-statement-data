@@ -335,3 +335,23 @@ func TestUnitEachSourcePeriodMustBeOrdered(t *testing.T) {
 		}
 	}
 }
+
+func TestUnitMalformedSourceHeadersNeverCreateAnAdmittedDocument(t *testing.T) {
+	p := ofx.Parser{}
+	for _, source := range []string{
+		`<?OFX OFXHEADER="200" VERSION="202"?><OFX><!DOCTYPE OFX [<!ENTITY private SYSTEM "file:///private">]><BANKMSGSRSV1/></OFX>`,
+		`<?OFX OFXHEADER="200" VERSION="202"?><OFX><BANKACCTFROM><BANKID>T-BANK`,
+		`<?OFX OFXHEADER="200" VERSION="202"?><OFX><BANKMSGSRSV1/></OFX>`,
+	} {
+		if err := p.Validate(strings.NewReader(source)); !errors.Is(err, importing.ErrWrongFormat) {
+			t.Fatalf("unsupported/malformed source header was admitted: %v", err)
+		}
+	}
+	tooLong := strings.Replace(statement(transaction("")), "<ACCTID>00001111</ACCTID>", "<ACCTID>"+strings.Repeat("x", 65)+"</ACCTID>", 1)
+	if err := p.Validate(strings.NewReader(tooLong)); err != nil {
+		t.Fatal("row/account interpretation must remain asynchronous")
+	}
+	if doc, err := p.Parse(t.Context(), strings.NewReader(tooLong)); err == nil || len(doc.Accounts) != 0 || len(doc.Lines) != 0 {
+		t.Fatalf("oversized account key was truncated or partially emitted: %+v %v", doc, err)
+	}
+}
