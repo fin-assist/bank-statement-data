@@ -93,10 +93,12 @@ type Event struct {
 
 // Config contains the import links, recommended range and actual loaded summary.
 type Config struct {
-	TimeZone string
-	From     time.Time
-	To       time.Time
-	Loaded   *Loaded
+	DownloadURL string
+	LoginURL    string
+	TimeZone    string
+	From        time.Time
+	To          time.Time
+	Loaded      *Loaded
 }
 
 // Loaded summarizes actual readable operations across completed imports.
