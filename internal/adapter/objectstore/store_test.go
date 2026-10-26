@@ -122,7 +122,7 @@ func TestUnitPutIntegrityAndRejections(t *testing.T) {
 	}
 	for _, code := range []int{301, 403, 500} {
 		s := testStore(t, func(*http.Request) (*http.Response, error) { return reply(code, "private provider credential"), nil })
-		if e := s.Put(t.Context(), "u/f", strings.NewReader(""), 0); !errors.Is(e, ErrUnavailable) {
+		if e := s.Put(t.Context(), "u/f", strings.NewReader("x"), 1); !errors.Is(e, ErrUnavailable) {
 			t.Fatalf("unsafe failure: %v", e)
 		}
 	}
@@ -135,7 +135,7 @@ func (errReader) Read([]byte) (int, error) { return 0, errors.New("private I/O d
 func TestUnitOpenDeleteAndBodyLimit(t *testing.T) {
 	for _, code := range []int{200, 404, 500} {
 		s := testStore(t, func(r *http.Request) (*http.Response, error) {
-			if strings.HasPrefix(r.Header.Get("X-Amz-Server-Side-Encryption"), "aws") {
+			if r.Method == http.MethodGet && strings.HasPrefix(r.Header.Get("X-Amz-Server-Side-Encryption"), "aws") {
 				t.Fatal("SSE request headers on read/delete")
 			}
 			return reply(code, "file"), nil
@@ -162,7 +162,7 @@ func TestUnitOpenDeleteAndBodyLimit(t *testing.T) {
 			}
 		}
 		want := error(nil)
-		if code == 500 {
+		if code != 200 {
 			want = ErrUnavailable
 		}
 		if e := s.Delete(t.Context(), "u/f"); !errors.Is(e, want) {
@@ -184,7 +184,7 @@ func TestUnitOpenDeleteAndBodyLimit(t *testing.T) {
 	for _, code := range []int{204, 301, 403} {
 		s := testStore(t, func(*http.Request) (*http.Response, error) { return reply(code, ""), nil })
 		e := s.Delete(t.Context(), "u/f")
-		if code == 204 && e != nil || code != 204 && !errors.Is(e, ErrUnavailable) {
+		if !errors.Is(e, ErrUnavailable) {
 			t.Fatal(e)
 		}
 	}
@@ -207,7 +207,7 @@ func TestUnitOpenDeleteAndBodyLimit(t *testing.T) {
 	}
 }
 
-const listXML = `<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>true</IsTruncated><NextContinuationToken>next+opaque=</NextContinuationToken><Contents><Key>u/f</Key><LastModified>2026-10-01T10:00:00.000Z</LastModified></Contents></ListBucketResult>`
+const listXML = `<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>true</IsTruncated><NextContinuationToken>next+opaque=</NextContinuationToken><Contents><Size>16</Size><Key>u/f</Key><LastModified>2026-10-01T10:00:00.000Z</LastModified></Contents></ListBucketResult>`
 
 func TestUnitListPaginationAndUnsafeReplies(t *testing.T) {
 	s := testStore(t, func(r *http.Request) (*http.Response, error) {
@@ -234,7 +234,7 @@ func TestUnitListPaginationAndUnsafeReplies(t *testing.T) {
 		strings.ReplaceAll(listXML, "2026-10-01T10:00:00.000Z", "not-a-date"), strings.ReplaceAll(listXML, "2026-10-01T10:00:00.000Z", "0001-01-01T00:00:00Z"),
 		strings.ReplaceAll(listXML, "next+opaque=", ""), strings.ReplaceAll(listXML, "<IsTruncated>true", "<IsTruncated>false"),
 		strings.ReplaceAll(listXML, "next+opaque=", strings.Repeat("x", 2049)),
-		"<ListBucketResult>" + strings.Repeat("<Contents><Key>u/f</Key><LastModified>2026-10-01T00:00:00Z</LastModified></Contents>", 1001) + "</ListBucketResult>",
+		"<ListBucketResult>" + strings.Repeat("<Contents><Size>16</Size><Key>u/f</Key><LastModified>2026-10-01T00:00:00Z</LastModified></Contents>", 1001) + "</ListBucketResult>",
 		strings.Repeat("x", int(maxListBytes)+1),
 	} {
 		s := testStore(t, func(*http.Request) (*http.Response, error) { return reply(200, xml), nil })
@@ -281,7 +281,7 @@ func TestUnitFailuresPreserveCancellationAndHideDiagnostics(t *testing.T) {
 		if _, e = s.Open(t.Context(), "u/f"); !errors.Is(e, ErrUnavailable) {
 			t.Fatal(e)
 		}
-		if e = s.Put(t.Context(), "u/f", strings.NewReader(""), 0); !errors.Is(e, ErrUnavailable) {
+		if e = s.Put(t.Context(), "u/f", strings.NewReader("x"), 1); !errors.Is(e, ErrUnavailable) {
 			t.Fatal(e)
 		}
 		if _, e = s.List(t.Context(), "u/", ""); !errors.Is(e, ErrUnavailable) {
@@ -295,7 +295,7 @@ func TestUnitFailuresPreserveCancellationAndHideDiagnostics(t *testing.T) {
 	if _, e := s.Open(t.Context(), "u/f"); !errors.Is(e, ErrUnavailable) {
 		t.Fatal(e)
 	}
-	if e := s.Put(t.Context(), "u/f", strings.NewReader(""), 0); !errors.Is(e, ErrUnavailable) {
+	if e := s.Put(t.Context(), "u/f", strings.NewReader("x"), 1); !errors.Is(e, ErrUnavailable) {
 		t.Fatal(e)
 	}
 	if _, e := s.List(t.Context(), "u/", ""); !errors.Is(e, ErrUnavailable) {
@@ -371,7 +371,7 @@ func TestIntegrationPrivateStorageTLSProtocol(t *testing.T) {
 			w.WriteHeader(200)
 		case "GET":
 			if r.URL.Query().Get("list-type") == "2" {
-				_, _ = io.WriteString(w, `<ListBucketResult><Contents><Key>u/f</Key><LastModified>2026-10-01T00:00:00Z</LastModified></Contents></ListBucketResult>`)
+				_, _ = io.WriteString(w, `<ListBucketResult><Contents><Size>16</Size><Key>u/f</Key><LastModified>2026-10-01T00:00:00Z</LastModified></Contents></ListBucketResult>`)
 				return
 			}
 			if b, ok := objects[key]; ok {

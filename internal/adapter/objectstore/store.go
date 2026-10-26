@@ -73,6 +73,13 @@ func New(c Config) (*Store, error) {
 // Put sends a single bounded object with an exact length and transfer checksum.
 // An uncertain PUT is never automatically retried; the usecase owns reconciliation.
 func (s *Store) Put(ctx context.Context, key string, body io.Reader, size int64) error {
+	if size == 0 {
+		return ErrInput
+	}
+	return s.put(ctx, key, body, size, true)
+}
+
+func (s *Store) put(ctx context.Context, key string, body io.Reader, size int64, create bool) error {
 	if !validKey(key) || body == nil || size < 0 || size > maxObjectBytes {
 		return ErrInput
 	}
@@ -85,6 +92,9 @@ func (s *Store) Put(ctx context.Context, key string, body io.Reader, size int64)
 		return err
 	}
 	req.ContentLength = size
+	if create {
+		req.Header.Set("If-None-Match", "*")
+	}
 	req.Header.Set("Content-Type", "application/octet-stream")
 	sum := md5.Sum(data) // #nosec G401 -- mandated S3 Content-MD5 transfer checksum.
 	req.Header.Set("Content-MD5", base64.StdEncoding.EncodeToString(sum[:]))
@@ -114,9 +124,9 @@ func (s *Store) Open(ctx context.Context, key string) (io.ReadCloser, error) {
 	if err != nil {
 		return nil, err
 	}
-	if resp.StatusCode != http.StatusOK || resp.ContentLength > maxObjectBytes {
+	if resp.StatusCode != http.StatusOK || resp.ContentLength > maxObjectBytes || resp.ContentLength == 0 {
 		_ = resp.Body.Close()
-		if resp.StatusCode == http.StatusNotFound {
+		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusOK && resp.ContentLength == 0 {
 			return nil, ErrNotFound
 		}
 		return nil, ErrUnavailable
@@ -124,24 +134,11 @@ func (s *Store) Open(ctx context.Context, key string) (io.ReadCloser, error) {
 	return &limitedBody{body: resp.Body, left: maxObjectBytes}, nil
 }
 
-// Delete is idempotent when a private object has already disappeared.
+// Delete erases file contents with a permanent encrypted zero-byte fence. A late
+// conditional file PUT is rejected even if its client already timed out. Removing
+// this technical marker would make the unknown write eligible again.
 func (s *Store) Delete(ctx context.Context, key string) error {
-	if !validKey(key) {
-		return ErrInput
-	}
-	req, err := s.request(ctx, http.MethodDelete, key, nil, nil)
-	if err != nil {
-		return err
-	}
-	resp, err := s.do(req)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotFound {
-		return ErrUnavailable
-	}
-	return nil
+	return s.put(ctx, key, strings.NewReader(""), 0, false)
 }
 
 type listResult struct {
@@ -151,6 +148,7 @@ type listResult struct {
 	Objects   []struct {
 		Key      string    `xml:"Key"`
 		Modified time.Time `xml:"LastModified"`
+		Size     *int64    `xml:"Size"`
 	} `xml:"Contents"`
 }
 
@@ -191,8 +189,11 @@ func (s *Store) List(ctx context.Context, prefix, cursor string) (importing.Obje
 	}
 	page := importing.ObjectPage{Next: result.Next}
 	for _, object := range result.Objects {
-		if !validKey(object.Key) || !strings.HasPrefix(object.Key, prefix) || object.Modified.IsZero() {
+		if !validKey(object.Key) || !strings.HasPrefix(object.Key, prefix) || object.Modified.IsZero() || object.Size == nil || *object.Size < 0 {
 			return importing.ObjectPage{}, ErrUnavailable
+		}
+		if *object.Size == 0 {
+			continue
 		}
 		page.Objects = append(page.Objects, importing.Object{Key: object.Key, ModifiedAt: object.Modified})
 	}
