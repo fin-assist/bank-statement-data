@@ -20,11 +20,15 @@ import (
 )
 
 type uploadTransactionContext struct{}
+type uploadTransactionNumber struct{}
+type uploadKeyCallback struct{}
 
 type uploadTransactions struct {
-	active atomic.Int32
-	before func() error
-	after  func() error
+	active      atomic.Int32
+	before      func() error
+	after       func() error
+	knownCommit func(context.Context)
+	sequence    int
 }
 
 func (*uploadTransactions) Read(context.Context, func(context.Context) error) error {
@@ -39,11 +43,18 @@ func (tx *uploadTransactions) Run(ctx context.Context, fn func(context.Context) 
 	}
 	tx.active.Add(1)
 	defer tx.active.Add(-1)
-	if err := fn(context.WithValue(ctx, uploadTransactionContext{}, true)); err != nil {
+	tx.sequence++
+	ctx = context.WithValue(context.WithValue(ctx, uploadTransactionContext{}, true), uploadTransactionNumber{}, tx.sequence)
+	if err := fn(ctx); err != nil {
 		return err
 	}
 	if tx.after != nil {
-		return tx.after()
+		if err := tx.after(); err != nil {
+			return err
+		}
+	}
+	if tx.knownCommit != nil {
+		tx.knownCommit(ctx)
 	}
 	return nil
 }
@@ -52,10 +63,19 @@ type uploadRepository struct {
 	importing.Repository
 	t *testing.T
 	// Insert attempts are recorded; this is not a fake transactional database.
-	inserted   []importing.Upload
-	referenced bool
-	refErr     error
-	probes     int
+	inserted                 []importing.Upload
+	referenced               bool
+	refErr                   error
+	probes                   int
+	stageTx                  int
+	stageKnownCommitted      bool
+	promotes                 int
+	promoteTx                int
+	abandons                 int
+	retirementTx             int
+	retirementKnownCommitted bool
+	abandonErr               error
+	onAbandon                func()
 }
 
 func (r *uploadRepository) LockUser(ctx context.Context, _ string, _ bool) (string, error) {
@@ -69,12 +89,43 @@ func (r *uploadRepository) InsertUpload(ctx context.Context, upload importing.Up
 	if ctx.Value(uploadTransactionContext{}) != true {
 		r.t.Error("insert escaped transaction")
 	}
+	if ctx.Value(uploadKeyCallback{}) == true || upload.Status != "staging" {
+		r.t.Error("upload insert must create private staging before the key completion callback")
+	}
+	r.stageTx, _ = ctx.Value(uploadTransactionNumber{}).(int)
 	r.inserted = append(r.inserted, upload)
 	return nil
+}
+func (r *uploadRepository) PromoteUpload(ctx context.Context, user, id string, now time.Time) error {
+	if ctx.Value(uploadTransactionContext{}) != true || ctx.Value(uploadKeyCallback{}) != true || !r.stageKnownCommitted {
+		r.t.Error("promotion must run in the key callback after a known staging commit")
+	}
+	if len(r.inserted) == 0 || r.inserted[0].UserID != user || r.inserted[0].ID != id || now.IsZero() {
+		r.t.Error("promotion changed the staged upload identity or metadata")
+	}
+	r.promotes++
+	r.promoteTx, _ = ctx.Value(uploadTransactionNumber{}).(int)
+	return nil
+}
+func (r *uploadRepository) AbandonStaging(ctx context.Context, _, _ string, _ time.Time) error {
+	if ctx.Value(uploadTransactionContext{}) != true || ctx.Value(uploadKeyCallback{}) == true {
+		r.t.Error("conditional staging retirement escaped its fresh cleanup transaction")
+	}
+	r.abandons++
+	r.retirementTx, _ = ctx.Value(uploadTransactionNumber{}).(int)
+	if r.onAbandon != nil {
+		r.onAbandon()
+	}
+	// Record only the conditional port call. Referenced remains the test's explicit
+	// authoritative primary outcome, never a simulated SQL state transition.
+	return r.abandonErr
 }
 func (r *uploadRepository) Referenced(ctx context.Context, _, _ string) (bool, error) {
 	if ctx.Value(uploadTransactionContext{}) != true {
 		r.t.Error("cleanup reference probe did not use a fresh primary transaction")
+	}
+	if !r.retirementKnownCommitted {
+		r.t.Error("primary reference probe ran before a known staging retirement commit")
 	}
 	r.probes++
 	return r.referenced, r.refErr
@@ -91,11 +142,15 @@ type uploadObjects struct {
 	size         int64
 	putErr       error
 	beforeDelete func()
+	beforePut    func()
 }
 
 func (o *uploadObjects) Put(ctx context.Context, key string, body io.Reader, size int64) error {
 	if ctx.Value(uploadTransactionContext{}) == true || o.tx.active.Load() != 0 {
 		o.t.Error("remote PUT ran inside transaction")
+	}
+	if o.beforePut != nil {
+		o.beforePut()
 	}
 	o.puts++
 	o.key, o.size = key, size
@@ -107,6 +162,7 @@ func (o *uploadObjects) Put(ctx context.Context, key string, body io.Reader, siz
 	return o.putErr
 }
 func (o *uploadObjects) Delete(ctx context.Context, key string) error {
+	// The port records a logical 0B erasure fence, not an emulation of S3 storage.
 	if ctx.Value(uploadTransactionContext{}) == true || o.tx.active.Load() != 0 {
 		o.t.Error("remote DELETE ran inside transaction")
 	}
@@ -167,6 +223,7 @@ type uploadKeys struct {
 	reserveErr  error
 	doErr       error
 	onReserve   func()
+	doTx        int
 }
 
 func (k *uploadKeys) Reserve(ctx context.Context, r idem.Request) (idem.Reservation, idem.Result, error) {
@@ -180,7 +237,10 @@ func (k *uploadKeys) Reserve(ctx context.Context, r idem.Request) (idem.Reservat
 	}
 	return idem.Reservation{}, k.replay, k.reserveErr
 }
-func (k *uploadKeys) BindResource(_ context.Context, _ idem.Reservation, resource idem.Resource) error {
+func (k *uploadKeys) BindResource(ctx context.Context, _ idem.Reservation, resource idem.Resource) error {
+	if ctx.Value(uploadTransactionContext{}) != true {
+		k.t.Error("resource fencing escaped its transaction")
+	}
 	k.bound = append(k.bound, resource)
 	return nil
 }
@@ -192,11 +252,12 @@ func (k *uploadKeys) DoReserved(ctx context.Context, _ idem.Reservation, callbac
 		k.t.Error("key completion escaped transaction")
 	}
 	k.completions++
+	k.doTx, _ = ctx.Value(uploadTransactionNumber{}).(int)
 	if k.doErr != nil {
 		return idem.Result{}, k.doErr
 	}
 	// This port fake only invokes the effect; it implements no real cache/codec policy.
-	response, err := callback(ctx)
+	response, err := callback(context.WithValue(ctx, uploadKeyCallback{}, true))
 	return idem.Result{Response: response, Err: err}, nil
 }
 func (k *uploadKeys) Release(ctx context.Context, _ idem.Reservation) error {
@@ -246,6 +307,30 @@ func newUploadFixture(t *testing.T) *uploadFixture {
 	f.parser = &uploadParser{t: t, tx: f.tx}
 	f.keys = &uploadKeys{t: t}
 	f.deleted = &uploadTombstones{t: t, alive: true}
+	f.tx.knownCommit = func(ctx context.Context) {
+		id, _ := ctx.Value(uploadTransactionNumber{}).(int)
+		if id == f.repo.stageTx {
+			f.repo.stageKnownCommitted = true
+		}
+		if id == f.repo.retirementTx {
+			f.repo.retirementKnownCommitted = true
+		}
+	}
+	f.objects.beforePut = func() {
+		if !f.repo.stageKnownCommitted || len(f.repo.inserted) == 0 || f.repo.promotes != 0 {
+			t.Error("PUT began before durable private staging or after premature promotion")
+		}
+	}
+	f.repo.onAbandon = func() {
+		if f.barrier.releases.Load() != 0 {
+			t.Error("shared fence released before conditional staging cleanup")
+		}
+	}
+	f.objects.beforeDelete = func() {
+		if f.repo.abandons == 0 || f.repo.probes == 0 || f.barrier.releases.Load() != 0 {
+			t.Error("file erasure fence ran without staging retirement, primary proof or shared barrier")
+		}
+	}
 	return f
 }
 
@@ -385,7 +470,7 @@ func TestUnitUploadReadsEOFFirstAndPreservesExactMetadata(t *testing.T) {
 		t.Fatal("actual file bytes/size not preserved")
 	}
 	u := f.repo.inserted[len(f.repo.inserted)-1]
-	if u.FileName != filename || u.Digest != digest || u.SizeBytes != int64(len(content)) || u.ObjectKey != f.user+"/"+f.id || u.Status != "processing" || !u.UploadedAt.Equal(f.now) || len(f.objects.deletes) != 0 {
+	if u.FileName != filename || u.Digest != digest || u.SizeBytes != int64(len(content)) || u.ObjectKey != f.user+"/"+f.id || u.Status != "staging" || !u.UploadedAt.Equal(f.now) || len(f.objects.deletes) != 0 || f.repo.promotes != 1 || f.repo.promoteTx != f.keys.doTx || f.repo.stageTx == f.repo.promoteTx {
 		t.Fatal("durable upload metadata or committed object changed")
 	}
 	if f.barrier.releases.Load() != 1 {
@@ -509,7 +594,7 @@ func TestUnitUploadUnknownCommitNeverDeletesReferencedOrUncertainObject(t *testi
 			commitErr := errors.New("synthetic unknown COMMIT")
 			failed := false
 			f.tx.after = func() error {
-				if !failed && f.objects.puts > 0 && len(f.repo.inserted) > 0 {
+				if !failed && f.objects.puts > 0 && f.repo.promotes > 0 {
 					failed = true
 					return commitErr
 				}
@@ -528,7 +613,7 @@ func TestUnitUploadUnknownCommitNeverDeletesReferencedOrUncertainObject(t *testi
 				}
 			}
 			_, err := f.service().Upload(context.Background(), f.user, importing.Header{FileName: "exact.ofx"}, strings.NewReader("content"), []string{uuid.NewString()})
-			if !errors.Is(err, commitErr) || f.objects.puts != 1 || f.repo.probes == 0 || f.keys.releases == 0 {
+			if !errors.Is(err, commitErr) || f.objects.puts != 1 || f.repo.probes == 0 || f.keys.releases == 0 || f.repo.abandons == 0 {
 				t.Fatal("unknown commit did not preserve original failure and attempt guarded cleanup", err)
 			}
 			if outcome == "unreferenced" {
@@ -543,7 +628,7 @@ func TestUnitUploadUnknownCommitNeverDeletesReferencedOrUncertainObject(t *testi
 }
 
 func TestUnitUploadTransactionalAndRemoteFailures(t *testing.T) {
-	for _, phase := range []string{"before reservation", "reserve failure", "before final callback", "key completion failure", "PUT failure"} {
+	for _, phase := range []string{"before reservation", "reserve failure", "before staging", "unknown staging COMMIT", "before final callback", "key completion failure", "PUT failure"} {
 		t.Run(phase, func(t *testing.T) {
 			f := newUploadFixture(t)
 			boom := errors.New("synthetic admission failure")
@@ -552,6 +637,24 @@ func TestUnitUploadTransactionalAndRemoteFailures(t *testing.T) {
 				f.tx.before = func() error { return boom }
 			case "reserve failure":
 				f.keys.reserveErr = boom
+			case "before staging":
+				failed := false
+				f.tx.before = func() error {
+					if !failed && f.parser.calls > 0 && f.objects.puts == 0 {
+						failed = true
+						return boom
+					}
+					return nil
+				}
+			case "unknown staging COMMIT":
+				failed := false
+				f.tx.after = func() error {
+					if !failed && f.repo.stageTx > 0 && !f.repo.stageKnownCommitted {
+						failed = true
+						return boom
+					}
+					return nil
+				}
 			case "before final callback":
 				failed := false
 				f.tx.before = func() error {
@@ -567,15 +670,43 @@ func TestUnitUploadTransactionalAndRemoteFailures(t *testing.T) {
 				f.objects.putErr = boom
 			}
 			_, err := f.service().Upload(context.Background(), f.user, importing.Header{FileName: "exact.ofx"}, strings.NewReader("content"), []string{uuid.NewString()})
-			if !errors.Is(err, boom) || len(f.repo.inserted) != 0 {
+			if !errors.Is(err, boom) || f.repo.promotes != 0 {
 				t.Fatal("admission failure lost or insert effect ran", err)
 			}
 			if phase == "before reservation" || phase == "reserve failure" {
-				if f.objects.puts != 0 {
+				if f.objects.puts != 0 || len(f.repo.inserted) != 0 {
 					t.Fatal("pre-admission failure wrote an object")
 				}
-			} else if f.objects.puts != 1 || f.keys.releases == 0 || f.repo.probes == 0 || len(f.objects.deletes) != 1 {
+			} else if phase == "before staging" || phase == "unknown staging COMMIT" {
+				if f.objects.puts != 0 || len(f.objects.deletes) != 0 || f.repo.stageKnownCommitted || f.keys.releases == 0 {
+					t.Fatal("unconfirmed staging transaction allowed remote effects")
+				}
+			} else if f.objects.puts != 1 || f.keys.releases == 0 || f.repo.probes == 0 || len(f.objects.deletes) != 1 || f.repo.abandons == 0 {
 				t.Fatal("failed episode did not clean proven unreferenced potential object")
+			}
+		})
+	}
+}
+
+func TestUnitUploadUncertainStagingRetirementCannotEraseObject(t *testing.T) {
+	for _, uncertainty := range []string{"retirement error", "retirement COMMIT error"} {
+		t.Run(uncertainty, func(t *testing.T) {
+			f := newUploadFixture(t)
+			original := errors.New("synthetic lost PUT reply")
+			f.objects.putErr = original
+			if uncertainty == "retirement error" {
+				f.repo.abandonErr = errors.New("synthetic staging retirement failure")
+			} else {
+				f.tx.after = func() error {
+					if f.repo.abandons > 0 {
+						return errors.New("synthetic unknown staging retirement COMMIT")
+					}
+					return nil
+				}
+			}
+			_, err := f.service().Upload(context.Background(), f.user, importing.Header{FileName: "exact.ofx"}, strings.NewReader("content"), []string{uuid.NewString()})
+			if !errors.Is(err, original) || f.repo.abandons == 0 || len(f.objects.deletes) != 0 || f.repo.probes != 0 || f.barrier.releases.Load() != 1 {
+				t.Fatal("unconfirmed staging retirement erased an object or replaced primary failure", err)
 			}
 		})
 	}
