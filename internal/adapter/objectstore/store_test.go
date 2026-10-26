@@ -188,7 +188,7 @@ func TestUnitOpenDeleteAndBodyLimit(t *testing.T) {
 		}
 	}
 	for _, size := range []int{0, 1, 4, 5} {
-		b := &limitedBody{ctx: t.Context(), body: io.NopCloser(strings.NewReader(strings.Repeat("x", size))), left: 4}
+		b := &limitedBody{ctx: t.Context(), expires: time.Now().Add(time.Second), body: io.NopCloser(strings.NewReader(strings.Repeat("x", size))), left: 4}
 		if n, e := b.Read(nil); n != 0 || e != nil {
 			t.Fatal("zero read")
 		}

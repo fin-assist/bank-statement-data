@@ -112,7 +112,7 @@ func (s *Store) put(ctx context.Context, key string, body io.Reader, size int64,
 }
 
 // Open returns a bounded body which the caller must close and verify against its hash.
-// Caller cancellation remains authoritative through EOF; already read bytes are retained.
+// Caller cancellation and the existing HTTP cap remain authoritative through EOF.
 func (s *Store) Open(ctx context.Context, key string) (io.ReadCloser, error) {
 	if !validKey(key) {
 		return nil, ErrInput
@@ -121,7 +121,16 @@ func (s *Store) Open(ctx context.Context, key string) (io.ReadCloser, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Match Client.Timeout's HTTP phase, after token loading. Native cancellation
+	// interrupts I/O; the monotonic deadline also rejects an EOF/timeout race.
+	expires := time.Now().Add(s.client.Timeout)
 	resp, err := s.do(req)
+	if contextErr := objectReadContextErr(ctx, expires, false); contextErr != nil {
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		return nil, contextErr
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -132,7 +141,7 @@ func (s *Store) Open(ctx context.Context, key string) (io.ReadCloser, error) {
 		}
 		return nil, ErrUnavailable
 	}
-	return &limitedBody{ctx: ctx, body: resp.Body, left: maxObjectBytes}, nil
+	return &limitedBody{ctx: ctx, expires: expires, body: resp.Body, left: maxObjectBytes}, nil
 }
 
 // Delete erases file contents with a permanent encrypted zero-byte fence. A late
@@ -277,26 +286,31 @@ func validKey(s string) bool {
 }
 
 type limitedBody struct {
-	ctx  context.Context
-	body io.ReadCloser
-	left int64
+	ctx         context.Context
+	expires     time.Time
+	finishedEOF bool
+	body        io.ReadCloser
+	left        int64
 }
 
 func (b *limitedBody) Read(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
-	if err := b.ctx.Err(); err != nil {
+	if err := objectReadContextErr(b.ctx, b.expires, b.finishedEOF); err != nil {
 		return 0, err
 	}
 	if b.left == 0 {
 		var extra [1]byte
 		n, err := b.body.Read(extra[:])
-		if callerErr := b.ctx.Err(); callerErr != nil {
-			return 0, callerErr
+		if contextErr := objectReadContextErr(b.ctx, b.expires, b.finishedEOF); contextErr != nil {
+			return 0, contextErr
 		}
 		if n > 0 {
 			return 0, ErrUnavailable
+		}
+		if err == io.EOF {
+			b.finishedEOF = true
 		}
 		return 0, err
 	}
@@ -305,11 +319,23 @@ func (b *limitedBody) Read(p []byte) (int, error) {
 	}
 	n, err := b.body.Read(p)
 	b.left -= int64(n)
-	// Transport EOF can race with cancellation; never report successful EOF
-	// after the caller budget expired, while retaining already returned bytes.
-	if callerErr := b.ctx.Err(); callerErr != nil {
-		return n, callerErr
+	if contextErr := objectReadContextErr(b.ctx, b.expires, b.finishedEOF); contextErr != nil {
+		return n, contextErr
+	}
+	// The HTTP budget ends at a successful EOF, not after subsequent CPU parsing.
+	if err == io.EOF {
+		b.finishedEOF = true
 	}
 	return n, err
 }
 func (b *limitedBody) Close() error { return b.body.Close() }
+
+func objectReadContextErr(caller context.Context, expires time.Time, finishedEOF bool) error {
+	if err := caller.Err(); err != nil {
+		return err
+	}
+	if !finishedEOF && !time.Now().Before(expires) {
+		return context.DeadlineExceeded
+	}
+	return nil
+}
