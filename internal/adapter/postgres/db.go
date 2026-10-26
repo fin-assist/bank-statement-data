@@ -61,6 +61,11 @@ func (db *DB) RunWith(ctx context.Context, opts pgx.TxOptions, fn func(context.C
 	return db.transactions.RunWith(ctx, opts, fn)
 }
 
+// Read provides a coherent primary snapshot for multi-query import responses.
+func (db *DB) Read(ctx context.Context, fn func(context.Context) error) error {
+	return db.transactions.RunWith(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, fn)
+}
+
 // RunMapped runs an outer business transaction with an operation mapper defined by
 // its adapter. A nested non-nil mapper is rejected; nested work must use Run.
 func (db *DB) RunMapped(ctx context.Context, opts pgx.TxOptions, mapper pgstore.ErrorMapper, fn func(context.Context) error) error {

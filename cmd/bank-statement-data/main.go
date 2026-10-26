@@ -12,6 +12,8 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+
+	"github.com/fin-assist/bank-statement-data/internal/app"
 )
 
 // version is set at build time (-X main.version=...).
@@ -21,14 +23,14 @@ func main() { os.Exit(mainExit(os.Args[1:], os.Stderr)) }
 
 // mainExit owns process setup and the command exit status. Returning before os.Exit
 // also releases the signal subscription on unsuccessful invocations.
-func mainExit(args []string, stderr io.Writer) int {
+func mainExit(args []string, stderr io.Writer, options ...app.Options) int {
 	logger := slog.New(slog.NewJSONHandler(stderr, nil))
 	slog.SetDefault(logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := run(ctx, args); err != nil {
+	if err := run(ctx, args, options...); err != nil {
 		var usage usageError
 		if errors.As(err, &usage) {
 			_, _ = fmt.Fprintln(stderr, err)
@@ -51,7 +53,7 @@ const usage = `usage:
   bank-statement-data migrate down <source> <steps>    roll back the last steps of one source
   bank-statement-data migrate force <source> <version> set the version and clear the dirty flag`
 
-func run(ctx context.Context, args []string) error {
+func run(ctx context.Context, args []string, options ...app.Options) error {
 	if len(args) == 0 {
 		return usageError(usage)
 	}
@@ -60,7 +62,7 @@ func run(ctx context.Context, args []string) error {
 		if len(args) != 1 {
 			return usageError(usage)
 		}
-		return runServe(ctx)
+		return runServe(ctx, options...)
 	case "migrate":
 		return runMigrate(ctx, args[1:], os.Stdout)
 	default:

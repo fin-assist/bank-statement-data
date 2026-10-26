@@ -44,15 +44,15 @@ updates them in the same PR. A service made from the template rewrites the first
 | The whole service in-process for API tests | `internal/app/apitest/` |
 | Entities and invariants (no pgx, gRPC or generated code) | `internal/domain/` |
 | Usecases and the interfaces of repositories and clients they need | `internal/<feature>/` |
-| Shared gRPC server, client and request context | `github.com/fin-assist/go-grpc/{server,client,reqctx}` v0.2.0; service wiring — `internal/app/`, `docs/server.md` |
+| Shared gRPC server, client and request context | `github.com/fin-assist/go-grpc/{server,client,reqctx}` v0.2.1; service wiring — `internal/app/`, `docs/server.md` |
 | gRPC handlers (messages ↔ usecases) | `internal/adapter/grpc/<feature>/` |
 | Primary/replica routing, go-postgres.OpenPools/transaction adapter, repositories | `internal/adapter/postgres/`; rules — `docs/migrations.md`, «Запросы на pgx» |
-| Migration runner and public test harness | `github.com/fin-assist/go-migrate` / `migratetest` v0.1.1; ordered service sources — `internal/app/` |
+| Migration runner and public test harness | `github.com/fin-assist/go-migrate` / `migratetest` v0.2.0; ordered service sources — `internal/app/` |
 | Test PostgreSQL server selection (not runtime business code) | `internal/testdb/`; public migratetest creates/checks databases; counted in every profile |
 | Stand identity for verify-mode tests: key files, signed tokens, user GetSigningKeys peer | `internal/testidentity/`; never wired into serve; counted in every profile |
 | SQL migrations (embedded) and schema constraint tests | `migrations/` (`schema_test.go`); rules — `docs/migrations.md`, schema and code invariants — `docs/schema.md` |
 | Application-specific peer adapters, when needed | `internal/adapter/client/<peer>/`; shared dialing/token contracts — go-grpc/client |
-| Shared job lifecycle; application jobs when needed | `github.com/fin-assist/go-worker` v0.1.0; `internal/worker/<job>/` |
+| Shared job lifecycle; application jobs when needed | `github.com/fin-assist/go-worker` v0.1.1; `internal/worker/<job>/` |
 | Configuration: every variable with its default and description | `internal/config/vars.go` (`Vars`); generated tables — `docs/config.md` |
 | Request-scoped values (request ID, caller, user, bank-bff hints) | `github.com/fin-assist/go-grpc/reqctx` |
 | Logger, metrics endpoint, readiness | `internal/logx/`, `internal/ops/` |
@@ -63,11 +63,16 @@ updates them in the same PR. A service made from the template rewrites the first
 | PR review by Claude | `.github/workflows/claude.yml` |
 
 FIN-258 keeps only service routing/assembly adapters locally. Do not copy library internals back into the service
-or add dummy RPCs, SQL or jobs. FIN-267: AUTH_MODE=verify is go-identity v0.2.0 NewAssembly (prod: Kubernetes
+or add dummy RPCs, SQL or jobs. FIN-267: AUTH_MODE=verify is go-identity v0.2.1 NewAssembly (prod: Kubernetes
 ServiceAccounts, stage: file-key stand JWTs; user JWTs by user.GetSigningKeys through PEER_USER_ADDR, refreshed by
 the identity-keys job); any other ENV with verify fails startup, insecure-dev stays dev-only in config and app.New.
 go-tombstone v0.1.0 supplies the first migration source and the primary-backed go-grpc admission (TOKEN_REVOKED).
-Guard in writing transactions and UserDeletionService.PurgeUserData come with the first RPC that writes user data.
+FIN-342 wires guarded import writes, UserDeletionService.PurgeUserData and settings sync.
+Import usecases/rules/results live in internal/importing; adapters in adapter/{ofx,objectstore,statementwire,grpc/statements,postgres}.
+Read docs/import.md before changing staged admission, permanent erasure fences or two-phase purge.
+Object barrier uses a separately owned pool; remote I/O is forbidden inside data transactions.
+The dedicated bucket must never enable versioning/Object Lock/marker expiration; CheckBucket precedes listeners.
+Shared TLS object fixtures live in internal/testobjects and remain counted in every profile.
 Pass the service logger, metric registry and worker clock/restart settings explicitly; library defaults
 are not a substitute for existing service behaviour. go-postgres is pinned at v0.3.0. Paths with <feature>, <peer>
 and <job> describe future application code only, not actual empty directories in the template.
@@ -99,8 +104,11 @@ the PR with why it is needed.
   `T=$(go env GOTOOLDIR); chmod u+w "$T"; go build -o "$T/covdata" cmd/covdata`.
 - The image needs Docker; without it say in the PR that the image was built only by the CI job `image`.
 - Every test or lint run gets a timeout (`timeout 600 make test` or the tool's own): a hung run blocks the session.
-- A local `serve` for a smoke check: `ENV=dev AUTH_MODE=insecure-dev SERVICE_NAME=bank-statement-data DB_PRIMARY_DSN=… make run`;
-  `/readyz` on `HTTP_ADDR` answers when the database does and drops to 503 at SIGTERM, before `SHUTDOWN_DELAY` (FIN-289).
+- A local `serve` smoke check additionally requires `OBJECT_STORAGE_BUCKET`, `OBJECT_STORAGE_KMS_KEY_ID` and
+  `OBJECT_STORAGE_IAM_TOKEN_FILE`, a reachable private Yandex bucket and IAM permissions for `CheckBucket`.
+  With those configured: `ENV=dev AUTH_MODE=insecure-dev SERVICE_NAME=bank-statement-data DB_PRIMARY_DSN=… make run`.
+  There is no production dev-memory/local-file object store; CheckBucket runs before listeners. For isolated validation
+  use the real-PostgreSQL/TLS API fixtures, not a claimed local serve without cloud prerequisites. `/readyz` on `HTTP_ADDR` answers when the database does and drops to 503 at SIGTERM, before `SHUTDOWN_DELAY` (FIN-289).
 
 ## Principles
 

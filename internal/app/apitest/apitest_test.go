@@ -46,7 +46,7 @@ func TestAPIDevReflectionUsesConfiguredWholeAssembly(t *testing.T) {
 	for _, service := range response.GetListServicesResponse().GetService() {
 		services[service.GetName()] = true
 	}
-	if len(services) != 3 || !services["grpc.health.v1.Health"] || !services["grpc.reflection.v1.ServerReflection"] || !services["grpc.reflection.v1alpha.ServerReflection"] {
+	if len(services) != 6 || !services["grpc.health.v1.Health"] || !services["grpc.reflection.v1.ServerReflection"] || !services["grpc.reflection.v1alpha.ServerReflection"] {
 		t.Fatalf("unexpected operational services: %v", services)
 	}
 	_, err = healthpb.NewHealthClient(env.Conn).Check(Caller(t.Context(), "assistant"), &healthpb.HealthCheckRequest{Service: "not-registered"})

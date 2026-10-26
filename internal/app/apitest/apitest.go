@@ -27,27 +27,48 @@ import (
 
 	"github.com/fin-assist/go-grpc/server"
 	"github.com/fin-assist/go-migrate"
+	"github.com/fin-assist/go-worker"
 
 	"github.com/fin-assist/bank-statement-data/internal/app"
 	"github.com/fin-assist/bank-statement-data/internal/config"
 	"github.com/fin-assist/bank-statement-data/internal/testdb"
+	"github.com/fin-assist/bank-statement-data/internal/testobjects"
 )
 
 // Env is a running service.
 type Env struct {
-	App  *app.App
-	Conn *grpc.ClientConn
-	DSN  string // the test database, for arranging and checking rows directly
+	App     *app.App
+	Conn    *grpc.ClientConn
+	DSN     string             // the test database, for arranging and checking rows directly
+	Objects *testobjects.Store // owned TLS provider fixture, for explicit cloud failure scenarios
 }
 
 // Start runs the service for the test and stops it at the end. mutate, if given, adjusts
 // the configuration (peers, limits) before the assembly.
 func Start(t *testing.T, mutate ...func(*config.Config)) *Env {
+	return StartWith(t, app.Options{}, mutate...)
+}
+
+// StartWith keeps the real assembly and permits an explicit deterministic application clock.
+// The object transport always belongs to this test's real TLS fixture.
+func StartWith(t *testing.T, options app.Options, mutate ...func(*config.Config)) *Env {
 	t.Helper()
-	env, closeEnv, err := start(context.Background(), testdb.DSN(t), realDependencies(), mutate...)
+	objects := testobjects.New(t)
+	deps := realDependencies()
+	deps.assemble = func(ctx context.Context, cfg config.Config) (*app.App, service, func(), error) {
+		objects.Configure(&cfg)
+		options.ObjectClient = objects.Server.Client()
+		a, err := app.New(ctx, cfg, slog.New(slog.DiscardHandler), prometheus.NewRegistry(), options)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		return a, a.GRPC, a.Close, nil
+	}
+	env, closeEnv, err := start(context.Background(), testdb.DSN(t), deps, mutate...)
 	if err != nil {
 		t.Fatal(err)
 	}
+	env.Objects = objects
 	t.Cleanup(closeEnv)
 	return env
 }
@@ -124,8 +145,18 @@ func start(ctx context.Context, dsn string, deps dependencies, mutate ...func(*c
 	lis := deps.listen()
 	done := make(chan struct{})
 	go func() { defer close(done); _ = srv.Serve(lis) }()
+	jobsCtx, stopJobs := context.WithCancel(ctx)
+	jobsDone := make(chan struct{})
+	go func() {
+		defer close(jobsDone)
+		if a != nil {
+			_ = worker.Run(jobsCtx, worker.Options{Logger: slog.New(slog.DiscardHandler), Clock: worker.SystemClock{}}, a.Jobs...)
+		}
+	}()
 	srv.SetServing(true)
 	stop := func() {
+		stopJobs()
+		<-jobsDone
 		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		srv.Shutdown(sctx, 0)

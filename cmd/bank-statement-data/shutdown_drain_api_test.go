@@ -22,6 +22,7 @@ import (
 // on both probes: gRPC health NOT_SERVING and HTTP /readyz 503, while /healthz stays up.
 func TestAPIShutdownDelayReportsNotReadyOnBothProbes(t *testing.T) {
 	dsn := testdb.DSN(t)
+	options := commandObjectOptions(t)
 	dsnFile := filepath.Join(t.TempDir(), "primary-dsn")
 	if err := os.WriteFile(dsnFile, []byte(dsn), 0600); err != nil {
 		t.Fatal(err)
@@ -48,7 +49,7 @@ func TestAPIShutdownDelayReportsNotReadyOnBothProbes(t *testing.T) {
 	serveCtx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- run(serveCtx, []string{"serve"}) }()
+	go func() { done <- run(serveCtx, []string{"serve"}, options) }()
 
 	conn, err := grpc.NewClient(grpcAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {

@@ -7,6 +7,7 @@ Go-сервис «Понятных финансов»: приём выписок
 - [docs/server.md](docs/server.md) — gRPC-сервер и интерцепторы, идентичность, таблица доступа, клиенты, транзакции, логи и метрики.
 - [docs/config.md](docs/config.md) — переменные окружения.
 - [docs/migrations.md](docs/migrations.md) — миграции и запросы на pgx ([FIN-115](https://finassist.youtrack.cloud/issue/FIN-115)).
+- [docs/import.md](docs/import.md) — реализованный путь импорта, восстановление, объектное хранилище и удаление (FIN-342).
 - [docs/schema.md](docs/schema.md) — что держит схема БД и какие инварианты проверяет код ([FIN-111](https://finassist.youtrack.cloud/issue/FIN-111)).
 - [AGENTS.md](AGENTS.md) — карта и правила для агентов, Code Review Rules.
 
@@ -16,8 +17,7 @@ Go-сервис «Понятных финансов»: приём выписок
 
 ## Что ещё не сделано после переноса шаблона
 
-- `AccessPolicy()` и обработчики в `wire()` (`internal/app/wire.go`) — вместе с первыми RPC сервиса, строки из таблицы grpc-api.md 3.3.
-- Из `go-tombstone` подключены только источник миграций и admission (FIN-267); `Guard` в пишущих сценариях и `UserDeletionService.PurgeUserData` (grpc-api.md 7: «каждый реализует») — вместе с первыми RPC, которые пишут данные пользователя (решение владельца 25.10.2026). Outbox (FIN-109) и идемпотентность (FIN-78) — отдельные задачи подключения в бизнес-сборке.
+- FIN-342 реализует шесть RPC импорта и обязательные системные удаление/синхронизацию часового пояса; Guard, идемпотентность и долговечная очередь расчётов подключены. Публичные API операций/аналитики и доставка в analytics ещё не входят в этот путь. Условия объектного хранилища — [docs/import.md](docs/import.md).
 - Секреты репозитория (`CLAUDE_CODE_OAUTH_TOKEN` для ревью `@claude`, `GO_MODULES_TOKEN` для приватных модулей fin-assist), Claude GitHub App и Codex — владелец.
 
 ## Раскладка
@@ -48,11 +48,15 @@ deploy/systemd/                    example unit for the stand
 ## Запуск
 
 ```bash
+# Требуются OBJECT_STORAGE_BUCKET, OBJECT_STORAGE_KMS_KEY_ID и путь
+# OBJECT_STORAGE_IAM_TOKEN_FILE; приватное ведро должно пройти CheckBucket (docs/import.md).
 # PostgreSQL 18, migrations and the service in Docker (dev mode, docs/config.md)
 make up
 # the same service on the host against the compose PostgreSQL
 make run
 ```
+
+Без настроенного облачного ведра `serve` не запускается даже в dev: CheckBucket выполняется до listener. Локального production-адаптера файлов/памяти нет; API-тесты используют явно внедрённый TLS fixture и настоящий PostgreSQL, без облачных credentials.
 
 - **Образ** — `Dockerfile`: статический бинарь на distroless, пользователь `nonroot`. Один бинарь: `serve` в Deployment, `migrate up` в Job. Публикация в GHCR — FIN-148.
 - **Стенд** (FIN-149) — тот же бинарь под systemd: пример unit-файла с секретами через `LoadCredential` — [deploy/systemd/bank-statement-data.service](deploy/systemd/bank-statement-data.service). Скрипт деплоя запускает `migrate up` перед перезапуском unit.
@@ -78,13 +82,13 @@ make run
 - **Обновления приносит Renovate** (`renovate.json`): модули `github.com/fin-assist/*` (библиотеки и `contracts/gen/go`) — отдельный PR сразу после тега, остальные зависимости — один PR в неделю, версия Go — вручную. PR Renovate проходит CI сервиса и обрабатывается по [политике FIN-211](docs/renovate-policy.md). При несовместимом обновлении человеческий коммит в открытом PR переводит его на ручное сопровождение; если ботский PR уже закрыт после повторного падения, исправления сервиса идут отдельным PR с задачей YouTrack. Порядок миграции — по CHANGELOG библиотеки.
 - **Проверить библиотеку до выпуска** — локально `go mod edit -replace github.com/fin-assist/go-<имя>=../go-<имя>`; `replace` в PR сервиса не попадает.
 
-FIN-258 подключает опубликованные `go-grpc v0.2.0` (server/client/reqctx), `go-migrate v0.1.1`, `go-worker v0.1.0` и `go-postgres v0.3.0`. Локальные копии транспорта, контекста, runner и worker удалены. `postgres.DB` остаётся тонким адаптером транзакций и read-primary routing; пулы создаёт `go-postgres.OpenPools`. Сопоставление SQLSTATE и имени ограничения доменной ошибке принадлежит сервису. Новые библиотеки заменяют ранее скопированную инфраструктуру, stdlib не предоставляет её контрактных реализаций.
+FIN-258 подключает опубликованные `go-grpc v0.2.1` (server/client/reqctx), `go-migrate v0.2.0`, `go-worker v0.1.1` и `go-postgres v0.3.0`. Локальные копии транспорта, контекста, runner и worker удалены. `postgres.DB` остаётся тонким адаптером транзакций и read-primary routing; пулы создаёт `go-postgres.OpenPools`. Сопоставление SQLSTATE и имени ограничения доменной ошибке принадлежит сервису. Новые библиотеки заменяют ранее скопированную инфраструктуру, stdlib не предоставляет её контрактных реализаций.
 
-Схема и все существующие SQL-миграции сохранены; CLI мигрирует настоящий service source. Пустые `AccessPolicy()`/`wire()` сохраняются до отдельных задач реализации сервиса. Перенос инфраструктуры не добавляет бизнес-RPC, импорт OFX или задание партиций FIN-193. `serve` передаёт logger, registry, clock и интервал перезапуска 5 с явно.
+Все ранее применённые SQL-миграции сохранены; CLI мигрирует настоящий service source. FIN-342 добавляет миграции 000004–000006: внутренний `line_occurrence` и составной ключ позволяют сохранить несколько непрочитанных операций одной физической строки. Индекс строится конкурентно; откат отказывается объединять или удалять такие факты (docs/migrations.md). FIN-258 сохранил пустые `AccessPolicy()`/`wire()` и сам по себе не добавлял бизнес-RPC или импорт OFX. FIN-342 заполняет сборку и таблицу доступа реальным путём импорта; остальные API операций и аналитики остаются отдельным объёмом. Задание партиций FIN-193 остаётся отдельной задачей. `serve` передаёт logger, registry, clock и интервал перезапуска 5 с явно.
 
 ## Идентичность и удалённые пользователи (FIN-267)
 
-`AUTH_MODE=verify` собирается через `identity.NewAssembly` из [`go-identity v0.2.0`](https://github.com/fin-assist/go-identity/tree/v0.2.0) (README, «Внедрение», шаг 0): при `ENV=prod` — токены ServiceAccount Kubernetes (JWKS API-сервера по HTTPS с доверием только к `AUTH_KUBERNETES_CA_FILE`, исходящий токен — `SERVICE_TOKEN_FILE`), при `ENV=stage` — короткие JWT стенда с ключами из файлов `AUTH_STAGE_*`. Access JWT пользователя проверяется в обоих режимах по ключам `user.GetSigningKeys` (`PEER_USER_ADDR`, повтор — только этот метод); фоновое задание `identity-keys` обновляет ключи. Любое другое `ENV` с `verify`, в том числе `dev`, — ошибка старта; `insecure-dev` — только при `ENV=dev`, проверка и в `config.Load`, и в `app.New`. Ошибка сборки не открывает пулов и не оставляет зарегистрированных метрик. Новая обязательная зависимость старта — достижимый адрес `user` и файлы ключей; сами ключи загружаются лениво или заданием, поэтому кратковременная недоступность `user` старт не ломает, а проверяемые запросы получают `UNAVAILABLE`, не `INVALID_TOKEN`.
+`AUTH_MODE=verify` собирается через `identity.NewAssembly` из [`go-identity v0.2.1`](https://github.com/fin-assist/go-identity/tree/v0.2.1) (README, «Внедрение», шаг 0): при `ENV=prod` — токены ServiceAccount Kubernetes (JWKS API-сервера по HTTPS с доверием только к `AUTH_KUBERNETES_CA_FILE`, исходящий токен — `SERVICE_TOKEN_FILE`), при `ENV=stage` — короткие JWT стенда с ключами из файлов `AUTH_STAGE_*`. Access JWT пользователя проверяется в обоих режимах по ключам `user.GetSigningKeys` (`PEER_USER_ADDR`, повтор — только этот метод); фоновое задание `identity-keys` обновляет ключи. Любое другое `ENV` с `verify`, в том числе `dev`, — ошибка старта; `insecure-dev` — только при `ENV=dev`, проверка и в `config.Load`, и в `app.New`. Ошибка сборки не открывает пулов и не оставляет зарегистрированных метрик. Новая обязательная зависимость старта — достижимый адрес `user` и файлы ключей; сами ключи загружаются лениво или заданием, поэтому кратковременная недоступность `user` старт не ломает, а проверяемые запросы получают `UNAVAILABLE`, не `INVALID_TOKEN`.
 
 [`go-tombstone v0.1.0`](https://github.com/fin-assist/go-tombstone/tree/v0.1.0) подключён по разделу «Сборка с go-grpc»: источник миграций библиотеки (`tombstone_users`) стоит в `MigrationSources()` перед сервисным, admission `server.Deps.Tombstones` читает primary без кэша. Пользовательский вызов удалённого пользователя получает `TOKEN_REVOKED` до обработчика, сбой чтения — голый `UNAVAILABLE`; отказы считает `finassist_tombstone_revoked_total` (методов с `AllowDeleted` у сервиса нет). Переменные — [docs/config.md](docs/config.md), детали — [docs/server.md](docs/server.md).
 
