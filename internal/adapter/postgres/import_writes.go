@@ -1,0 +1,223 @@
+package postgres
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/fin-assist/bank-statement-data/internal/importing"
+)
+
+// InsertUpload persists an admitted processing job atomically with its key response.
+func (r *Imports) InsertUpload(ctx context.Context, upload importing.Upload) error {
+	if _, err := r.transaction(ctx); err != nil {
+		return err
+	}
+	if upload.Status != "processing" || upload.SizeBytes <= 0 || upload.SizeBytes > importing.MaxFileBytes {
+		return errImportStorage
+	}
+	_, err := r.db.Writer(ctx).Exec(ctx, `INSERT INTO upload(user_id,id,source,file_name,size_bytes,content_sha256,object_key,status,uploaded_at) VALUES($1,$2,'tbank_ofx',$3,$4,$5,$6,'processing',$7)`, upload.UserID, upload.ID, upload.FileName, upload.SizeBytes, upload.Digest[:], upload.ObjectKey, upload.UploadedAt)
+	return importError(ctx, err)
+}
+
+// Progress updates only active jobs and never regresses durable progress.
+func (r *Imports) Progress(ctx context.Context, user, id string, percent int) error {
+	if _, err := r.transaction(ctx); err != nil {
+		return err
+	}
+	if percent < 0 || percent > 99 {
+		return errImportStorage
+	}
+	_, err := r.db.Writer(ctx).Exec(ctx, `UPDATE upload SET percent=$3 WHERE user_id=$1 AND id=$2 AND status='processing' AND percent<$3`, user, id, percent)
+	return importError(ctx, err)
+}
+
+// Fail fences a terminal refusal against completion, cancellation and purge.
+func (r *Imports) Fail(ctx context.Context, user, id, code string, now time.Time) (bool, error) {
+	if _, err := r.transaction(ctx); err != nil {
+		return false, err
+	}
+	if code != "processing_failed" && code != "cancelled" {
+		return false, errImportStorage
+	}
+	tag, err := r.db.Writer(ctx).Exec(ctx, `UPDATE upload SET status='failed',error_code=$3,finished_at=$4,percent=100 WHERE user_id=$1 AND id=$2 AND status='processing'`, user, id, code, now)
+	return tag.RowsAffected() == 1, importError(ctx, err)
+}
+
+// FileDeleted confirms that no statement content remains for a retired upload.
+func (r *Imports) FileDeleted(ctx context.Context, user, id string, now time.Time) error {
+	if _, err := r.transaction(ctx); err != nil {
+		return err
+	}
+	_, err := r.db.Writer(ctx).Exec(ctx, `UPDATE upload SET file_deleted_at=$3 WHERE user_id=$1 AND id=$2 AND status IN('failed','deleted') AND file_deleted_at IS NULL`, user, id, now)
+	return importError(ctx, err)
+}
+
+// Pending enumerates durable jobs; a pod crash never loses the need to process one.
+func (r *Imports) Pending(ctx context.Context, limit int) ([]importing.Upload, error) {
+	return r.candidates(ctx, `SELECT user_id::text,id::text FROM upload WHERE status='processing' ORDER BY uploaded_at,id LIMIT $1`, limit)
+}
+
+// Cleanup enumerates durable retirement work left by a crash or object-store failure.
+func (r *Imports) Cleanup(ctx context.Context, limit int) ([]importing.Upload, error) {
+	return r.candidates(ctx, `SELECT user_id::text,id::text FROM upload WHERE status IN('failed','deleted') AND file_deleted_at IS NULL ORDER BY uploaded_at,id LIMIT $1`, limit)
+}
+
+func (r *Imports) candidates(ctx context.Context, query string, limit int) ([]importing.Upload, error) {
+	if limit < 1 || limit > 1000 {
+		return nil, errImportStorage
+	}
+	rows, err := r.db.Writer(ctx).Query(ctx, query, limit)
+	if err != nil {
+		return nil, importError(ctx, err)
+	}
+	type ref struct{ user, id string }
+	var refs []ref
+	for rows.Next() {
+		var item ref
+		if err := rows.Scan(&item.user, &item.id); err != nil {
+			rows.Close()
+			return nil, importError(ctx, err)
+		}
+		refs = append(refs, item)
+	}
+	err = rows.Err()
+	rows.Close() // Release this connection before any dependent read, including MaxConns=1.
+	if err != nil {
+		return nil, importError(ctx, err)
+	}
+	var result []importing.Upload
+	for _, item := range refs {
+		upload, err := r.Upload(ctx, item.user, item.id)
+		if errors.Is(err, importing.ErrNotFound) {
+			continue // A concurrent purge removed it after the enumeration.
+		}
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, upload)
+	}
+	return result, nil
+}
+
+// Referenced is a primary check used before deleting a possible orphan.
+func (r *Imports) Referenced(ctx context.Context, user, key string) (bool, error) {
+	var exists bool
+	err := r.db.Writer(ctx).QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM upload WHERE user_id=$1 AND object_key=$2)`, user, key).Scan(&exists)
+	return exists, importError(ctx, err)
+}
+
+// SaveRules persists the caller's complete recomputation without changing source facts.
+func (r *Imports) SaveRules(ctx context.Context, user string, operations []importing.Operation, now time.Time) error {
+	if _, err := r.transaction(ctx); err != nil {
+		return err
+	}
+	for _, op := range operations {
+		tag, err := r.db.Writer(ctx).Exec(ctx, `UPDATE operation SET category_id=$4,manual_category_id=NULLIF($5,''),refund_target_category_id=NULLIF($6,''),is_split=$7,transfer_pair_id=NULLIF($8,'')::uuid WHERE user_id=$1 AND occurred_at=$2 AND id=$3`, user, op.At, op.ID, op.Category, op.ManualCategory, op.RefundTarget, op.Split, op.PairID)
+		if err != nil {
+			return importError(ctx, err)
+		}
+		if tag.RowsAffected() != 1 {
+			return errImportStorage
+		}
+	}
+	return r.schedule(ctx, user, operations, now)
+}
+
+func (r *Imports) schedule(ctx context.Context, user string, operations []importing.Operation, now time.Time) error {
+	var name string
+	if err := r.db.Writer(ctx).QueryRow(ctx, `SELECT timezone FROM user_state WHERE user_id=$1`, user).Scan(&name); err != nil {
+		return importError(ctx, err)
+	}
+	zone, err := time.LoadLocation(name)
+	if err != nil {
+		return errImportStorage
+	}
+	months := make(map[string]bool)
+	for _, op := range operations {
+		months[op.At.In(zone).Format("2006-01")+"-01"] = true
+	}
+	rows, err := r.db.Writer(ctx).Query(ctx, `SELECT statement_from,statement_to FROM upload WHERE user_id=$1 AND status='done' AND statement_from IS NOT NULL AND statement_to IS NOT NULL`, user)
+	if err != nil {
+		return importError(ctx, err)
+	}
+	for rows.Next() {
+		var from, to time.Time
+		if err := rows.Scan(&from, &to); err != nil {
+			rows.Close()
+			return importError(ctx, err)
+		}
+		month := time.Date(from.Year(), from.Month(), 1, 0, 0, 0, 0, zone)
+		last := time.Date(to.Year(), to.Month(), 1, 0, 0, 0, 0, zone)
+		for !month.After(last) {
+			if err := ctx.Err(); err != nil {
+				rows.Close()
+				return err
+			}
+			months[month.Format("2006-01-02")] = true
+			month = month.AddDate(0, 1, 0)
+		}
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return importError(ctx, err)
+	}
+	for month := range months {
+		_, err := r.db.Writer(ctx).Exec(ctx, `INSERT INTO recalc_queue(user_id,month,enqueued_at,next_attempt_at) VALUES($1,$2::date,$3,$3) ON CONFLICT(user_id,month) DO UPDATE SET generation=CASE WHEN recalc_queue.generation=32767 THEN 1 ELSE recalc_queue.generation+1 END,enqueued_at=EXCLUDED.enqueued_at,next_attempt_at=EXCLUDED.next_attempt_at,attempts=0,last_error=NULL`, user, month, now)
+		if err != nil {
+			return importError(ctx, err)
+		}
+	}
+	var due any
+	if len(months) > 0 {
+		local := now.In(zone)
+		next := time.Date(local.Year(), local.Month(), local.Day(), 0, 5, 0, 0, zone)
+		if !next.After(now) {
+			next = next.AddDate(0, 0, 1)
+		}
+		due = next
+	}
+	_, err = r.db.Writer(ctx).Exec(ctx, `UPDATE user_state SET daily_recalc_due_at=$2 WHERE user_id=$1`, user, due)
+	return importError(ctx, err)
+}
+
+// SetTimezone applies only a newer user-owned event and marks actual data for recalculation.
+func (r *Imports) SetTimezone(ctx context.Context, user, zone string, version int32, now time.Time) error {
+	if _, err := r.transaction(ctx); err != nil {
+		return err
+	}
+	tag, err := r.db.Writer(ctx).Exec(ctx, `UPDATE user_state SET timezone=$2,settings_version=$3 WHERE user_id=$1 AND settings_version<$3`, user, zone, version)
+	if err != nil || tag.RowsAffected() == 0 {
+		return importError(ctx, err)
+	}
+	operations, err := r.operations(ctx, user)
+	if err != nil {
+		return err
+	}
+	return r.schedule(ctx, user, operations, now)
+}
+
+// Purge removes personal database records after the caller's object-erasure protocol.
+// It does not remove the shared tombstone, which prevents resurrection by late writes.
+func (r *Imports) Purge(ctx context.Context, user string) error {
+	if _, err := r.transaction(ctx); err != nil {
+		return err
+	}
+	if _, err := r.db.Writer(ctx).Exec(ctx, `DELETE FROM idempotency_keys WHERE scope=$1::uuid OR owner_id=$1::uuid`, user); err != nil {
+		return importError(ctx, err)
+	}
+	_, err := r.db.Writer(ctx).Exec(ctx, `DELETE FROM user_state WHERE user_id=$1`, user)
+	return importError(ctx, err)
+}
+
+// Require a real caller transaction before the repository's multi-statement writes.
+func (r *Imports) transaction(ctx context.Context) (pgx.Tx, error) {
+	tx, ok := r.db.Tx(ctx)
+	if !ok {
+		return nil, errImportStorage
+	}
+	return tx, nil
+}

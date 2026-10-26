@@ -9,6 +9,12 @@ type Header struct {
 	SizeBytes   int64
 }
 
+// Accepted identifies the same admitted upload on every successful key replay.
+type Accepted struct {
+	UploadID string `json:"upload_id"`
+	FileName string `json:"file_name"`
+}
+
 // Upload is a durable import and its cleanup state. Failed/deleted rows remain
 // addressable for cancellation, repeat deletion and original-key replay.
 type Upload struct {

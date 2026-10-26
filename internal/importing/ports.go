@@ -19,9 +19,15 @@ var (
 	ErrInput = errors.New("invalid statement upload")
 )
 
+// InputError carries only controlled field/reason identifiers, never input text.
+type InputError struct{ Field, Reason string }
+
+func (e *InputError) Error() string { return "invalid statement field" }
+
 // Transactions supplies short database transactions without remote I/O.
 type Transactions interface {
 	Run(context.Context, func(context.Context) error) error
+	Read(context.Context, func(context.Context) error) error
 }
 
 // Tombstones serializes first writes and committed account deletion across instances.
@@ -50,6 +56,7 @@ type Repository interface {
 	Complete(context.Context, string, string, Stage, []Operation, Result, *Period, time.Time) error
 	Remove(context.Context, string, string, time.Time) ([]Operation, error)
 	SaveRules(context.Context, string, []Operation, time.Time) error
+	SaveUnread(context.Context, string, []Unread) error
 	Fail(context.Context, string, string, string, time.Time) (bool, error)
 	Progress(context.Context, string, string, int) error
 	FileDeleted(context.Context, string, string, time.Time) error
