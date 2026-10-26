@@ -35,7 +35,7 @@ func (s *Service) Process(ctx context.Context, user, id string) error {
 	}
 	remaining := 3*time.Minute - s.now().Sub(upload.UploadedAt)
 	if remaining <= 0 {
-		return s.failProcessing(parent, user, id)
+		return s.failProcessingWorker(parent, user, id)
 	}
 	if remaining > 3*time.Minute {
 		remaining = 3 * time.Minute
@@ -126,7 +126,7 @@ func (s *Service) Process(ctx context.Context, user, id string) error {
 	if parent.Err() != nil {
 		return parent.Err()
 	}
-	return s.failProcessing(parent, user, id)
+	return s.failProcessingWorker(parent, user, id)
 }
 
 func (s *Service) progress(ctx context.Context, user, id string, percent int) error {
@@ -136,6 +136,15 @@ func (s *Service) progress(ctx context.Context, user, id string, percent int) er
 		}
 		return s.repo.Progress(txCtx, user, id, percent)
 	})
+}
+
+// Workers may race with completed user erasure; streams must report revocation.
+func (s *Service) failProcessingWorker(ctx context.Context, user, id string) error {
+	err := s.failProcessing(ctx, user, id)
+	if errors.Is(err, ErrDeleted) {
+		return nil
+	}
+	return err
 }
 
 func (s *Service) failProcessing(ctx context.Context, user, id string) error {
@@ -150,7 +159,7 @@ func (s *Service) failProcessing(ctx context.Context, user, id string) error {
 		changed, err = s.repo.Fail(txCtx, user, id, "processing_failed", s.now())
 		return err
 	})
-	if errors.Is(err, ErrNotFound) || errors.Is(err, ErrDeleted) {
+	if errors.Is(err, ErrNotFound) {
 		return nil
 	}
 	if err != nil || !changed {

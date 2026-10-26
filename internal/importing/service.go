@@ -32,8 +32,47 @@ type Service struct {
 	newID       func() (string, error)
 	method      string
 	slots       chan struct{}
+	receiveMu   sync.Mutex
+	receivers   map[string]*receivingUser
 	sweepMu     sync.Mutex
 	sweepCursor string
+}
+
+type receivingUser struct {
+	slot chan struct{}
+	refs int
+}
+
+// acquireReceiver prevents one user from occupying every receiving buffer.
+// Waiters hold no global buffer; entries disappear when their last caller leaves.
+func (s *Service) acquireReceiver(ctx context.Context, user string) (func(), error) {
+	s.receiveMu.Lock()
+	if s.receivers == nil {
+		s.receivers = make(map[string]*receivingUser)
+	}
+	entry := s.receivers[user]
+	if entry == nil {
+		entry = &receivingUser{slot: make(chan struct{}, 1)}
+		s.receivers[user] = entry
+	}
+	entry.refs++
+	s.receiveMu.Unlock()
+	leave := func() {
+		s.receiveMu.Lock()
+		entry.refs--
+		if entry.refs == 0 {
+			delete(s.receivers, user)
+		}
+		s.receiveMu.Unlock()
+	}
+	select {
+	case entry.slot <- struct{}{}:
+		var once sync.Once
+		return func() { once.Do(func() { <-entry.slot; leave() }) }, nil
+	case <-ctx.Done():
+		leave()
+		return nil, ctx.Err()
+	}
 }
 
 // New wires explicit ports. Four admitted buffers bound process memory even when
@@ -59,6 +98,11 @@ func (s *Service) Upload(ctx context.Context, user string, header Header, body i
 	if !utf8.ValidString(header.FileName) || strings.ContainsRune(header.FileName, 0) {
 		return Accepted{}, &InputError{"header.file_name", "INVALID_FORMAT"}
 	}
+	receiveDone, err := s.acquireReceiver(ctx, user)
+	if err != nil {
+		return Accepted{}, err
+	}
+	defer receiveDone()
 	select {
 	case s.slots <- struct{}{}:
 		defer func() { <-s.slots }()
@@ -66,6 +110,7 @@ func (s *Service) Upload(ctx context.Context, user string, header Header, body i
 		return Accepted{}, ctx.Err()
 	}
 	content, err := io.ReadAll(io.LimitReader(body, MaxFileBytes+1))
+	receiveDone()
 	if int64(len(content)) > MaxFileBytes {
 		return Accepted{}, ErrTooLarge
 	}

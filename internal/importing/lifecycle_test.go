@@ -143,6 +143,13 @@ func (r *lifeRepo) Purge(context.Context, string) error { return r.event("purge-
 func (r *lifeRepo) Referenced(context.Context, string, string) (bool, error) {
 	return r.referenced, r.event("reference")
 }
+func (r *lifeRepo) ReferencedBatch(_ context.Context, keys []string) (map[string]bool, error) {
+	out := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		out[key] = r.referenced
+	}
+	return out, r.event("reference-batch")
+}
 func (r *lifeRepo) Pending(ctx context.Context, _ int) ([]Upload, error) {
 	if r.pending != nil {
 		return r.pending(ctx)
@@ -294,7 +301,7 @@ func TestUnitProcessPublishesOnlyVerifiedSourceFacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	if f.trace.count("stage") != 1 || f.trace.count("complete") != 1 || f.trace.count("unread") != 1 || f.trace.count("close") != 1 || f.trace.count("fail") != 0 {
-		t.Fatal("incomplete atomic processing", f.trace.events)
+		t.Fatal("incomplete atomic processing", f.trace)
 	}
 	if f.repo.result.NewCount != 1 || f.repo.result.OperationCount != 1 || f.repo.result.Totals == nil || f.repo.result.Totals.ExpenseMinor != 100 || f.repo.completed == nil {
 		t.Fatal("result not computed from staged facts")
@@ -313,7 +320,7 @@ func TestUnitProcessPublishesOnlyVerifiedSourceFacts(t *testing.T) {
 			t.Fatal(err)
 		}
 		if f.trace.count("stage") != 0 || f.trace.count("complete") != 0 || f.trace.count("fail") != 1 || f.trace.count("fence") != 1 || f.trace.count("file-deleted") != 1 {
-			t.Fatal("unverified source published or not erased", f.trace.events)
+			t.Fatal("unverified source published or not erased", f.trace)
 		}
 	}
 }
@@ -363,7 +370,7 @@ func TestUnitProcessingFailureAndTransactionErrorsStayConservative(t *testing.T)
 		f.repo.errs[point] = errors.New("storage failure")
 		f.repo.onFail = func() { f.upload.Status = "failed" }
 		if err := f.s.Process(t.Context(), lifeUser, lifeUpload); err != nil || f.trace.count("fail") != 1 || f.trace.count("fence") != 1 {
-			t.Fatal(point, err, f.trace.events)
+			t.Fatal(point, err, f.trace)
 		}
 	}
 	f := newLife(t)
@@ -507,7 +514,7 @@ func TestUnitDeleteCommitsCancellationOrSourceRemovalBeforeFence(t *testing.T) {
 			t.Fatal(state, err)
 		}
 		if f.trace.count("fence") != 1 || f.trace.count("file-deleted") != 1 || f.trace.count("shared") != 1 || f.trace.count("unlock") != 1 {
-			t.Fatal(state, f.trace.events)
+			t.Fatal(state, f.trace)
 		}
 		if state == "processing" && f.trace.count("fail") != 1 {
 			t.Fatal("cancellation not persisted")
@@ -536,7 +543,7 @@ func TestUnitDeleteErrorsNeverAcknowledgeUnconfirmedErasure(t *testing.T) {
 		f.upload.Status = "done"
 		f.repo.errs[point] = failure
 		if err := f.s.Delete(t.Context(), lifeUser, lifeUpload); !errors.Is(err, failure) || f.trace.count("fence") != 0 || f.trace.count("unlock") != 1 {
-			t.Fatal(point, err, f.trace.events)
+			t.Fatal(point, err, f.trace)
 		}
 	}
 	f := newLife(t)
@@ -574,7 +581,7 @@ func TestUnitCleanupStagingRequiresCommitAndConfirmedCloudFence(t *testing.T) {
 	f := newLife(t)
 	f.upload.Status = "staging"
 	if err := f.s.cleanupFile(t.Context(), lifeUser, lifeUpload); err != nil || f.trace.count("abandon") != 1 || f.trace.count("fence") != 1 || f.trace.count("file-deleted") != 1 {
-		t.Fatal(err, f.trace.events)
+		t.Fatal(err, f.trace)
 	}
 	failure := errors.New("unknown commit")
 	for _, point := range []string{"abandon", "upload", "lock"} {
@@ -660,7 +667,7 @@ func TestUnitPurgeRetiresThenFencesAllPagesBeforeDeletingDatabase(t *testing.T) 
 		t.Fatal(err)
 	}
 	if lists != 2 || f.trace.count("fence") != 2 || f.trace.count("confirmed") != 2 || f.trace.count("purge-db") != 1 || f.trace.count("guard") != 0 || f.trace.count("unlock") != 1 {
-		t.Fatal(f.trace.events)
+		t.Fatal(f.trace)
 	}
 	positions := map[string]int{}
 	for i, e := range f.trace.events {
@@ -671,12 +678,12 @@ func TestUnitPurgeRetiresThenFencesAllPagesBeforeDeletingDatabase(t *testing.T) 
 	order := []string{"retire", "commit", "exclusive", "intents", "fence", "confirmed", "purge-db"}
 	for _, event := range order {
 		if _, present := positions[event]; !present {
-			t.Fatal("missing required purge phase", event, f.trace.events)
+			t.Fatal("missing required purge phase", event, f.trace)
 		}
 	}
 	for i := 1; i < len(order); i++ {
 		if positions[order[i-1]] >= positions[order[i]] {
-			t.Fatal("unsafe purge phase order", f.trace.events)
+			t.Fatal("unsafe purge phase order", f.trace)
 		}
 	}
 }
@@ -707,7 +714,7 @@ func TestUnitPurgeStopsBeforeDatabaseDeletionOnEveryUncertainPhase(t *testing.T)
 		f := newLife(t)
 		change(f)
 		if err := f.s.Purge(t.Context(), lifeUser); err == nil || f.trace.count("purge-db") != 0 {
-			t.Fatal(i, err, f.trace.events)
+			t.Fatal(i, err, f.trace)
 		}
 	}
 	for _, user := range []string{"", "invalid", "00000000-0000-0000-0000-000000000000"} {
@@ -756,5 +763,18 @@ func TestUnitCommonStatementPeriodUsesAllAccountsAndReadableFallback(t *testing.
 		if ownedObjectKey(lifeUser, key) {
 			t.Fatal("unsafe key", key)
 		}
+	}
+}
+
+func TestUnitWatchRetiredExpiredUploadStopsWithoutFailureLoop(t *testing.T) {
+	f := newLife(t)
+	f.upload.UploadedAt = f.now.Add(-4 * time.Minute)
+	f.deleted.alive = false
+	err := f.s.Watch(t.Context(), lifeUser, lifeUpload, func(Event) error { t.Error("retired result emitted"); return nil })
+	if !errors.Is(err, ErrDeleted) || f.trace.count("upload") != 1 || f.trace.count("guard") != 1 || f.trace.count("fail") != 0 {
+		t.Fatal("retired watch did not stop", err, f.trace)
+	}
+	if err := f.s.Process(t.Context(), lifeUser, lifeUpload); err != nil {
+		t.Fatal("worker retirement became a retry error", err)
 	}
 }

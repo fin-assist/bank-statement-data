@@ -531,10 +531,11 @@ func TestUnitUploadFourBufferSlotsAndCanceledWaiter(t *testing.T) {
 	results := make(chan error, 4)
 	var wg sync.WaitGroup
 	for range 4 {
+		user := uuid.NewString()
 		r := &uploadBlockingReader{entered: make(chan struct{}), allow: make(chan struct{})}
 		readers = append(readers, r)
 		wg.Go(func() {
-			_, err := s.Upload(ctx, f.user, importing.Header{FileName: "exact.ofx"}, r, nil)
+			_, err := s.Upload(ctx, user, importing.Header{FileName: "exact.ofx"}, r, nil)
 			results <- err
 		})
 	}
@@ -751,4 +752,55 @@ func TestUnitUploadConstructorRequiresEveryDependency(t *testing.T) {
 			t.Fatal("missing dependency accepted", missing)
 		}
 	}
+}
+
+func TestUnitUploadSameUserWaitsWithoutBlockingAnotherUser(t *testing.T) {
+	f := newUploadFixture(t)
+	svc := f.service()
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	reader := &uploadBlockingReader{entered: make(chan struct{}), allow: make(chan struct{})}
+	first := make(chan error, 1)
+	go func() { _, err := svc.Upload(ctx, f.user, importing.Header{}, reader, nil); first <- err }()
+	defer reader.unblock()
+	select {
+	case <-reader.entered:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	waitCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	waits := make(chan error, 4)
+	for range 4 {
+		go func() {
+			spy := &uploadReadSpy{r: strings.NewReader("waiting")}
+			_, err := svc.Upload(waitCtx, f.user, importing.Header{}, spy, nil)
+			if spy.reads.Load() != 0 {
+				t.Error("same-user waiter received a file")
+			}
+			waits <- err
+		}()
+	}
+	foreign := &uploadReadSpy{r: strings.NewReader("foreign")}
+	_, err := svc.Upload(ctx, uuid.NewString(), importing.Header{}, foreign, nil)
+	var input *importing.InputError
+	if !errors.As(err, &input) || foreign.reads.Load() == 0 {
+		t.Fatal("foreign receiver starved", err)
+	}
+	stop()
+	for range 4 {
+		if err := <-waits; !errors.Is(err, context.Canceled) {
+			t.Fatal(err)
+		}
+	}
+	reader.unblock()
+	if err := <-first; !errors.As(err, &input) {
+		t.Fatal(err)
+	}
+	// Both the holder and cancelled waiters release their per-user admission.
+	_, err = svc.Upload(ctx, f.user, importing.Header{}, strings.NewReader("again"), nil)
+	if !errors.As(err, &input) {
+		t.Fatal("same-user gate not reusable", err)
+	}
+	f.noEffects()
 }
