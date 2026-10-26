@@ -326,7 +326,7 @@ func appendStatement(doc *importing.Document, account, period map[string]string,
 		if line.Currency == "" {
 			line.Currency = "RUB"
 		}
-		amount, negative, ok := parseMoney(f["TRNAMT"])
+		amount, negative, ok := parseMoney(f["TRNAMT"], line.Currency)
 		line.AmountMinor = amount
 		line.Direction = "income"
 		if negative || strings.EqualFold(f["TRNTYPE"], "DEBIT") {
@@ -376,7 +376,11 @@ func hasField(fields map[string]string, key string) bool {
 	return ok
 }
 
-func parseMoney(raw string) (int64, bool, bool) {
+func parseMoney(raw, currency string) (int64, bool, bool) {
+	scale, known := currencyMinorUnits(currency)
+	if !known {
+		return 0, false, false
+	}
 	if !regexp.MustCompile(`^[+-]?[0-9]+(?:\.[0-9]+)?$`).MatchString(raw) {
 		return 0, false, false
 	}
@@ -384,16 +388,16 @@ func parseMoney(raw string) (int64, bool, bool) {
 	raw = strings.TrimPrefix(strings.TrimPrefix(raw, "-"), "+")
 	whole, fraction, _ := strings.Cut(raw, ".")
 	whole = strings.TrimLeft(whole, "0")
-	if len(whole) > 17 { // Even before rounding, this cannot fit int64 minor units.
+	if len(whole) > 19-scale { // Even before rounding, this cannot fit int64 minor units.
 		return 0, negative, false
 	}
 	if whole == "" {
 		whole = "0"
 	}
-	fraction += "00"
+	fraction += strings.Repeat("0", scale)
 	n := new(big.Int)
-	n.SetString(whole+fraction[:2], 10)
-	if len(fraction) > 2 && fraction[2] >= '5' {
+	n.SetString(whole+fraction[:scale], 10)
+	if len(fraction) > scale && fraction[scale] >= '5' {
 		n.Add(n, big.NewInt(1))
 	}
 	if !n.IsInt64() {
