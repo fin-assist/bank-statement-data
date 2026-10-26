@@ -29,6 +29,16 @@ type Store struct {
 	modified       map[string]time.Time
 	TokenFile      string
 	erasureFailure atomic.Bool
+	readEntered    chan<- struct{}
+	readResume     <-chan struct{}
+}
+
+// PauseReads delays the response after its snapshot was captured, modelling a
+// provider GET already in flight while a file is concurrently cancelled/erased.
+func (s *Store) PauseReads(entered chan<- struct{}, resume <-chan struct{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.readEntered, s.readResume = entered, resume
 }
 
 // SetErasureFailure models a provider outage without changing the runtime adapter.
@@ -140,10 +150,22 @@ func (s *Store) serve(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		body, ok := s.data[key]
 		body = append([]byte{}, body...)
+		entered, resume := s.readEntered, s.readResume
 		s.mu.Unlock()
 		if !ok {
 			w.WriteHeader(404)
 			return
+		}
+		if resume != nil {
+			select {
+			case entered <- struct{}{}:
+			default:
+			}
+			select {
+			case <-resume:
+			case <-r.Context().Done():
+				return
+			}
 		}
 		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 		_, _ = w.Write(body)

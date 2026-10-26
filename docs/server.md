@@ -1,6 +1,6 @@
 # gRPC, фоновые задания и сборка сервиса
 
-Контракт межсервисного взаимодействия — [`fin-assist/contracts/docs/grpc-api.md`](https://github.com/fin-assist/contracts/blob/main/docs/grpc-api.md). FIN-258 подключает опубликованные механизмы вместо локальных копий. Публичные параметры, порядок интерцепторов, правила metadata, ошибок и retry описаны в [`go-grpc v0.2.0`](https://github.com/fin-assist/go-grpc/tree/v0.2.0); lifecycle заданий — в [`go-worker v0.1.0`](https://github.com/fin-assist/go-worker/tree/v0.1.0).
+Контракт межсервисного взаимодействия — [`fin-assist/contracts/docs/grpc-api.md`](https://github.com/fin-assist/contracts/blob/main/docs/grpc-api.md). FIN-258 подключает опубликованные механизмы вместо локальных копий. Публичные параметры, порядок интерцепторов, правила metadata, ошибок и retry описаны в [`go-grpc v0.2.0`](https://github.com/fin-assist/go-grpc/tree/v0.2.0); lifecycle заданий — в [`go-worker v0.1.1`](https://github.com/fin-assist/go-worker/tree/v0.1.1).
 
 ## Ответственность сервиса
 

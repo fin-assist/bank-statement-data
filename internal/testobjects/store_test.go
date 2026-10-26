@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/fin-assist/bank-statement-data/internal/adapter/objectstore"
 	"github.com/fin-assist/bank-statement-data/internal/config"
@@ -62,9 +63,45 @@ func TestUnitFixturePreservesCloudConditionalWriteAndErasureSemantics(t *testing
 		t.Fatal("fixture swallowed provider erasure refusal")
 	}
 	fixture.SetErasureFailure(false)
+
+	entered, resume := make(chan struct{}, 1), make(chan struct{})
+	fixture.PauseReads(entered, resume)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	type readResult struct {
+		body []byte
+		err  error
+	}
+	result := make(chan readResult, 1)
+	go func() {
+		reader, err := store.Open(ctx, key)
+		if err != nil {
+			result <- readResult{err: err}
+			return
+		}
+		body, err := io.ReadAll(reader)
+		_ = reader.Close()
+		result <- readResult{body, err}
+	}()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("fixture GET did not capture its snapshot")
+	}
 	if err = store.Delete(t.Context(), key); err != nil {
 		t.Fatal(err)
 	}
+	close(resume)
+	fixture.PauseReads(nil, nil)
+	select {
+	case got := <-result:
+		if got.err != nil || !bytes.Equal(got.body, original) {
+			t.Fatalf("in-flight GET lost its old snapshot: %q %v", got.body, got.err)
+		}
+	case <-ctx.Done():
+		t.Fatal("fixture stranded GET across erasure")
+	}
+
 	if err = store.Put(t.Context(), key, bytes.NewReader(original), int64(len(original))); err == nil {
 		t.Fatal("fixture erased the permanent late-write fence")
 	}

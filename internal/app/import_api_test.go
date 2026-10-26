@@ -2,6 +2,7 @@ package app_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -10,13 +11,17 @@ import (
 	"testing"
 	"time"
 
+	commonpb "github.com/fin-assist/contracts/gen/go/finassist/common/v1"
 	pb "github.com/fin-assist/contracts/gen/go/finassist/statementdata/v1"
 	deletionpb "github.com/fin-assist/contracts/gen/go/finassist/userdeletion/v1"
 	settingspb "github.com/fin-assist/contracts/gen/go/finassist/usersettings/v1"
 	"github.com/fin-assist/contracts/gen/go/finerr"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/fin-assist/bank-statement-data/internal/app"
 	"github.com/fin-assist/bank-statement-data/internal/app/apitest"
@@ -310,5 +315,137 @@ func TestAPIPurgeRetiresAccessBeforeCloudRecoveryAndFinishesOnRetry(t *testing.T
 	}
 	if err = db.QueryRow(t.Context(), "SELECT count(*) FROM user_state WHERE user_id=$1", apiUser).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("retained personal rows after confirmed recovery: %d %v", count, err)
+	}
+}
+
+func TestAPIStoredRecognizedResultCorruptionFailsClosed(t *testing.T) {
+	env := apitest.Start(t)
+	c := pb.NewStatementsServiceClient(env.Conn)
+	accepted, err := apiUpload(t, c, apiUser, uuid.NewString(), "private.ofx", apiOFX)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = apiComplete(t, c, accepted.UploadId)
+	db, err := pgx.Connect(t.Context(), env.DSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close(context.Background()) }()
+	var original []byte
+	if err = db.QueryRow(t.Context(), "SELECT result FROM upload WHERE user_id=$1 AND id=$2", apiUser, accepted.UploadId).Scan(&original); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, field string
+		value       any
+	}{
+		{"negative readable", "operationCount", "-1"}, {"negative new", "newCount", "-1"}, {"negative duplicate", "duplicateCount", "-1"},
+		{"negative unread", "unreadCount", -1}, {"invalid timestamp", "firstOperationAt", "private invalid timestamp"},
+		{"unknown total scope", "totals", map[string]any{"scope": 999}},
+		{"unknown account kind", "accounts", []any{map[string]any{"typeName": "private future bank"}}},
+		{"other bank with mask", "accounts", []any{map[string]any{"typeName": "Счёт другого банка", "isOtherBank": true, "mask": "··1234"}}},
+		{"invalid mask", "accounts", []any{map[string]any{"typeName": "Текущий", "mask": "private full account"}}},
+		{"unknown notice", "notices", []any{999}}, {"negative full months", "coverage", map[string]any{"fullMonths": -1}},
+		{"bad newly month", "coverage", map[string]any{"newlyFullMonths": []string{"private month"}}},
+		{"unknown feature", "coverage", map[string]any{"features": []any{map[string]any{"feature": 999}}}},
+		{"invalid selection range", "uncategorizedFilters", map[string]any{"from": "2026-09-20T00:00:00Z", "to": "2026-09-01T00:00:00Z", "selection": "s_uncategorized", "selectionName": "Без категории"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var document map[string]any
+			if err := json.Unmarshal(original, &document); err != nil {
+				t.Fatal(err)
+			}
+			document[tc.field] = tc.value
+			raw, err := json.Marshal(document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = db.Exec(t.Context(), "UPDATE upload SET result=$3::jsonb WHERE user_id=$1 AND id=$2", apiUser, accepted.UploadId, raw); err != nil {
+				t.Fatal(err)
+			}
+			_, err = c.ListUploads(apitest.User(t.Context(), apiUser), &pb.ListUploadsRequest{})
+			if status.Code(err) != codes.Internal || strings.Contains(err.Error(), "private") {
+				t.Fatalf("corrupt result escaped: %v", err)
+			}
+			if _, err = db.Exec(t.Context(), "UPDATE upload SET result=$3::jsonb WHERE user_id=$1 AND id=$2", apiUser, accepted.UploadId, original); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestAPIUnreadRepairAndCancellationUseRealSnapshots(t *testing.T) {
+	env := apitest.Start(t)
+	c := pb.NewStatementsServiceClient(env.Conn)
+	uploadFixture := func(name string) string {
+		body, err := os.ReadFile("../adapter/ofx/testdata/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		accepted, err := apiUpload(t, c, apiUser, uuid.NewString(), name, string(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = apiComplete(t, c, accepted.UploadId)
+		return accepted.UploadId
+	}
+	old := uploadFixture("04-edge-cases-2026-09.ofx")
+	scope := &pb.ListUnreadLinesRequest{Scope: &pb.ListUnreadLinesRequest_UploadId{UploadId: old}}
+	unread, err := c.ListUnreadLines(apitest.User(t.Context(), apiUser), scope)
+	if err != nil || len(unread.Lines) != 3 {
+		t.Fatalf("unread: %v %v", unread, err)
+	}
+	period := &commonpb.TimeRange{Start: timestamppb.New(time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)), End: timestamppb.New(time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC))}
+	byDate, err := c.ListUnreadLines(apitest.User(t.Context(), apiUser), &pb.ListUnreadLinesRequest{Scope: &pb.ListUnreadLinesRequest_Period{Period: period}})
+	if err != nil || len(byDate.Lines) != 2 {
+		t.Fatalf("date filter must omit undated line: %v %v", byDate, err)
+	}
+	fixed := uploadFixture("05-edge-cases-fixed-2026-09.ofx")
+	unread, err = c.ListUnreadLines(apitest.User(t.Context(), apiUser), scope)
+	if err != nil || len(unread.Lines) != 0 {
+		t.Fatalf("unclosed repair: %v %v", unread, err)
+	}
+	history, err := c.ListUploads(apitest.User(t.Context(), apiUser), &pb.ListUploadsRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, u := range history.Uploads {
+		if u.UploadId == old && (u.ResolvedUnreadCount != 3 || u.ResolvedByUploadedAt == nil) {
+			t.Fatalf("missing resolution history: %v", u)
+		}
+	}
+	if _, err = c.DeleteUpload(apitest.User(t.Context(), apiUser), &pb.DeleteUploadRequest{UploadId: fixed}); err != nil {
+		t.Fatal(err)
+	}
+	unread, err = c.ListUnreadLines(apitest.User(t.Context(), apiUser), scope)
+	if err != nil || len(unread.Lines) != 3 {
+		t.Fatalf("deleted repair not reopened: %v %v", unread, err)
+	}
+	entered, resume := make(chan struct{}, 1), make(chan struct{})
+	env.Objects.PauseReads(entered, resume)
+	defer close(resume)
+	pending, err := apiUpload(t, c, apiUser, uuid.NewString(), "cancel-inflight.ofx", apiOFX)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker did not start the actual GET")
+	}
+	if _, err = c.DeleteUpload(apitest.User(t.Context(), apiUser), &pb.DeleteUploadRequest{UploadId: pending.UploadId}); err != nil {
+		t.Fatal(err)
+	}
+	watch, err := c.WatchUpload(apitest.User(t.Context(), apiUser), &pb.WatchUploadRequest{UploadId: pending.UploadId})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, err := watch.Recv()
+	if err != nil || event.GetError() == nil || event.GetError().Code != pb.ImportErrorCode_IMPORT_ERROR_CODE_CANCELLED {
+		t.Fatalf("cancelled terminal: %v %v", event, err)
+	}
+	decoded, ok := finerr.DecodeResultStatus(event.GetError().Status)
+	if !ok || decoded.Reason != "CANCELLED" {
+		t.Fatalf("canonical cancellation: %+v %v", decoded, ok)
 	}
 }

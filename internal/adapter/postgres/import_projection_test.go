@@ -67,6 +67,18 @@ func TestUnitStoredUploadProjectionRejectsCorruptFacts(t *testing.T) {
 		t.Fatalf("profile calendar projection: %+v %v", got, err)
 	}
 }
+func TestUnitStoredEmptyResultIsRestoredAsAnActualResult(t *testing.T) {
+	v := projectionRow()
+	v[6] = "done"
+	v[8] = 100
+	v[10] = ptrDate(time.Now().UTC())
+	v[16] = []byte(`{"coverage":{},"notices":["IMPORT_NOTICE_EMPTY_STATEMENT"]}`)
+	got, err := scanUpload(importScanRow{values: v}, time.UTC)
+	if err != nil || got.Result == nil || got.Result.OperationCount != 0 || len(got.Result.Notices) != 1 || got.Result.Notices[0] != "empty_statement" || got.FinishedAt == nil {
+		t.Fatalf("stored empty result was discarded: %+v %v", got, err)
+	}
+}
+
 func ptrDate(t time.Time) *time.Time { return &t }
 func TestUnitStorageDiagnosticBoundaryPreservesCancellationOnly(t *testing.T) {
 	secret := errors.New("private SQL value")

@@ -52,7 +52,7 @@ updates them in the same PR. A service made from the template rewrites the first
 | Stand identity for verify-mode tests: key files, signed tokens, user GetSigningKeys peer | `internal/testidentity/`; never wired into serve; counted in every profile |
 | SQL migrations (embedded) and schema constraint tests | `migrations/` (`schema_test.go`); rules — `docs/migrations.md`, schema and code invariants — `docs/schema.md` |
 | Application-specific peer adapters, when needed | `internal/adapter/client/<peer>/`; shared dialing/token contracts — go-grpc/client |
-| Shared job lifecycle; application jobs when needed | `github.com/fin-assist/go-worker` v0.1.0; `internal/worker/<job>/` |
+| Shared job lifecycle; application jobs when needed | `github.com/fin-assist/go-worker` v0.1.1; `internal/worker/<job>/` |
 | Configuration: every variable with its default and description | `internal/config/vars.go` (`Vars`); generated tables — `docs/config.md` |
 | Request-scoped values (request ID, caller, user, bank-bff hints) | `github.com/fin-assist/go-grpc/reqctx` |
 | Logger, metrics endpoint, readiness | `internal/logx/`, `internal/ops/` |
