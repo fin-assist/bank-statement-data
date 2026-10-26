@@ -44,10 +44,10 @@ updates them in the same PR. A service made from the template rewrites the first
 | The whole service in-process for API tests | `internal/app/apitest/` |
 | Entities and invariants (no pgx, gRPC or generated code) | `internal/domain/` |
 | Usecases and the interfaces of repositories and clients they need | `internal/<feature>/` |
-| Shared gRPC server, client and request context | `github.com/fin-assist/go-grpc/{server,client,reqctx}` v0.1.0; service wiring — `internal/app/`, `docs/server.md` |
+| Shared gRPC server, client and request context | `github.com/fin-assist/go-grpc/{server,client,reqctx}` v0.2.0; service wiring — `internal/app/`, `docs/server.md` |
 | gRPC handlers (messages ↔ usecases) | `internal/adapter/grpc/<feature>/` |
 | Primary/replica routing, go-postgres.OpenPools/transaction adapter, repositories | `internal/adapter/postgres/`; rules — `docs/migrations.md`, «Запросы на pgx» |
-| Migration runner and public test harness | `github.com/fin-assist/go-migrate` / `migratetest` v0.1.0; ordered service sources — `internal/app/` |
+| Migration runner and public test harness | `github.com/fin-assist/go-migrate` / `migratetest` v0.1.1; ordered service sources — `internal/app/` |
 | Test PostgreSQL server selection (not runtime business code) | `internal/testdb/`; public migratetest creates/checks databases; counted in every profile |
 | Stand identity for verify-mode tests: key files, signed tokens, user GetSigningKeys peer | `internal/testidentity/`; never wired into serve; counted in every profile |
 | SQL migrations (embedded) and schema constraint tests | `migrations/` (`schema_test.go`); rules — `docs/migrations.md`, schema and code invariants — `docs/schema.md` |
@@ -69,7 +69,7 @@ the identity-keys job); any other ENV with verify fails startup, insecure-dev st
 go-tombstone v0.1.0 supplies the first migration source and the primary-backed go-grpc admission (TOKEN_REVOKED).
 Guard in writing transactions and UserDeletionService.PurgeUserData come with the first RPC that writes user data.
 Pass the service logger, metric registry and worker clock/restart settings explicitly; library defaults
-are not a substitute for existing service behaviour. go-postgres is pinned at v0.2.0. Paths with <feature>, <peer>
+are not a substitute for existing service behaviour. go-postgres is pinned at v0.3.0. Paths with <feature>, <peer>
 and <job> describe future application code only, not actual empty directories in the template.
 
 The service test entrypoint selects a PostgreSQL18 admin DSN (external server or testcontainer) in internal/testdb.
