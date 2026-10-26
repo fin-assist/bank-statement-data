@@ -1,6 +1,7 @@
 package importing
 
 import (
+	"context"
 	"sort"
 	"time"
 )
@@ -40,20 +41,35 @@ type days struct{ from, to time.Time }
 
 // EvaluateCoverage derives facts from actual completed upload ranges. Period
 // endpoints are inclusive days; gaps remain whole even across month boundaries.
-func EvaluateCoverage(before, after []Period, operationTimes []time.Time, now time.Time, zone *time.Location) (Coverage, error) {
-	old, err := mergedDays(before, zone)
+func EvaluateCoverage(ctx context.Context, before, after []Period, operationTimes []time.Time, now time.Time, zone *time.Location) (Coverage, error) {
+	if err := ctx.Err(); err != nil {
+		return Coverage{}, err
+	}
+	if now.IsZero() {
+		return Coverage{}, errAccounting
+	}
+	old, err := mergedDays(ctx, before, zone)
 	if err != nil {
 		return Coverage{}, err
 	}
-	current, err := mergedDays(after, zone)
+	current, err := mergedDays(ctx, after, zone)
 	if err != nil {
 		return Coverage{}, err
 	}
 	today := startDay(now, zone)
-	oldFull, oldMonths := calendarMonths(old, today)
-	full, months := calendarMonths(current, today)
+	oldFull, oldMonths, err := calendarMonths(ctx, old, today)
+	if err != nil {
+		return Coverage{}, err
+	}
+	full, months, err := calendarMonths(ctx, current, today)
+	if err != nil {
+		return Coverage{}, err
+	}
 	result := Coverage{FullMonths: len(full), FullMonthsBefore: len(oldFull)}
 	for _, month := range months {
+		if err := ctx.Err(); err != nil {
+			return Coverage{}, err
+		}
 		key := month.Format("2006-01")
 		if full[key] {
 			if !oldFull[key] {
@@ -62,8 +78,14 @@ func EvaluateCoverage(before, after []Period, operationTimes []time.Time, now ti
 			continue
 		}
 		end := month.AddDate(0, 1, 0)
+		if end.Year() > 9999 {
+			return Coverage{}, errAccounting
+		}
 		var first, last time.Time
 		for _, covered := range current {
+			if err := ctx.Err(); err != nil {
+				return Coverage{}, err
+			}
 			a, b := later(covered.from, month), earlier(covered.to, end.AddDate(0, 0, -1))
 			if a.After(b) {
 				continue
@@ -76,6 +98,9 @@ func EvaluateCoverage(before, after []Period, operationTimes []time.Time, now ti
 		dataTo := last.AddDate(0, 0, 1).Add(-time.Second)
 		var latest time.Time
 		for _, at := range operationTimes {
+			if err := ctx.Err(); err != nil {
+				return Coverage{}, err
+			}
 			if at.Before(month) || !at.Before(end) || !startDay(at, zone).Equal(last) {
 				continue
 			}
@@ -119,12 +144,15 @@ func EvaluateCoverage(before, after []Period, operationTimes []time.Time, now ti
 	return result, nil
 }
 
-func mergedDays(periods []Period, zone *time.Location) ([]days, error) {
+func mergedDays(ctx context.Context, periods []Period, zone *time.Location) ([]days, error) {
 	if zone == nil {
 		return nil, errAccounting
 	}
 	all := make([]days, 0, len(periods))
 	for _, p := range periods {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if p.From.IsZero() || p.To.IsZero() || p.From.After(p.To) {
 			return nil, errAccounting
 		}
@@ -133,6 +161,9 @@ func mergedDays(periods []Period, zone *time.Location) ([]days, error) {
 	sort.Slice(all, func(i, j int) bool { return all[i].from.Before(all[j].from) })
 	var merged []days
 	for _, interval := range all {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		last := len(merged) - 1
 		if last >= 0 && !interval.from.After(merged[last].to.AddDate(0, 0, 1)) {
 			merged[last].to = later(merged[last].to, interval.to)
@@ -143,18 +174,24 @@ func mergedDays(periods []Period, zone *time.Location) ([]days, error) {
 	return merged, nil
 }
 
-func calendarMonths(ranges []days, today time.Time) (map[string]bool, []time.Time) {
+func calendarMonths(ctx context.Context, ranges []days, today time.Time) (map[string]bool, []time.Time, error) {
 	full := make(map[string]bool)
 	var months []time.Time
 	if len(ranges) == 0 {
-		return full, months
+		return full, months, nil
 	}
 	start := ranges[0].from
 	month := time.Date(start.Year(), start.Month(), 1, 0, 0, 0, 0, start.Location())
 	for !month.After(ranges[len(ranges)-1].to) {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
 		end := month.AddDate(0, 1, 0)
 		hasData := false
 		for _, r := range ranges {
+			if err := ctx.Err(); err != nil {
+				return nil, nil, err
+			}
 			if !r.to.Before(month) && r.from.Before(end) {
 				hasData = true
 			}
@@ -167,7 +204,7 @@ func calendarMonths(ranges []days, today time.Time) (map[string]bool, []time.Tim
 		}
 		month = end
 	}
-	return full, months
+	return full, months, nil
 }
 
 func coverageGaps(ranges []days) []TimeRange {
