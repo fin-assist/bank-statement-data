@@ -68,6 +68,7 @@ type Repository interface {
 	Pending(context.Context, int) ([]Upload, error)
 	Cleanup(context.Context, int, time.Time) ([]Upload, error)
 	Referenced(context.Context, string, string) (bool, error)
+	ReferencedBatch(context.Context, []string) (map[string]bool, error)
 	Purge(context.Context, string) error
 	SetTimezone(context.Context, string, string, int32, time.Time) error
 }

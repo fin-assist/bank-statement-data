@@ -301,14 +301,14 @@ func TestUnitSweepOrphansHonorsNamespaceGracePrimaryReferenceAndEmptyPages(t *te
 	f = newLife(t)
 	f.repo.referenced = true
 	f.objects.list = func(string, string) (ObjectPage, error) { return ObjectPage{Objects: objects[:1]}, nil }
-	if err := f.s.SweepOrphans(t.Context()); err != nil || f.trace.count("fence") != 0 || f.trace.count("reference") != 1 || f.trace.count("unlock") != 1 {
+	if err := f.s.SweepOrphans(t.Context()); err != nil || f.trace.count("fence") != 0 || f.trace.count("reference-batch") != 1 || f.trace.count("reference") != 0 || f.trace.count("unlock") != 0 {
 		t.Fatal("live primary reference erased", err)
 	}
 }
 
 func TestUnitSweepOrphansFailsClosedAndReleasesLocks(t *testing.T) {
 	failure := errors.New("storage unavailable")
-	for _, phase := range []string{"list", "barrier", "transaction", "guard", "lock", "reference", "fence", "unlock"} {
+	for _, phase := range []string{"list", "reference-batch", "barrier", "transaction", "guard", "lock", "reference", "fence", "unlock"} {
 		t.Run(phase, func(t *testing.T) {
 			f := newLife(t)
 			f.objects.list = func(string, string) (ObjectPage, error) {
@@ -337,7 +337,7 @@ func TestUnitSweepOrphansFailsClosedAndReleasesLocks(t *testing.T) {
 				t.Fatal("uncertain primary state erased")
 			}
 			want := 1
-			if phase == "list" || phase == "barrier" {
+			if phase == "list" || phase == "reference-batch" || phase == "barrier" {
 				want = 0
 			}
 			if f.trace.count("unlock") != want {

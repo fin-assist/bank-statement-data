@@ -134,6 +134,7 @@ func (s *Service) SweepOrphans(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		var keys []string
 		for _, object := range page.Objects {
 			parts := strings.Split(object.Key, "/")
 			if len(parts) != 2 || object.ModifiedAt.IsZero() || object.ModifiedAt.After(s.now().Add(-time.Hour)) {
@@ -143,11 +144,27 @@ func (s *Service) SweepOrphans(ctx context.Context) error {
 			if err != nil || actor == uuid.Nil || actor.String() != parts[0] || !ownedObjectKey(parts[0], object.Key) {
 				continue
 			}
-			release, err := s.barrier.Exclusive(ctx, parts[0])
+			keys = append(keys, object.Key)
+		}
+		// This is only a primary prefilter. A reference can appear after it, so
+		// candidates still take the existing barrier and fresh guarded recheck.
+		var referenced map[string]bool
+		if len(keys) > 0 {
+			referenced, err = s.repo.ReferencedBatch(ctx, keys)
 			if err != nil {
 				return err
 			}
-			err = s.deleteUnreferenced(ctx, parts[0], object.Key)
+		}
+		for _, key := range keys {
+			if referenced[key] {
+				continue
+			}
+			user, _, _ := strings.Cut(key, "/")
+			release, err := s.barrier.Exclusive(ctx, user)
+			if err != nil {
+				return err
+			}
+			err = s.deleteUnreferenced(ctx, user, key)
 			unlocked := release()
 			if err != nil {
 				return err

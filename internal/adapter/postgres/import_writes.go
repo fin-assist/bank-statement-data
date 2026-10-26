@@ -163,23 +163,6 @@ func (r *Imports) Referenced(ctx context.Context, user, key string) (bool, error
 	return exists, importError(ctx, err)
 }
 
-// SaveRules persists the caller's complete recomputation without changing source facts.
-func (r *Imports) SaveRules(ctx context.Context, user string, operations []importing.Operation, now time.Time) error {
-	if _, err := r.transaction(ctx); err != nil {
-		return err
-	}
-	for _, op := range operations {
-		tag, err := r.db.Writer(ctx).Exec(ctx, `UPDATE operation SET category_id=$4,manual_category_id=NULLIF($5,''),refund_target_category_id=NULLIF($6,''),is_split=$7,transfer_pair_id=NULLIF($8,'')::uuid WHERE user_id=$1 AND occurred_at=$2 AND id=$3`, user, op.At, op.ID, op.Category, op.ManualCategory, op.RefundTarget, op.Split, op.PairID)
-		if err != nil {
-			return importError(ctx, err)
-		}
-		if tag.RowsAffected() != 1 {
-			return errImportStorage
-		}
-	}
-	return r.schedule(ctx, user, operations, now)
-}
-
 func (r *Imports) schedule(ctx context.Context, user string, operations []importing.Operation, now time.Time) error {
 	var name string
 	if err := r.db.Writer(ctx).QueryRow(ctx, `SELECT timezone FROM user_state WHERE user_id=$1`, user).Scan(&name); err != nil {
