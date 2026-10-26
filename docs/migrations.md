@@ -2,7 +2,7 @@
 
 Решение — [FIN-115](https://finassist.youtrack.cloud/issue/FIN-115), Confluence «Архитектура» → «Миграции и доступ к БД».
 
-- Runner — [`go-migrate v0.1.1`](https://github.com/fin-assist/go-migrate/tree/v0.1.1), использующий golang-migrate и pgx/v5. Сервис задаёт источники, CLI, logger и таймауты явно.
+- Runner — [`go-migrate v0.2.0`](https://github.com/fin-assist/go-migrate/tree/v0.2.0), использующий golang-migrate и pgx/v5. Сервис задаёт источники, CLI, logger и таймауты явно.
 - Запросы — ручной SQL на `pgx/v5`, без ORM и генерации кода.
 - Линтер миграций — [squawk](https://squawkhq.com) в CI.
 
