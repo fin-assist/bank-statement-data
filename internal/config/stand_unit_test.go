@@ -56,7 +56,7 @@ func parseStandUnit(text string) (standUnit, error) {
 		key, value, _ := strings.Cut(line, "=")
 		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
 		switch key {
-		case "Environment", "EnvironmentFile", "LoadCredential", "SetCredential", "SetCredentialEncrypted", "LoadCredentialEncrypted":
+		case "Environment", "EnvironmentFile", "LoadCredential", "SetCredential", "SetCredentialEncrypted", "LoadCredentialEncrypted", "ImportCredential":
 			if section != "[Service]" {
 				return standUnit{}, fmt.Errorf("%s= in %s, want [Service]: %q", key, section, line)
 			}
@@ -75,11 +75,15 @@ func parseStandUnit(text string) (standUnit, error) {
 			unit.env[name] = strings.ReplaceAll(setting, "%d", standCredentials)
 		case "LoadCredential":
 			name, source, _ := strings.Cut(value, ":")
+			// Reject repeats instead of depending on which source a systemd version keeps.
+			if _, duplicate := unit.credentials[name]; duplicate {
+				return standUnit{}, fmt.Errorf("unit loads credential %s twice", name)
+			}
 			unit.credentials[name] = source
 		case "EnvironmentFile":
 			unit.envFiles = append(unit.envFiles, value)
-		case "SetCredential", "SetCredentialEncrypted", "LoadCredentialEncrypted":
-			// SetCredential= puts the secret into the world-readable unit file itself.
+		case "SetCredential", "SetCredentialEncrypted", "LoadCredentialEncrypted", "ImportCredential":
+			// These directives embed secrets or load them from sources this check does not cover.
 			return standUnit{}, fmt.Errorf("unit line %q: secrets come only from LoadCredential= files", line)
 		}
 	}
@@ -294,6 +298,14 @@ func TestUnitStandUnitCheckRejects(t *testing.T) {
 		{"undeclared _FILE reading a credential", []unitEdit{after(anchorPublicKeys, "LoadCredential=stage-public-keys:/etc/finassist/bank-statement-data/stage-public-keys.json\nEnvironment=UNUSED_FILE=%d/stage-public-keys")}, "UNUSED_FILE, which is neither a declared non-secret setting"},
 		{"PGPASSWORD", []unitEdit{after(anchorPublicKeys, "Environment=PGPASSWORD=s3cret")}, "neither a declared non-secret setting"},
 		{"SetCredential", []unitEdit{after(anchorDSNCred, "SetCredential=db-primary-dsn:postgres://u:p@db/x")}, "only from LoadCredential"},
+		{"duplicate LoadCredential with a foreign source first", []unitEdit{{anchorDSNCred, "LoadCredential=db-primary-dsn:/root/db-primary-dsn\n" + anchorDSNCred}}, "unit loads credential db-primary-dsn twice"},
+		{"duplicate LoadCredential with valid sources", []unitEdit{{anchorDSNCred, "LoadCredential=db-primary-dsn:" + standServiceDir + "/db-primary-dsn.txt\n" + anchorDSNCred}}, "unit loads credential db-primary-dsn twice"},
+		{"identical LoadCredential repeated", []unitEdit{after(anchorDSNCred, anchorDSNCred)}, "unit loads credential db-primary-dsn twice"},
+		{"SetCredentialEncrypted", []unitEdit{after(anchorDSNCred, "SetCredentialEncrypted=db-primary-dsn:encrypted")}, "only from LoadCredential"},
+		{"LoadCredentialEncrypted", []unitEdit{after(anchorDSNCred, "LoadCredentialEncrypted=db-primary-dsn:/root/db-primary-dsn")}, "only from LoadCredential"},
+		{"spaced LoadCredentialEncrypted", []unitEdit{after(anchorDSNCred, "LoadCredentialEncrypted = db-primary-dsn:/root/db-primary-dsn")}, "only from LoadCredential"},
+		{"ImportCredential", []unitEdit{after(anchorDSNCred, "ImportCredential=db-primary-dsn")}, "only from LoadCredential"},
+		{"spaced ImportCredential", []unitEdit{after(anchorDSNCred, "ImportCredential = db-primary-dsn")}, "only from LoadCredential"},
 		{"Environment outside [Service]", []unitEdit{{"[Install]", "[Install]\nEnvironment=HTTP_ADDR=:9091"}}, "want [Service]"},
 		{"LoadCredential outside [Service]", []unitEdit{{"[Install]", "[Install]\nLoadCredential=jwks:/etc/finassist/stage-public.jwks"}}, "want [Service]"},
 		{"DSN as a plain path", []unitEdit{{anchorDSNFile, "Environment=DB_PRIMARY_DSN_FILE=/etc/finassist/bank-statement-data/db-primary-dsn"}}, "no variable reads"},
