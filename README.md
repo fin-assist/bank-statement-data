@@ -58,6 +58,16 @@ make run
 - **Стенд** (FIN-149) — тот же бинарь под systemd: пример unit-файла с секретами через `LoadCredential` — [deploy/systemd/bank-statement-data.service](deploy/systemd/bank-statement-data.service). Скрипт деплоя запускает `migrate up` перед перезапуском unit.
 - **k3s** — манифесты в `fin-assist/infra` (FIN-147): ServiceAccount, projected token, headless Service, пробы `grpc`.
 
+### Раскатка unit-файла на стенд (FIN-349)
+
+С FIN-349 unit сам задаёт `ENV`, `SERVICE_NAME` и все `*_FILE`, а общий JWKS стенда читает напрямую по пути `/etc/finassist/stage-public.jwks`. Старый путь `/etc/finassist/stand/stage-public-keys.json` больше не читается. До перезапуска сервиса с новым unit:
+
+1. Положить общий JWKS стенда в `/etc/finassist/stage-public.jwks`: владелец root, права `0644`, каталог `/etc/finassist` — `0755`.
+2. Убрать из `/etc/finassist/bank-statement-data/env` переменные, которые теперь задаёт unit: `SERVICE_NAME`, `ENV`, `DB_PRIMARY_DSN_FILE`, `AUTH_STAGE_SIGNING_KEY_FILE`, `AUTH_STAGE_PUBLIC_KEYS_FILE`. `EnvironmentFile=` перекрывает `Environment=` независимо от порядка строк: значение, оставшееся в env-файле, тихо заменит значение из unit. Разное `SERVICE_NAME` разведёт `kid` ключа подписи с общим JWKS, и соседи начнут отклонять вызовы сервиса.
+3. Установить новый unit, выполнить `systemctl daemon-reload`, затем `migrate up` и перезапуск, как обычно.
+
+Тест `internal/config/stand_unit_test.go` проверяет сам unit, но не настоящий env-файл стенда: его в репозитории нет, поэтому шаг 2 — ручной.
+
 ## Библиотеки и обновления
 
 Общий код сервисов — отдельные Go-библиотеки из шаблона [`fin-assist/go-library-template`](https://github.com/fin-assist/go-library-template) ([FIN-118](https://finassist.youtrack.cloud/issue/FIN-118)): [`go-identity`](https://github.com/fin-assist/go-identity) (FIN-119), [`go-idempotency`](https://github.com/fin-assist/go-idempotency) (FIN-78), [`go-outbox`](https://github.com/fin-assist/go-outbox) (FIN-109), [`go-tombstone`](https://github.com/fin-assist/go-tombstone) (FIN-110).
