@@ -48,6 +48,8 @@ deploy/systemd/                    example unit for the stand
 ## Запуск
 
 ```bash
+# Требуются OBJECT_STORAGE_BUCKET, OBJECT_STORAGE_KMS_KEY_ID и путь
+# OBJECT_STORAGE_IAM_TOKEN_FILE; приватное ведро должно пройти CheckBucket (docs/import.md).
 # PostgreSQL 18, migrations and the service in Docker (dev mode, docs/config.md)
 make up
 # the same service on the host against the compose PostgreSQL

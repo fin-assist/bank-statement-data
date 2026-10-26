@@ -325,3 +325,13 @@ func TestIntegrationPublishedCalculationFixtures(t *testing.T) {
 		})
 	}
 }
+
+func TestUnitEachSourcePeriodMustBeOrdered(t *testing.T) {
+	inverted := strings.Replace(statement(""), "<DTSTART>20260101</DTSTART>", "<DTSTART>20260201</DTSTART>", 1)
+	validBlock := strings.TrimSuffix(strings.TrimPrefix(statement(""), `<?xml version="1.0" encoding="UTF-8"?>`+"\n"+`<?OFX OFXHEADER="200" VERSION="202"?>`+"\n<OFX>\n<BANKMSGSRSV1>"), "</BANKMSGSRSV1></OFX>")
+	for _, source := range []string{inverted, strings.Replace(inverted, "</BANKMSGSRSV1>", validBlock+"</BANKMSGSRSV1>", 1)} {
+		if _, err := (ofx.Parser{}).Parse(t.Context(), strings.NewReader(source)); err == nil {
+			t.Fatal("inverted block concealed by common range")
+		}
+	}
+}

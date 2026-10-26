@@ -38,7 +38,17 @@ services:
   bank-statement-data:
     build: .
     command: ["serve"]
-    environment: *env
+    environment:
+      <<: *env
+      OBJECT_STORAGE_ENDPOINT: ${OBJECT_STORAGE_ENDPOINT:-https://storage.yandexcloud.net}
+      OBJECT_STORAGE_BUCKET: ${OBJECT_STORAGE_BUCKET:?Set the dedicated private bucket}
+      OBJECT_STORAGE_KMS_KEY_ID: ${OBJECT_STORAGE_KMS_KEY_ID:?Set the KMS key ID}
+      OBJECT_STORAGE_IAM_TOKEN_FILE: /run/secrets/object-storage-iam
+    volumes:
+      - type: bind
+        source: ${OBJECT_STORAGE_IAM_TOKEN_FILE:?Set an externally rotated IAM token file}
+        target: /run/secrets/object-storage-iam
+        read_only: true
     ports: ["127.0.0.1:9090:9090", "127.0.0.1:9091:9091"]
     depends_on:
       migrate: { condition: service_completed_successfully }

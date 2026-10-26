@@ -6,7 +6,6 @@ import (
 	"crypto/md5"
 	"encoding/base64"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -447,8 +446,9 @@ func TestIntegrationRedirectDoesNotExposeToken(t *testing.T) {
 	}
 }
 
-func ExampleNew() {
+func TestUnitEmptyConfigurationRefused(t *testing.T) {
 	_, err := New(Config{})
-	fmt.Println(errors.Is(err, ErrConfig))
-	// Output: true
+	if !errors.Is(err, ErrConfig) {
+		t.Fatalf("empty config: %v", err)
+	}
 }

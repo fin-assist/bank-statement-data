@@ -314,6 +314,9 @@ func appendStatement(doc *importing.Document, account, period map[string]string,
 	doc.Accounts = append(doc.Accounts, a)
 	from, to := parseDate(period["DTSTART"]), parseDate(period["DTEND"])
 	if from != nil && to != nil {
+		if from.After(*to) {
+			return errMalformed
+		}
 		doc.Periods = append(doc.Periods, importing.Period{AccountKey: key, From: *from, To: *to})
 	}
 	for _, source := range rows {

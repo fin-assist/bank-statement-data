@@ -1,7 +1,9 @@
 package importing
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"io"
 	"strings"
@@ -55,7 +57,16 @@ func (s *Service) Process(ctx context.Context, user, id string) error {
 					resultErr = closed
 				}
 			}()
-			return s.parser.Parse(work, io.LimitReader(body, MaxFileBytes+1))
+			digest := sha256.New()
+			source := &io.LimitedReader{R: io.TeeReader(body, digest), N: MaxFileBytes + 1}
+			parsed, resultErr = s.parser.Parse(work, source)
+			if resultErr == nil {
+				_, resultErr = io.Copy(io.Discard, source)
+			}
+			if resultErr == nil && (MaxFileBytes+1-source.N != upload.SizeBytes || source.N == 0 || !bytes.Equal(digest.Sum(nil), upload.Digest[:])) {
+				resultErr = errAccounting
+			}
+			return parsed, resultErr
 		}()
 	}
 	if err == nil {
