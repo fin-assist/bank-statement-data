@@ -158,7 +158,10 @@ func (s *Service) Unread(ctx context.Context, user string, scope Scope) ([]Unrea
 		if a.ID != b.ID {
 			return a.ID < b.ID
 		}
-		return result[i].Number < result[j].Number
+		if result[i].Number != result[j].Number {
+			return result[i].Number < result[j].Number
+		}
+		return result[i].Occurrence < result[j].Occurrence
 	})
 	return result, zone.String(), nil
 }

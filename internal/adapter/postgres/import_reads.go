@@ -208,7 +208,7 @@ func (r *Imports) operations(ctx context.Context, user string) ([]importing.Oper
 }
 
 func (r *Imports) unread(ctx context.Context, user string) ([]importing.Unread, error) {
-	rows, err := r.db.Writer(ctx).Query(ctx, `SELECT l.upload_id::text,u.file_name,l.line_number,l.occurred_at,l.reason,l.account_id,COALESCE(l.external_id,''),COALESCE(l.resolved_by_upload_id::text,''),COALESCE(l.resolution,'') FROM unread_line l JOIN upload u ON u.user_id=l.user_id AND u.id=l.upload_id WHERE l.user_id=$1 ORDER BY u.uploaded_at,u.id,l.line_number`, user)
+	rows, err := r.db.Writer(ctx).Query(ctx, `SELECT l.upload_id::text,u.file_name,l.line_number,l.line_occurrence,l.occurred_at,l.reason,l.account_id,COALESCE(l.external_id,''),COALESCE(l.resolved_by_upload_id::text,''),COALESCE(l.resolution,'') FROM unread_line l JOIN upload u ON u.user_id=l.user_id AND u.id=l.upload_id WHERE l.user_id=$1 ORDER BY u.uploaded_at,u.id,l.line_number,l.line_occurrence`, user)
 	if err != nil {
 		return nil, importError(ctx, err)
 	}
@@ -216,8 +216,11 @@ func (r *Imports) unread(ctx context.Context, user string) ([]importing.Unread, 
 	var result []importing.Unread
 	for rows.Next() {
 		var line importing.Unread
-		if err := rows.Scan(&line.UploadID, &line.FileName, &line.Number, &line.OccurredAt, &line.Reason, &line.AccountID, &line.FITID, &line.ResolvedByUpload, &line.Resolution); err != nil {
+		if err := rows.Scan(&line.UploadID, &line.FileName, &line.Number, &line.Occurrence, &line.OccurredAt, &line.Reason, &line.AccountID, &line.FITID, &line.ResolvedByUpload, &line.Resolution); err != nil {
 			return nil, importError(ctx, err)
+		}
+		if line.Occurrence <= 0 {
+			return nil, errImportStorage
 		}
 		result = append(result, line)
 	}

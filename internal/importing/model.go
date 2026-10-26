@@ -44,6 +44,7 @@ type Unread struct {
 	UploadID         string
 	FileName         string
 	Number           int
+	Occurrence       int
 	OccurredAt       *time.Time
 	Reason           string
 	AccountID        *int64

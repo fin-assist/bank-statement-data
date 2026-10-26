@@ -43,6 +43,7 @@ func (r *Imports) Stage(ctx context.Context, user, id string, document importing
 	}
 	newIDs := make(map[string]bool)
 	categories := make(map[string]string)
+	occurrences := make(map[int]int)
 	for _, line := range document.Lines {
 		if err := ctx.Err(); err != nil {
 			return importing.Stage{}, err
@@ -55,7 +56,8 @@ func (r *Imports) Stage(ctx context.Context, user, id string, document importing
 			if line.Reason != "no_date" && line.Reason != "bad_date" && line.Reason != "bad_amount" && line.Reason != "truncated" || utf8.RuneCountInString(line.FITID) > 255 {
 				return importing.Stage{}, errImportStorage
 			}
-			_, err := r.db.Writer(ctx).Exec(ctx, `INSERT INTO unread_line(user_id,upload_id,line_number,reason,occurred_at,account_id,external_id) VALUES($1,$2,$3,$4,$5,$6,NULLIF($7,''))`, user, id, line.Number, line.Reason, line.OccurredAt, accountID, line.FITID)
+			occurrences[line.Number]++
+			_, err := r.db.Writer(ctx).Exec(ctx, `INSERT INTO unread_line(user_id,upload_id,line_number,line_occurrence,reason,occurred_at,account_id,external_id) VALUES($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''))`, user, id, line.Number, occurrences[line.Number], line.Reason, line.OccurredAt, accountID, line.FITID)
 			if err != nil {
 				return importing.Stage{}, importError(ctx, err)
 			}

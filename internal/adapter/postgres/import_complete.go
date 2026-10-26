@@ -87,9 +87,15 @@ func (r *Imports) SaveUnread(ctx context.Context, user string, lines []importing
 		return err
 	}
 	for _, line := range lines {
-		_, err := r.db.Writer(ctx).Exec(ctx, `UPDATE unread_line SET resolved_by_upload_id=NULLIF($4,'')::uuid,resolution=NULLIF($5,'') WHERE user_id=$1 AND upload_id=$2 AND line_number=$3`, user, line.UploadID, line.Number, line.ResolvedByUpload, line.Resolution)
+		if line.Occurrence <= 0 {
+			return errImportStorage
+		}
+		tag, err := r.db.Writer(ctx).Exec(ctx, `UPDATE unread_line SET resolved_by_upload_id=NULLIF($5,'')::uuid,resolution=NULLIF($6,'') WHERE user_id=$1 AND upload_id=$2 AND line_number=$3 AND line_occurrence=$4`, user, line.UploadID, line.Number, line.Occurrence, line.ResolvedByUpload, line.Resolution)
 		if err != nil {
 			return importError(ctx, err)
+		}
+		if tag.RowsAffected() != 1 {
+			return errImportStorage
 		}
 	}
 	return nil
