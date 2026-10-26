@@ -58,6 +58,17 @@ make run
 - **Стенд** (FIN-149) — тот же бинарь под systemd: пример unit-файла с секретами через `LoadCredential` — [deploy/systemd/bank-statement-data.service](deploy/systemd/bank-statement-data.service). Скрипт деплоя запускает `migrate up` перед перезапуском unit.
 - **k3s** — манифесты в `fin-assist/infra` (FIN-147): ServiceAccount, projected token, headless Service, пробы `grpc`.
 
+### Раскатка unit-файла на стенд (FIN-349)
+
+С FIN-349 unit сам задаёт `ENV`, `SERVICE_NAME` и все `*_FILE`, а общий JWKS стенда читает напрямую по пути `/etc/finassist/stage-public.jwks`. Старый путь `/etc/finassist/stand/stage-public-keys.json` новый unit больше не читает; удалять его можно после перезапуска на новом unit. Порядок раскатки:
+
+1. Положить общий JWKS стенда в `/etc/finassist/stage-public.jwks`: владелец root, права `0644`, каталог `/etc/finassist` — `0755`.
+2. Убрать из `/etc/finassist/bank-statement-data/env` `ENV`, `DB_PRIMARY_DSN_FILE`, `AUTH_STAGE_SIGNING_KEY_FILE` и `AUTH_STAGE_PUBLIC_KEYS_FILE`: старый unit задаёт их сам с теми же именами, поэтому работающий и перезапущенный старый unit этого не заметит, а значение из env-файла (например, путь к credential `stage-public-keys`, который новый unit больше не загружает) не перекроет новый unit. Это верно, только если значения в env-файле совпадают со значениями unit (`systemctl cat bank-statement-data`; `%d` там — это `/run/credentials/bank-statement-data.service`, в env-файле он не раскрывается и записан полным путём). Если значение отличается, до чистки привести источник unit к тому, что сервис читает сейчас: `DB_PRIMARY_DSN_FILE` и `AUTH_STAGE_SIGNING_KEY_FILE` новый unit читает из тех же credential, что и старый, поэтому нужное содержимое кладётся в `/etc/finassist/bank-statement-data/db-primary-dsn` и `stage-signing-key.pem` (владелец root, `0600`); для `AUTH_STAGE_PUBLIC_KEYS_FILE` старый unit читает `/etc/finassist/stand/stage-public-keys.json`, поэтому там должен лежать тот же JWKS, что в шаге 1, а новый unit читает уже файл шага 1; `ENV` на стенде — только `stage`. Остановка сервиса такое расхождение не исправляет, а только переносит сбой на шаг 4. Затем установить новый unit и выполнить `systemctl daemon-reload`: работающий процесс это не трогает.
+3. Только после этого убрать из env-файла `SERVICE_NAME`: старый unit его не задаёт, и без него любой перезапуск старого unit (`Restart=on-failure`, перезагрузка) упадёт с `SERVICE_NAME is required`. `EnvironmentFile=` перекрывает `Environment=` независимо от порядка строк: значение, оставшееся в env-файле, тихо заменит значение из unit. Разное `SERVICE_NAME` разведёт `kid` ключа подписи с общим JWKS, и соседи начнут отклонять вызовы сервиса.
+4. Выполнить `migrate up` и перезапуск, как обычно.
+
+Тест `internal/config/stand_unit_test.go` проверяет сам unit, но не настоящий env-файл стенда: его в репозитории нет, поэтому чистка env-файла в шагах 2 и 3 — ручная.
+
 ## Библиотеки и обновления
 
 Общий код сервисов — отдельные Go-библиотеки из шаблона [`fin-assist/go-library-template`](https://github.com/fin-assist/go-library-template) ([FIN-118](https://finassist.youtrack.cloud/issue/FIN-118)): [`go-identity`](https://github.com/fin-assist/go-identity) (FIN-119), [`go-idempotency`](https://github.com/fin-assist/go-idempotency) (FIN-78), [`go-outbox`](https://github.com/fin-assist/go-outbox) (FIN-109), [`go-tombstone`](https://github.com/fin-assist/go-tombstone) (FIN-110).

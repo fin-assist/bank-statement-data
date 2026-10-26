@@ -4,10 +4,15 @@
 #
 # Secrets are systemd credentials, not environment variables: they do not show up in
 # "systemctl show" or /proc/<pid>/environ.
-#   /etc/finassist/bank-statement-data/env            non-secret settings (see docs/config.md)
+#   /etc/finassist/bank-statement-data/env            non-secret settings (see docs/config.md); EnvironmentFile=
+#                                                     overrides Environment=, so it must not set what this unit sets
 #   /etc/finassist/bank-statement-data/db-primary-dsn DSN, mode 0600, owner root
-#   /etc/finassist/bank-statement-data/stage-signing-key.pem stand signing key, mode 0600, owner root
-#   /etc/finassist/stand/stage-public-keys.json      stand public JWKS shared by all services, mode 0644
+#   /etc/finassist/bank-statement-data/stage-signing-key.pem  stand signing key, mode 0600, owner root (LoadCredential)
+#   /etc/finassist/stage-public.jwks                  stand public JWKS shared by all services, mode 0644, owner root
+#                                                     (/etc/finassist 0755): DynamicUser reads it directly
+#
+# Environment= uses only the plain form Environment=NAME=value, one per line, without quotes,
+# spaces or backslashes; internal/config/stand_unit_test.go insists on it.
 [Unit]
 Description=fin-assist bank-statement-data
 After=network-online.target postgresql.service
@@ -18,14 +23,17 @@ Type=exec
 ExecStart=/opt/finassist/bank-statement-data/bank-statement-data serve
 EnvironmentFile=/etc/finassist/bank-statement-data/env
 Environment=ENV=stage
+# SERVICE_NAME is the kid/sub of the stand signing key and must match its kid in the shared JWKS.
+Environment=SERVICE_NAME=bank-statement-data
 LoadCredential=db-primary-dsn:/etc/finassist/bank-statement-data/db-primary-dsn
 Environment=DB_PRIMARY_DSN_FILE=%d/db-primary-dsn
-# AUTH_MODE=verify on the stand (FIN-267, docs/config.md): AUTH_USER_ISSUER, AUTH_USER_AUDIENCE,
-# AUTH_STAGE_ISSUER and PEER_USER_ADDR go to the env file; the stand keys go the same way as the DSN:
+# With ENV=stage and AUTH_MODE=verify (the default) service identity uses the stand key files
+# (FIN-267, docs/config.md): env must set AUTH_STAGE_ISSUER, as well as AUTH_USER_ISSUER,
+# AUTH_USER_AUDIENCE and PEER_USER_ADDR. Without these files and settings the unit does not start.
 LoadCredential=stage-signing-key:/etc/finassist/bank-statement-data/stage-signing-key.pem
 Environment=AUTH_STAGE_SIGNING_KEY_FILE=%d/stage-signing-key
-LoadCredential=stage-public-keys:/etc/finassist/stand/stage-public-keys.json
-Environment=AUTH_STAGE_PUBLIC_KEYS_FILE=%d/stage-public-keys
+Environment=AUTH_STAGE_PUBLIC_KEYS_FILE=/etc/finassist/stage-public.jwks
+# ENV=prod (Kubernetes, AUTH_KUBERNETES_* and SERVICE_TOKEN_FILE) is not deployed by this unit.
 
 DynamicUser=yes
 Restart=on-failure
