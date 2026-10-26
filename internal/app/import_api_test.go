@@ -1,7 +1,9 @@
 package app_test
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"io"
@@ -23,6 +25,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/fin-assist/bank-statement-data/internal/adapter/objectstore"
 	"github.com/fin-assist/bank-statement-data/internal/app"
 	"github.com/fin-assist/bank-statement-data/internal/app/apitest"
 )
@@ -447,5 +450,139 @@ func TestAPIUnreadRepairAndCancellationUseRealSnapshots(t *testing.T) {
 	decoded, ok := finerr.DecodeResultStatus(event.GetError().Status)
 	if !ok || decoded.Reason != "CANCELLED" {
 		t.Fatalf("canonical cancellation: %+v %v", decoded, ok)
+	}
+}
+
+func TestAPIUploadFramesRefusalsAndFailedResultAreDistinct(t *testing.T) {
+	env := apitest.Start(t)
+	c := pb.NewStatementsServiceClient(env.Conn)
+	for _, tc := range []struct {
+		name   string
+		frames []*pb.UploadStatementRequest
+		reason string
+	}{
+		{"no header", nil, "VALIDATION_ERROR"},
+		{"chunk before header", []*pb.UploadStatementRequest{{Part: &pb.UploadStatementRequest_Chunk{Chunk: []byte("x")}}}, "VALIDATION_ERROR"},
+		{"oversized metadata", []*pb.UploadStatementRequest{{Part: &pb.UploadStatementRequest_Header{Header: &pb.UploadHeader{FileName: strings.Repeat("x", 64<<10+1)}}}}, "VALIDATION_ERROR"},
+		{"duplicate header", []*pb.UploadStatementRequest{{Part: &pb.UploadStatementRequest_Header{Header: &pb.UploadHeader{FileName: "first"}}}, {Part: &pb.UploadStatementRequest_Header{Header: &pb.UploadHeader{FileName: "second"}}}}, "VALIDATION_ERROR"},
+		{"oversized chunk", []*pb.UploadStatementRequest{{Part: &pb.UploadStatementRequest_Header{Header: &pb.UploadHeader{FileName: "chunk"}}}, {Part: &pb.UploadStatementRequest_Chunk{Chunk: bytes.Repeat([]byte("x"), 256<<10+1)}}}, "VALIDATION_ERROR"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(metadata.AppendToOutgoingContext(apitest.User(t.Context(), apiUser), "idempotency-key", uuid.NewString()), 5*time.Second)
+			defer cancel()
+			stream, err := c.UploadStatement(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, frame := range tc.frames {
+				if err = stream.Send(frame); err != nil {
+					break
+				}
+			}
+			_, err = stream.CloseAndRecv()
+			if apitest.Reason(err) != tc.reason {
+				t.Fatalf("framing: %v", err)
+			}
+		})
+	}
+	for _, tc := range []struct{ body, reason string }{{"%PDF-1.0 synthetic", "WRONG_FORMAT"}, {strings.Replace(apiOFX, "<BANKID>T-BANK</BANKID>", "<BANKID>OTHER</BANKID>", 1), "WRONG_BANK"}} {
+		if _, err := apiUpload(t, c, apiUser, uuid.NewString(), "misleading.ofx", tc.body); apitest.Reason(err) != tc.reason {
+			t.Fatalf("content refusal: %v", err)
+		}
+	}
+	malformed := strings.Replace(apiOFX, "</STMTTRN>", "", 1)
+	accepted, err := apiUpload(t, c, apiUser, uuid.NewString(), "malformed.ofx", malformed)
+	if err != nil {
+		t.Fatalf("transaction structure must be diagnosed after admission: %v", err)
+	}
+	for range 2 {
+		ctx, cancel := context.WithTimeout(apitest.User(t.Context(), apiUser), 10*time.Second)
+		stream, err := c.WatchUpload(ctx, &pb.WatchUploadRequest{UploadId: accepted.UploadId})
+		if err != nil {
+			cancel()
+			t.Fatal(err)
+		}
+		for {
+			event, err := stream.Recv()
+			if err != nil {
+				cancel()
+				t.Fatal(err)
+			}
+			if failed := event.GetError(); failed != nil {
+				decoded, ok := finerr.DecodeResultStatus(failed.Status)
+				if !ok || decoded.Reason != "PROCESSING_FAILED" || decoded.Code != codes.FailedPrecondition || failed.Code != pb.ImportErrorCode_IMPORT_ERROR_CODE_PROCESSING_FAILED {
+					cancel()
+					t.Fatalf("failed result: %v", failed)
+				}
+				if _, err = stream.Recv(); !errors.Is(err, io.EOF) {
+					cancel()
+					t.Fatalf("business failure must end with RPC OK: %v", err)
+				}
+				break
+			}
+		}
+		cancel()
+	}
+	history, err := c.ListUploads(apitest.User(t.Context(), apiUser), &pb.ListUploadsRequest{})
+	if err != nil || len(history.Uploads) != 0 {
+		t.Fatalf("failed import leaked to history: %v %v", history, err)
+	}
+}
+
+func TestAPIActualBackgroundJobsRecoverStagingAndOrphans(t *testing.T) {
+	future := time.Now().Add(2 * time.Hour)
+	env := apitest.StartWith(t, app.Options{Now: func() time.Time { return future }})
+	c := pb.NewStatementsServiceClient(env.Conn)
+	accepted, err := apiUpload(t, c, apiUser, uuid.NewString(), "referenced.ofx", apiOFX)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = apiComplete(t, c, accepted.UploadId)
+	cfg := env.App.Cfg.ObjectStorage
+	objects, err := objectstore.New(objectstore.Config{Endpoint: cfg.Endpoint, Bucket: cfg.Bucket, KMSKeyID: cfg.KMSKeyID, Token: objectstore.FileToken(cfg.IAMTokenFile), Client: env.Objects.Server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	orphanUser, orphanID, stagingID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	for _, key := range []string{orphanUser + "/" + orphanID, apiUser + "/" + stagingID, "foreign/object"} {
+		if err = objects.Put(t.Context(), key, strings.NewReader("x"), 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db, err := pgx.Connect(t.Context(), env.DSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close(context.Background()) }()
+	hash := sha256.Sum256([]byte("x"))
+	if _, err = db.Exec(t.Context(), `INSERT INTO upload(user_id,id,source,file_name,size_bytes,content_sha256,object_key,status,uploaded_at)VALUES($1,$2,'tbank_ofx','crash-intent',1,$3,$4,'staging',$5)`, apiUser, stagingID, hash[:], apiUser+"/"+stagingID, future.Add(-2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.NewTimer(80 * time.Second)
+	defer deadline.Stop()
+	poll := time.NewTicker(20 * time.Millisecond)
+	defer poll.Stop()
+	for {
+		orphan, ok := env.Objects.Bytes(orphanUser + "/" + orphanID)
+		staged, stagedOK := env.Objects.Bytes(apiUser + "/" + stagingID)
+		if ok && len(orphan) == 0 && stagedOK && len(staged) == 0 {
+			break
+		}
+		select {
+		case <-deadline.C:
+			t.Fatal("actual scheduled jobs did not recover durable objects")
+		case <-poll.C:
+		}
+	}
+	if body, ok := env.Objects.Bytes(apiUser + "/" + accepted.UploadId); !ok || len(body) == 0 {
+		t.Fatal("orphan sweep erased referenced source")
+	}
+	if body, ok := env.Objects.Bytes("foreign/object"); !ok || string(body) != "x" {
+		t.Fatal("orphan sweep crossed its UUID namespace")
+	}
+	var state string
+	var fenced *time.Time
+	if err = db.QueryRow(t.Context(), "SELECT status,file_deleted_at FROM upload WHERE user_id=$1 AND id=$2", apiUser, stagingID).Scan(&state, &fenced); err != nil || state != "failed" || fenced == nil {
+		t.Fatalf("staging recovery not durable: %s %v %v", state, fenced, err)
 	}
 }
