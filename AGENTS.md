@@ -44,7 +44,7 @@ updates them in the same PR. A service made from the template rewrites the first
 | The whole service in-process for API tests | `internal/app/apitest/` |
 | Entities and invariants (no pgx, gRPC or generated code) | `internal/domain/` |
 | Usecases and the interfaces of repositories and clients they need | `internal/<feature>/` |
-| Shared gRPC server, client and request context | `github.com/fin-assist/go-grpc/{server,client,reqctx}` v0.2.0; service wiring — `internal/app/`, `docs/server.md` |
+| Shared gRPC server, client and request context | `github.com/fin-assist/go-grpc/{server,client,reqctx}` v0.2.1; service wiring — `internal/app/`, `docs/server.md` |
 | gRPC handlers (messages ↔ usecases) | `internal/adapter/grpc/<feature>/` |
 | Primary/replica routing, go-postgres.OpenPools/transaction adapter, repositories | `internal/adapter/postgres/`; rules — `docs/migrations.md`, «Запросы на pgx» |
 | Migration runner and public test harness | `github.com/fin-assist/go-migrate` / `migratetest` v0.2.0; ordered service sources — `internal/app/` |
@@ -63,7 +63,7 @@ updates them in the same PR. A service made from the template rewrites the first
 | PR review by Claude | `.github/workflows/claude.yml` |
 
 FIN-258 keeps only service routing/assembly adapters locally. Do not copy library internals back into the service
-or add dummy RPCs, SQL or jobs. FIN-267: AUTH_MODE=verify is go-identity v0.2.0 NewAssembly (prod: Kubernetes
+or add dummy RPCs, SQL or jobs. FIN-267: AUTH_MODE=verify is go-identity v0.2.1 NewAssembly (prod: Kubernetes
 ServiceAccounts, stage: file-key stand JWTs; user JWTs by user.GetSigningKeys through PEER_USER_ADDR, refreshed by
 the identity-keys job); any other ENV with verify fails startup, insecure-dev stays dev-only in config and app.New.
 go-tombstone v0.1.0 supplies the first migration source and the primary-backed go-grpc admission (TOKEN_REVOKED).
