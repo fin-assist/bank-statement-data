@@ -3,7 +3,7 @@ module github.com/fin-assist/bank-statement-data
 go 1.26.0
 
 require (
-	github.com/fin-assist/contracts/gen/go v0.4.0
+	github.com/fin-assist/contracts/gen/go v0.5.0
 	github.com/fin-assist/go-grpc v0.2.0
 	github.com/fin-assist/go-identity v0.2.0
 	github.com/fin-assist/go-migrate v0.1.1
