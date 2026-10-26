@@ -184,7 +184,7 @@ func TestUnitUnaryUnreadScopesAndSafeRows(t *testing.T) {
 		req   *statementdatav1.ListUnreadLinesRequest
 		scope importing.Scope
 	}{
-		{"upload", &statementdatav1.ListUnreadLinesRequest{Scope: &statementdatav1.ListUnreadLinesRequest_UploadId{UploadId: "raw-upload"}}, importing.Scope{UploadID: "raw-upload"}},
+		{"upload", &statementdatav1.ListUnreadLinesRequest{Scope: &statementdatav1.ListUnreadLinesRequest_UploadId{UploadId: streamUploadID}}, importing.Scope{UploadID: streamUploadID}},
 		{"period", &statementdatav1.ListUnreadLinesRequest{Scope: &statementdatav1.ListUnreadLinesRequest_Period{Period: &commonv1.TimeRange{Start: timestamppb.New(a), End: timestamppb.New(end)}}}, importing.Scope{Period: &importing.TimeRange{From: a, To: end}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -229,8 +229,9 @@ func TestUnitUnaryUnreadInvalidAndMissingScopes(t *testing.T) {
 		}}}
 		_, err := h.ListUnreadLines(unaryContext(), req)
 		unaryReason(t, err, "VALIDATION_ERROR")
-		if !called {
-			t.Fatal("semantic scope validation did not reach usecase")
+		_, hasUpload := req.GetScope().(*statementdatav1.ListUnreadLinesRequest_UploadId)
+		if called == hasUpload {
+			t.Fatal("UUID boundary or semantic scope validation reached wrong layer")
 		}
 	}
 	for _, tc := range []struct {
@@ -252,7 +253,7 @@ func TestUnitUnaryMutationsForwardExactArguments(t *testing.T) {
 	h := handler{svc: unaryUseCases{
 		delete: func(_ context.Context, id, upload string) error {
 			deleted = true
-			if id != unaryUser || upload != "not-normalized-upload" {
+			if id != unaryUser || upload != unaryUser {
 				t.Fatal(id, upload)
 			}
 			return nil
@@ -271,7 +272,7 @@ func TestUnitUnaryMutationsForwardExactArguments(t *testing.T) {
 			return nil
 		},
 	}}
-	if r, e := h.DeleteUpload(unaryContext(), &statementdatav1.DeleteUploadRequest{UploadId: "not-normalized-upload"}); e != nil || r == nil {
+	if r, e := h.DeleteUpload(unaryContext(), &statementdatav1.DeleteUploadRequest{UploadId: unaryUser}); e != nil || r == nil {
 		t.Fatal(r, e)
 	}
 	if r, e := h.SetUserTimezone(context.Background(), &usersettingsv1.SetUserTimezoneRequest{UserId: unaryRawUser, Timezone: "Asia/Tokyo", SettingsVersion: 42}); e != nil || r == nil {
@@ -299,7 +300,10 @@ func TestUnitUnaryMappedRefusalsAndUnknownCause(t *testing.T) {
 					return nil, "", tc.err
 				}, delete: func(context.Context, string, string) error { return tc.err }, timezone: func(context.Context, string, string, int32) error { return tc.err }, purge: func(context.Context, string) error { return tc.err },
 			}}
-			calls := []func() error{func() error { _, e := h.GetImportConfig(unaryContext(), nil); return e }, func() error { _, e := h.ListUploads(unaryContext(), nil); return e }, func() error { _, e := h.ListUnreadLines(unaryContext(), nil); return e }, func() error { _, e := h.DeleteUpload(unaryContext(), nil); return e }, func() error {
+			calls := []func() error{func() error { _, e := h.GetImportConfig(unaryContext(), nil); return e }, func() error { _, e := h.ListUploads(unaryContext(), nil); return e }, func() error { _, e := h.ListUnreadLines(unaryContext(), nil); return e }, func() error {
+				_, e := h.DeleteUpload(unaryContext(), &statementdatav1.DeleteUploadRequest{UploadId: unaryUser})
+				return e
+			}, func() error {
 				_, e := h.SetUserTimezone(context.Background(), &usersettingsv1.SetUserTimezoneRequest{UserId: unaryUser})
 				return e
 			}, func() error {

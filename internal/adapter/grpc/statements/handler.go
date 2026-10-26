@@ -141,7 +141,10 @@ func (h *handler) ListUnreadLines(ctx context.Context, r *statementdatav1.ListUn
 	var scope importing.Scope
 	switch v := r.GetScope().(type) {
 	case *statementdatav1.ListUnreadLinesRequest_UploadId:
-		scope.UploadID = v.UploadId
+		scope.UploadID, err = requestUploadID(v.UploadId)
+		if err != nil {
+			return nil, err
+		}
 	case *statementdatav1.ListUnreadLinesRequest_Period:
 		if v.Period == nil || v.Period.Start.CheckValid() != nil || v.Period.End.CheckValid() != nil {
 			return nil, invalid("period", "INVALID_FORMAT")
@@ -175,7 +178,11 @@ func (h *handler) DeleteUpload(ctx context.Context, r *statementdatav1.DeleteUpl
 	if err != nil {
 		return nil, err
 	}
-	if err = h.svc.Delete(ctx, user, r.GetUploadId()); err != nil {
+	id, err := requestUploadID(r.GetUploadId())
+	if err != nil {
+		return nil, err
+	}
+	if err = h.svc.Delete(ctx, user, id); err != nil {
 		return nil, keyadapter.ContractError(err)
 	}
 	return &statementdatav1.DeleteUploadResponse{}, nil
@@ -213,6 +220,14 @@ func actor(ctx context.Context) (string, error) {
 		return "", finerr.InvalidToken()
 	}
 	return parsed.String(), nil
+}
+
+func requestUploadID(raw string) (string, error) {
+	id, err := uuid.Parse(raw)
+	if err != nil || id == uuid.Nil {
+		return "", invalid("upload_id", "INVALID_FORMAT")
+	}
+	return id.String(), nil
 }
 
 func systemUser(raw string) (string, error) {

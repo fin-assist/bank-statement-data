@@ -35,6 +35,22 @@ func TestAPIForeignAndMissingUploadsReachTenantSQLWithoutMutations(t *testing.T)
 		t.Fatal(err)
 	}
 	defer func() { _ = db.Close(context.Background()) }()
+	for _, badID := range []string{"", "not-a-uuid", "00000000-0000-0000-0000-000000000000"} {
+		ctx := apitest.User(t.Context(), apiOther)
+		if _, err := c.DeleteUpload(ctx, &pb.DeleteUploadRequest{UploadId: badID}); apitest.Reason(err) != "VALIDATION_ERROR" {
+			t.Fatal("invalid delete ID", err)
+		}
+		watch, err := c.WatchUpload(ctx, &pb.WatchUploadRequest{UploadId: badID})
+		if err == nil {
+			_, err = watch.Recv()
+		}
+		if apitest.Reason(err) != "VALIDATION_ERROR" {
+			t.Fatal("invalid watch ID", err)
+		}
+		if _, err := c.ListUnreadLines(ctx, &pb.ListUnreadLinesRequest{Scope: &pb.ListUnreadLinesRequest_UploadId{UploadId: badID}}); apitest.Reason(err) != "VALIDATION_ERROR" {
+			t.Fatal("invalid unread ID", err)
+		}
+	}
 	// An existing foreign user reaches the repository instead of an absent-profile guard.
 	for _, id := range []string{accepted.UploadId, uuid.NewString()} {
 		ctx := apitest.User(t.Context(), apiOther)

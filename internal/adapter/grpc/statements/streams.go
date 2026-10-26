@@ -119,8 +119,12 @@ func (h *handler) WatchUpload(r *statementdatav1.WatchUploadRequest, stream stat
 	if err != nil {
 		return err
 	}
+	id, err := requestUploadID(r.GetUploadId())
+	if err != nil {
+		return err
+	}
 	terminal := false
-	err = h.svc.Watch(ctx, user, r.GetUploadId(), func(event importing.Event) error {
+	err = h.svc.Watch(ctx, user, id, func(event importing.Event) error {
 		if terminal {
 			return errProjection
 		}

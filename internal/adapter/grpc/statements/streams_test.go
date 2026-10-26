@@ -334,7 +334,7 @@ func TestUnitStreamWatchFailsClosedWithoutSyntheticFailureEvents(t *testing.T) {
 		return emit(importing.Event{Result: &importing.Result{}})
 	}}
 	output := &streamWatchServer{ctx: streamContext(), sendErr: boom}
-	if err := streamHandler(svc).WatchUpload(&statementdatav1.WatchUploadRequest{}, output); !errors.Is(err, boom) {
+	if err := streamHandler(svc).WatchUpload(&statementdatav1.WatchUploadRequest{UploadId: streamUploadID}, output); !errors.Is(err, boom) {
 		t.Fatal("watch send failure lost")
 	}
 }
@@ -347,7 +347,7 @@ func TestUnitStreamCanceledContextsAndMissingIdentity(t *testing.T) {
 		t.Fatal("pre-canceled receive started another SDK operation")
 	}
 	svc := &streamUseCases{watch: func(ctx context.Context, _, _ string, _ func(importing.Event) error) error { return ctx.Err() }}
-	if err := streamHandler(svc).WatchUpload(&statementdatav1.WatchUploadRequest{}, &streamWatchServer{ctx: ctx}); !errors.Is(err, context.Canceled) {
+	if err := streamHandler(svc).WatchUpload(&statementdatav1.WatchUploadRequest{UploadId: streamUploadID}, &streamWatchServer{ctx: ctx}); !errors.Is(err, context.Canceled) {
 		t.Fatal("watch cancellation lost")
 	}
 	input := &streamUploadServer{ctx: context.Background()}
