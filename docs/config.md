@@ -39,7 +39,7 @@
 | `AUTH_KUBERNETES_NAMESPACE` | `finassist` | `ENV=prod`: доверенный namespace вызывающих ServiceAccount |
 | `AUTH_STAGE_ISSUER` | — | `ENV=stage`: общий issuer сервисных JWT стенда; обязателен в stage, запрещён в prod |
 | `AUTH_STAGE_SIGNING_KEY_FILE` | — | `ENV=stage`: PKCS#8 PEM Ed25519 ключ этого сервиса (права `0600`), читается при старте; обязателен в stage, запрещён в prod |
-| `AUTH_STAGE_PUBLIC_KEYS_FILE` | — | `ENV=stage`: JWKS ключей сервисов стенда (только OKP Ed25519, `kid` — имя сервиса), читается при старте; обязателен в stage, запрещён в prod |
+| `AUTH_STAGE_PUBLIC_KEYS_FILE` | — | `ENV=stage`: JWKS ключей сервисов стенда (только OKP Ed25519, `kid` — имя сервиса), читается при старте; на стенде — общий файл `/etc/finassist/stage-public.jwks` (права `0644`); обязателен в stage, запрещён в prod |
 | `DB_PRIMARY_DSN` / `_FILE` | — (обязательна) | DSN primary (`-rw`) |
 | `DB_REPLICA_DSN` / `_FILE` | — | DSN реплик (`-ro`); пусто — чтение тоже с primary. На стенде оба указывают на один PostgreSQL |
 | `DB_MAX_CONNS` | `10` | размер каждого пула |

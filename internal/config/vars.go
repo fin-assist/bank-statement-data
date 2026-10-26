@@ -37,7 +37,7 @@ var Vars = []Var{
 	{Name: "AUTH_KUBERNETES_NAMESPACE", Command: "serve", Default: "finassist", Doc: "`ENV=prod`: доверенный namespace вызывающих ServiceAccount"},
 	{Name: "AUTH_STAGE_ISSUER", Command: "serve", Doc: "`ENV=stage`: общий issuer сервисных JWT стенда; обязателен в stage, запрещён в prod"},
 	{Name: "AUTH_STAGE_SIGNING_KEY_FILE", Command: "serve", Doc: "`ENV=stage`: PKCS#8 PEM Ed25519 ключ этого сервиса (права `0600`), читается при старте; обязателен в stage, запрещён в prod"},
-	{Name: "AUTH_STAGE_PUBLIC_KEYS_FILE", Command: "serve", Doc: "`ENV=stage`: JWKS ключей сервисов стенда (только OKP Ed25519, `kid` — имя сервиса), читается при старте; обязателен в stage, запрещён в prod"},
+	{Name: "AUTH_STAGE_PUBLIC_KEYS_FILE", Command: "serve", Doc: "`ENV=stage`: JWKS ключей сервисов стенда (только OKP Ed25519, `kid` — имя сервиса), читается при старте; на стенде — общий файл `/etc/finassist/stage-public.jwks` (права `0644`); обязателен в stage, запрещён в prod"},
 	{Name: "DB_PRIMARY_DSN", Command: "serve", Required: true, Secret: true,
 		Doc: "DSN primary (`-rw`)"},
 	{Name: "DB_REPLICA_DSN", Command: "serve", Secret: true,
