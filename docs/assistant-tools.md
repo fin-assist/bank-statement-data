@@ -64,6 +64,15 @@ current primary revision обнаруживает и commit, начавшийс�
 Проверки: unit — независимые суммы/округление, обе стороны возвратов, лимиты, переполнение,
 ошибки и tombstone; integration/API — полная production-сборка с реальным PG18 и публичным
 gRPC, все группировки/точные переходы, до первого расчёта, более10000 строк, оба режима,
-пустой охват, версии/повторы/удаление, caller и tenant isolation. Новые зависимости, RPC,
-поля публичного контракта или настройки окружения не добавлены. Worker/доставка — FIN-357,
+пустой охват, версии/повторы/удаление, caller и tenant isolation. RPC и provenance заданы
+утверждённым контрактом FIN-367; сервис использует опубликованный SDK v0.6.0, локальный replace не
+попадает в PR. Новых REST-полей и настроек окружения нет. Worker/доставка — FIN-357,
 историческая эволюция определений — FIN-6.
+
+Если у использованной done-загрузки `statement_range_source IS NULL`, первичное покрытие
+ещё не подтверждено. Overview, Aggregate, Find и primary GetDataVersion опускают только
+`uploads` revision; categories/time_zone сохраняются. Чужие, удалённые и незавершённые загрузки не делают эту provenance неизвестной. После bounded OFX recovery FIN-357
+новое чтение снова получает прежний uploads counter: metadata repair счётчик не продвигает.
+Прежний ответ с неполной baseline остаётся `unverified`, текущая metadata его не дополняет.
+Проверки: `TestUnitToolFactsReadOnlyProjectionAndStorageFailures`,
+`TestAPIAssistantRevisionsOmitUnverifiedRawCoverage` и integration-эквивалент.

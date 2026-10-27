@@ -39,7 +39,7 @@ func (tx *toolFactTx) Query(_ context.Context, q string, args ...any) (pgx.Rows,
 func TestUnitToolFactsReadOnlyProjectionAndStorageFailures(t *testing.T) {
 	at := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
 	fixture := func() *toolFactTx {
-		return &toolFactTx{row: importScanRow{values: []any{&at, &at, int64(3), int64(7), int64(2)}}, days: &categoryScopeRows{values: [][]any{{at}}}, refs: &categoryScopeRows{values: [][]any{{"merchant", "", "m"}, {"regular", "Cloud", "r"}}}}
+		return &toolFactTx{row: importScanRow{values: []any{&at, &at, int64(3), int64(7), int64(2), true}}, days: &categoryScopeRows{values: [][]any{{at}}}, refs: &categoryScopeRows{values: [][]any{{"merchant", "", "m"}, {"regular", "Cloud", "r"}}}}
 	}
 	run := func(tx *toolFactTx, fn func(context.Context, *ToolFacts)) {
 		db := &DB{transactions: pgstore.New(unitBeginner{tx})}
@@ -92,6 +92,14 @@ func TestUnitToolFactsReadOnlyProjectionAndStorageFailures(t *testing.T) {
 			}
 		})
 	}
+	tx = fixture()
+	tx.row.values[5] = false
+	run(tx, func(ctx context.Context, r *ToolFacts) {
+		v, err := r.Version(ctx, "tenant")
+		if _, known := v.Revisions["uploads"]; err != nil || known || v.Revisions["categories"] != 3 {
+			t.Fatal("unknown raw coverage certified", v, err)
+		}
+	})
 	tx = fixture()
 	tx.row.err = pgx.ErrNoRows
 	run(tx, func(ctx context.Context, r *ToolFacts) {

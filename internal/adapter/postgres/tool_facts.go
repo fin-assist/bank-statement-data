@@ -21,7 +21,9 @@ func NewToolFacts(db *DB) *ToolFacts { return &ToolFacts{db: db} }
 func (r *ToolFacts) Version(ctx context.Context, user string) (out operations.DataVersion, err error) {
 	out.Revisions = map[string]int64{"categories": 0, "uploads": 0, "time_zone": 0}
 	var categories, uploads, timezone int64
-	err = r.db.Writer(ctx).QueryRow(ctx, `SELECT categories_changed_at,uploads_changed_at,categories_revision,uploads_revision,settings_version FROM user_state WHERE user_id=$1`, user).Scan(&out.Categories, &out.Uploads, &categories, &uploads, &timezone)
+	var coverageKnown bool
+	err = r.db.Writer(ctx).QueryRow(ctx, `SELECT categories_changed_at,uploads_changed_at,categories_revision,uploads_revision,settings_version,
+ NOT EXISTS(SELECT 1 FROM upload WHERE user_id=$1 AND status='done' AND statement_range_source IS NULL) FROM user_state WHERE user_id=$1`, user).Scan(&out.Categories, &out.Uploads, &categories, &uploads, &timezone, &coverageKnown)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return out, nil
 	}
@@ -32,6 +34,9 @@ func (r *ToolFacts) Version(ctx context.Context, user string) (out operations.Da
 		return out, operations.ErrState
 	}
 	out.Revisions["categories"], out.Revisions["uploads"], out.Revisions["time_zone"] = categories, uploads, timezone
+	if !coverageKnown {
+		delete(out.Revisions, "uploads")
+	}
 	return out, nil
 }
 

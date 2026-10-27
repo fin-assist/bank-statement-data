@@ -340,3 +340,9 @@ Daily-only ошибки хранят `user_state.daily_recalc_attempts` (0…327
 `TestIntegrationToolRevisionsCommitAtomicallyAndSurviveClockRollback` и API tools scenarios.
 Сборка, не знающая этих инвариантов, не допускается как прозрачный rollback после включения
 revision-aware ответов; нужен отдельный план признания provenance неизвестным.
+
+При `statement_range_source IS NULL` у done-загрузки tools не заявляют известный uploads revision.
+Условие читается с тем же financial snapshot; current GetDataVersion использует primary независимо
+от read hints. Metadata recovery восстанавливает известность без изменения source counters;
+failed/processing/deleted и чужие загрузки не создают неизвестность. Это проверяют unit и реальные
+API/integration `AssistantRevisionsOmitUnverifiedRawCoverage`.
