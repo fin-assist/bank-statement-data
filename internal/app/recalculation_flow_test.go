@@ -16,18 +16,25 @@ import (
 	pb "github.com/fin-assist/contracts/gen/go/finassist/statementdata/v1"
 	deletion "github.com/fin-assist/contracts/gen/go/finassist/userdeletion/v1"
 	settings "github.com/fin-assist/contracts/gen/go/finassist/usersettings/v1"
+	outbox "github.com/fin-assist/go-outbox"
+	tombstone "github.com/fin-assist/go-tombstone"
 	"github.com/fin-assist/go-worker"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/fin-assist/bank-statement-data/internal/adapter/metricswire"
+	"github.com/fin-assist/bank-statement-data/internal/adapter/objectstore"
 	"github.com/fin-assist/bank-statement-data/internal/adapter/postgres"
 	"github.com/fin-assist/bank-statement-data/internal/app"
 	"github.com/fin-assist/bank-statement-data/internal/app/apitest"
 	"github.com/fin-assist/bank-statement-data/internal/config"
+	"github.com/fin-assist/bank-statement-data/internal/importing"
+	"github.com/fin-assist/bank-statement-data/internal/recalculating"
 )
 
 type tickClock struct{ ticks chan time.Time }
@@ -319,7 +326,7 @@ func TestIntegrationRecalculationRestartRecoversImmutableOutboxAndPeerFailure(t 
 	}
 }
 
-func timezoneRemovalFlow(t *testing.T) {
+func timezoneRemovalFlow(t *testing.T, legacy ...bool) {
 	env, peer, _ := metricsEnv(t, false)
 	client := pb.NewStatementsServiceClient(env.Conn)
 	source := strings.ReplaceAll(apiOFX, "<DTSTART>20260901000000[+3:MSK]</DTSTART>", "")
@@ -335,6 +342,15 @@ func timezoneRemovalFlow(t *testing.T) {
 	}
 	eventuallyMetrics(t, func() bool { return peer.settled() && peer.count() == 6 })
 	before := peer.version()
+	var resultBefore, resultAfter string
+	if len(legacy) > 0 && legacy[0] {
+		if err = env.App.DB.Primary().QueryRow(t.Context(), `SELECT result::text FROM upload WHERE user_id=$1 AND id=$2`, apiUser, accepted.UploadId).Scan(&resultBefore); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = env.App.DB.Primary().Exec(t.Context(), `UPDATE upload SET statement_from_instant=NULL,statement_to_instant=NULL,statement_range_source=NULL WHERE user_id=$1 AND id=$2`, apiUser, accepted.UploadId); err != nil {
+			t.Fatal(err)
+		}
+	}
 	_, err = settings.NewUserSettingsSyncServiceClient(env.Conn).SetUserTimezone(apitest.Caller(t.Context(), "user"), &settings.SetUserTimezoneRequest{UserId: apiUser, Timezone: "America/Havana", SettingsVersion: 2})
 	if err != nil {
 		t.Fatal(err)
@@ -343,6 +359,12 @@ func timezoneRemovalFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventuallyMetrics(t, func() bool { return peer.settled() && peer.version() > before })
+	if len(legacy) > 0 && legacy[0] {
+		var origin string
+		if err = env.App.DB.Primary().QueryRow(t.Context(), `SELECT result::text,statement_range_source FROM upload WHERE user_id=$1 AND id=$2`, apiUser, accepted.UploadId).Scan(&resultAfter, &origin); err != nil || origin != "operations" || resultBefore != resultAfter {
+			t.Fatal("metadata recovery rewrote import result or lost provenance", origin, err)
+		}
+	}
 	peer.mu.Lock()
 	defer peer.mu.Unlock()
 	removed, august, september := false, 0, 0
@@ -373,4 +395,231 @@ func timezoneRemovalFlow(t *testing.T) {
 func TestAPIRecalculationTimezoneDeletesDisappearingCalendarKey(t *testing.T) { timezoneRemovalFlow(t) }
 func TestIntegrationRecalculationTimezoneDeletesDisappearingCalendarKey(t *testing.T) {
 	timezoneRemovalFlow(t)
+}
+
+func TestAPIRecalculationLegacyCoverageRepairsFromRetainedOriginal(t *testing.T) {
+	timezoneRemovalFlow(t, true)
+}
+func TestIntegrationRecalculationLegacyCoverageRepairsFromRetainedOriginal(t *testing.T) {
+	timezoneRemovalFlow(t, true)
+}
+
+func legacyDeleteDuringRead(t *testing.T, purge bool) {
+	env, peer, _ := metricsEnv(t, false)
+	client := pb.NewStatementsServiceClient(env.Conn)
+	accepted, err := apiUpload(t, client, apiUser, uuid.NewString(), "legacy-race.ofx", apiOFX)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiComplete(t, client, accepted.UploadId)
+	if err = env.App.Recalculations.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	eventuallyMetrics(t, func() bool { return peer.settled() })
+	if _, err = env.App.DB.Primary().Exec(t.Context(), `UPDATE upload SET statement_from_instant=NULL,statement_to_instant=NULL,statement_range_source=NULL WHERE user_id=$1 AND id=$2`, apiUser, accepted.UploadId); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = settings.NewUserSettingsSyncServiceClient(env.Conn).SetUserTimezone(apitest.Caller(t.Context(), "user"), &settings.SetUserTimezoneRequest{UserId: apiUser, Timezone: "America/Havana", SettingsVersion: 2}); err != nil {
+		t.Fatal(err)
+	}
+	entered, resume := make(chan struct{}, 1), make(chan struct{})
+	env.Objects.PauseReads(entered, resume)
+	finished := make(chan error, 1)
+	go func() { finished <- env.App.Recalculations.Recalculate(t.Context(), apiUser) }()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		close(resume)
+		t.Fatal("legacy metadata never read original")
+	}
+	if purge {
+		_, err = deletion.NewUserDeletionServiceClient(env.Conn).PurgeUserData(apitest.Caller(t.Context(), "user"), &deletion.PurgeUserDataRequest{UserId: apiUser})
+	} else {
+		_, err = client.DeleteUpload(apitest.User(t.Context(), apiUser), &pb.DeleteUploadRequest{UploadId: accepted.UploadId})
+	}
+	close(resume)
+	env.Objects.PauseReads(nil, nil)
+	if err != nil {
+		t.Fatal("object IO held a SQL transaction across deletion", err)
+	}
+	select {
+	case err = <-finished:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("legacy recovery did not join")
+	}
+	var count int
+	if purge {
+		if err = env.App.DB.Primary().QueryRow(t.Context(), `SELECT count(*)FROM user_state WHERE user_id=$1`, apiUser).Scan(&count); err != nil || count != 0 {
+			t.Fatal("recovery resurrected purged user", count, err)
+		}
+	} else {
+		var origin *string
+		if err = env.App.DB.Primary().QueryRow(t.Context(), `SELECT statement_range_source FROM upload WHERE user_id=$1 AND id=$2`, apiUser, accepted.UploadId).Scan(&origin); err != nil || origin != nil {
+			t.Fatal("recovery changed deleted metadata", origin, err)
+		}
+		eventuallyMetrics(t, func() bool { return peer.settled() && peer.count() == 0 })
+	}
+}
+func TestAPIRecalculationLegacyDeleteAndPurgeFenceInFlightOriginalRead(t *testing.T) {
+	for _, purge := range []bool{false, true} {
+		t.Run(map[bool]string{false: "upload", true: "user"}[purge], func(t *testing.T) { legacyDeleteDuringRead(t, purge) })
+	}
+}
+func TestIntegrationRecalculationLegacyDeleteAndPurgeFenceInFlightOriginalRead(t *testing.T) {
+	for _, purge := range []bool{false, true} {
+		t.Run(map[bool]string{false: "upload", true: "user"}[purge], func(t *testing.T) { legacyDeleteDuringRead(t, purge) })
+	}
+}
+
+type blockingCalculation struct {
+	*postgres.Recalculations
+	entered, release chan struct{}
+	once             sync.Once
+}
+
+func (r *blockingCalculation) Snapshot(ctx context.Context, user string) (importing.Snapshot, error) {
+	snapshot, err := r.Recalculations.Snapshot(ctx, user)
+	if err != nil {
+		return snapshot, err
+	}
+	r.once.Do(func() { close(r.entered) })
+	select {
+	case <-r.release:
+		return snapshot, nil
+	case <-ctx.Done():
+		return snapshot, ctx.Err()
+	}
+}
+
+type readyCoverage struct{}
+
+func (readyCoverage) Recover(context.Context, string) (bool, error) { return true, nil }
+func TestIntegrationRecalculationConcurrentSourceChangeKeepsNewQueue(t *testing.T) {
+	a, _ := importAssembly(t, calculationNow)
+	importFile(t, a, "04-edge-cases-2026-09.ofx")
+	base := postgres.NewRecalculations(a.DB, a.Cfg.DailyRecalculationOffset)
+	repo := &blockingCalculation{Recalculations: base, entered: make(chan struct{}), release: make(chan struct{})}
+	defer func() {
+		select {
+		case <-repo.release:
+		default:
+			close(repo.release)
+		}
+	}()
+	deleted, err := tombstone.New(a.DB, a.DB.Primary(), calculationNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := outbox.NewPublisher(a.DB, calculationNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publish, err := metricswire.NewPublisher(raw, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := recalculating.New(a.DB, repo, deleted, publish, calculationNow, readyCoverage{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	calcDone, writeDone := make(chan error, 1), make(chan error, 1)
+	go func() { calcDone <- service.Recalculate(t.Context(), apiUser) }()
+	select {
+	case <-repo.entered:
+	case <-time.After(10 * time.Second):
+		close(repo.release)
+		t.Fatal("calculation did not lock source")
+	}
+	go func() { writeDone <- a.Imports.SetTimezone(t.Context(), apiUser, "America/Havana", 2) }()
+	observer, err := pgx.Connect(t.Context(), a.Cfg.DB.PrimaryDSN)
+	if err != nil {
+		close(repo.release)
+		t.Fatal(err)
+	}
+	defer func() { _ = observer.Close(context.Background()) }()
+	eventuallyMetrics(t, func() bool {
+		var waiting int
+		return observer.QueryRow(t.Context(), `SELECT count(*)FROM pg_stat_activity WHERE datname=current_database()AND wait_event='advisory'`).Scan(&waiting) == nil && waiting > 0
+	})
+	close(repo.release)
+	if err = <-calcDone; err != nil {
+		t.Fatal(err)
+	}
+	if err = <-writeDone; err != nil {
+		t.Fatal(err)
+	}
+	var queued int
+	if err = observer.QueryRow(t.Context(), `SELECT count(*)FROM recalc_queue WHERE user_id=$1`, apiUser).Scan(&queued); err != nil || queued == 0 {
+		t.Fatal("old calculator deleted later source change", queued, err)
+	}
+	if err = a.Recalculations.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	var version int32
+	if err = observer.QueryRow(t.Context(), `SELECT calc_version FROM user_state WHERE user_id=$1`, apiUser).Scan(&version); err != nil || version != 6 {
+		t.Fatal("new source not published at higher version", version, err)
+	}
+}
+
+func legacyBrokenOriginal(t *testing.T, missing bool) {
+	env, peer, _ := metricsEnv(t, false)
+	client := pb.NewStatementsServiceClient(env.Conn)
+	accepted, err := apiUpload(t, client, apiUser, uuid.NewString(), "legacy-original.ofx", apiOFX)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiComplete(t, client, accepted.UploadId)
+	if err = env.App.Recalculations.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	eventuallyMetrics(t, peer.settled)
+	if _, err = env.App.DB.Primary().Exec(t.Context(), `UPDATE upload SET statement_from_instant=NULL,statement_to_instant=NULL,statement_range_source=NULL WHERE user_id=$1 AND id=$2`, apiUser, accepted.UploadId); err != nil {
+		t.Fatal(err)
+	}
+	if missing {
+		var key string
+		if err = env.App.DB.Primary().QueryRow(t.Context(), `SELECT object_key FROM upload WHERE user_id=$1 AND id=$2`, apiUser, accepted.UploadId).Scan(&key); err != nil {
+			t.Fatal(err)
+		}
+		c := env.App.Cfg.ObjectStorage
+		store, e := objectstore.New(objectstore.Config{Endpoint: c.Endpoint, Bucket: c.Bucket, KMSKeyID: c.KMSKeyID, Token: objectstore.FileToken(c.IAMTokenFile), Client: env.Objects.Server.Client()})
+		if e != nil {
+			t.Fatal(e)
+		}
+		if e = store.Delete(t.Context(), key); e != nil {
+			t.Fatal(e)
+		}
+	} else {
+		if _, err = env.App.DB.Primary().Exec(t.Context(), `UPDATE upload SET content_sha256=$3 WHERE user_id=$1 AND id=$2`, apiUser, accepted.UploadId, make([]byte, 32)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err = settings.NewUserSettingsSyncServiceClient(env.Conn).SetUserTimezone(apitest.Caller(t.Context(), "user"), &settings.SetUserTimezoneRequest{UserId: apiUser, Timezone: "America/Havana", SettingsVersion: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err = env.App.Recalculations.Tick(t.Context()); err == nil {
+		t.Fatal("broken original silently became approximate coverage")
+	}
+	eventuallyMetrics(t, peer.pending)
+	var attempts int
+	var origin *string
+	if err = env.App.DB.Primary().QueryRow(t.Context(), `SELECT max(attempts)FROM recalc_queue WHERE user_id=$1`, apiUser).Scan(&attempts); err != nil || attempts < 1 {
+		t.Fatal("missing durable retry", attempts, err)
+	}
+	if err = env.App.DB.Primary().QueryRow(t.Context(), `SELECT statement_range_source FROM upload WHERE user_id=$1 AND id=$2`, apiUser, accepted.UploadId).Scan(&origin); err != nil || origin != nil || peer.count() != 6 {
+		t.Fatal("failed recovery changed preserved snapshots or guessed provenance", origin, err)
+	}
+}
+func TestAPIRecalculationLegacyWrongOrMissingOriginalKeepsPendingRetry(t *testing.T) {
+	for _, missing := range []bool{false, true} {
+		t.Run(map[bool]string{false: "hash", true: "missing"}[missing], func(t *testing.T) { legacyBrokenOriginal(t, missing) })
+	}
+}
+func TestIntegrationRecalculationLegacyWrongOrMissingOriginalKeepsPendingRetry(t *testing.T) {
+	for _, missing := range []bool{false, true} {
+		t.Run(map[bool]string{false: "hash", true: "missing"}[missing], func(t *testing.T) { legacyBrokenOriginal(t, missing) })
+	}
 }

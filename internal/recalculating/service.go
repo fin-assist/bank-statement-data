@@ -19,14 +19,15 @@ type Service struct {
 	publisher Publisher
 	now       func() time.Time
 	cursor    atomic.Pointer[string]
+	coverage  Coverage
 }
 
 // New requires explicit storage, tombstone, publication and clock boundaries.
-func New(tx importing.Transactions, repo Repository, deleted importing.Tombstones, publisher Publisher, now func() time.Time) (*Service, error) {
-	if tx == nil || repo == nil || deleted == nil || publisher == nil || now == nil {
+func New(tx importing.Transactions, repo Repository, deleted importing.Tombstones, publisher Publisher, now func() time.Time, coverage Coverage) (*Service, error) {
+	if tx == nil || repo == nil || deleted == nil || publisher == nil || now == nil || coverage == nil {
 		return nil, ErrWork
 	}
-	return &Service{tx: tx, repo: repo, deleted: deleted, publisher: publisher, now: now}, nil
+	return &Service{tx: tx, repo: repo, deleted: deleted, publisher: publisher, now: now, coverage: coverage}, nil
 }
 
 // Tick handles at most sixteen users. Each user's expensive computation has a
@@ -110,50 +111,62 @@ func (s *Service) Recalculate(ctx context.Context, user string) error {
 	if err != nil || !active {
 		return err
 	}
-	err = s.tx.Run(ctx, func(ctx context.Context) error {
-		var ok bool
-		var err error
-		lease, ok, err = s.lock(ctx, user)
-		if err != nil || !ok {
-			return err
-		}
-		if lease.Version >= math.MaxInt32-1 {
-			return ErrWork
-		}
-		state, err := s.repo.Snapshot(ctx, user)
-		if err != nil {
-			return err
-		}
-		now := s.now()
-		calendar, err := periods(ctx, state, now)
-		if err != nil {
-			return err
-		}
-		var snapshots []calculating.Period
-		var keys []Period
-		var global calculating.State
-		// Empty coverage still publishes the complete no-data state and removals.
-		if len(calendar) == 0 {
-			result, err := calculating.Build(ctx, calculating.Input{Snapshot: state, Kind: "month", At: now, Now: now, References: references{s.repo, user}})
+	ready, recoveryErr := s.coverage.Recover(ctx, user)
+	if recoveryErr == nil && !ready {
+		return nil
+	}
+	if recoveryErr != nil {
+		err = recoveryErr
+	} else {
+		err = s.tx.Run(ctx, func(ctx context.Context) error {
+			var ok bool
+			var err error
+			lease, ok, err = s.lock(ctx, user)
+			if err != nil || !ok {
+				return err
+			}
+			if lease.Version >= math.MaxInt32-1 {
+				return ErrWork
+			}
+			state, err := s.repo.Snapshot(ctx, user)
 			if err != nil {
 				return err
 			}
-			global = result.State
-		}
-		for _, p := range calendar {
-			result, err := calculating.Build(ctx, calculating.Input{Snapshot: state, Kind: p.Kind, At: p.At, Now: now, References: references{s.repo, user}})
+			now := s.now()
+			calendar, err := periods(ctx, state, now)
 			if err != nil {
 				return err
 			}
-			global = result.State
-			snapshots = append(snapshots, result.Periods...)
-			keys = append(keys, p.Period)
-		}
-		if err = s.publisher.Publish(ctx, Publication{User: user, Version: lease.Version + 1, State: global, Recalculating: lease.Recalculating || len(lease.Queue) > 0, Periods: snapshots, Removed: removed(lease.Known, keys)}); err != nil {
-			return err
-		}
-		return s.repo.Complete(ctx, lease, global, keys, now)
-	})
+			var snapshots []calculating.Period
+			var keys []Period
+			var global calculating.State
+			prepared, err := calculating.Prepare(ctx, calculating.Input{Snapshot: state, Kind: "month", At: now, Now: now, References: references{s.repo, user}})
+			if err != nil {
+				return err
+			}
+			// Empty coverage still publishes the complete no-data state and removals.
+			if len(calendar) == 0 {
+				result, err := prepared.Build("month", now)
+				if err != nil {
+					return err
+				}
+				global = result.State
+			}
+			for _, p := range calendar {
+				result, err := prepared.Build(p.Kind, p.At)
+				if err != nil {
+					return err
+				}
+				global = result.State
+				snapshots = append(snapshots, result.Periods...)
+				keys = append(keys, p.Period)
+			}
+			if err = s.publisher.Publish(ctx, Publication{User: user, Version: lease.Version + 1, State: global, Recalculating: lease.Recalculating || len(lease.Queue) > 0, Periods: snapshots, Removed: removed(lease.Known, keys)}); err != nil {
+				return err
+			}
+			return s.repo.Complete(ctx, lease, global, keys, now)
+		})
+	}
 	if errors.Is(err, errBusy) {
 		return nil
 	}

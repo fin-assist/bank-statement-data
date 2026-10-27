@@ -16,11 +16,14 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/fin-assist/bank-statement-data/internal/adapter/metricswire"
+	"github.com/fin-assist/bank-statement-data/internal/adapter/ofx"
 	"github.com/fin-assist/bank-statement-data/internal/adapter/postgres"
+	"github.com/fin-assist/bank-statement-data/internal/covering"
+	"github.com/fin-assist/bank-statement-data/internal/importing"
 	"github.com/fin-assist/bank-statement-data/internal/recalculating"
 )
 
-func wireRecalculations(ctx context.Context, a *App, reg prometheus.Registerer, opts Options, now func() time.Time) ([]worker.Job, func(), error) {
+func wireRecalculations(ctx context.Context, a *App, reg prometheus.Registerer, opts Options, now func() time.Time, objects importing.ObjectStore) ([]worker.Job, func(), error) {
 	target := a.Cfg.Peers["analytics"]
 	if target == "" {
 		return nil, nil, errors.New("PEER_ANALYTICS_ADDR is required")
@@ -58,7 +61,11 @@ func wireRecalculations(ctx context.Context, a *App, reg prometheus.Registerer, 
 	if err != nil {
 		return fail(err)
 	}
-	service, err := recalculating.New(a.DB, repo, deleted, publish, now)
+	repair, err := covering.New(a.DB, repo, deleted, objects, ofx.Parser{})
+	if err != nil {
+		return fail(err)
+	}
+	service, err := recalculating.New(a.DB, repo, deleted, publish, now, repair)
 	if err != nil {
 		return fail(err)
 	}

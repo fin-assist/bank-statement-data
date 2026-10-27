@@ -300,4 +300,5 @@ tombstone guard и блокировку `user_state` до вычисления �
 `upload.statement_from_instant/statement_to_instant` сохраняют первичные моменты покрытия;
 `statement_range_source` различает `tags`, `operations`, `none` и прежнюю неизвестную provenance NULL.
 При чтении календарные дни строятся из точных моментов в текущем поясе. Старые DATE не преобразуются
-в выдуманные исходные instants; ограничение исторического переноса описано в [recalculation.md](recalculation.md).
+в выдуманные исходные instants: bounded metadata repair восстанавливает их из оригинального OFX
+с SHA/size, status/object CAS и tombstone guard — [recalculation.md](recalculation.md).

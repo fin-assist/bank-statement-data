@@ -71,3 +71,8 @@ type DeliveryRecord struct {
 	Payload []byte
 	Final   bool
 }
+
+// Coverage restores missing source bounds outside data transactions before calculation.
+type Coverage interface {
+	Recover(context.Context, string) (bool, error)
+}

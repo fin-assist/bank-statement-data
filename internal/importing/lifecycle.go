@@ -525,3 +525,8 @@ func completedPeriods(uploads []Upload) []Period {
 	}
 	return periods
 }
+
+// SourcePeriod retains exact original coverage for metadata recovery without changing operations.
+func SourcePeriod(document Document, zone *time.Location) *Period {
+	return statementPeriod(document, zone)
+}

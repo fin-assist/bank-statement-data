@@ -143,7 +143,7 @@ func wire(ctx context.Context, a *App, reg prometheus.Registerer, openDB func(co
 	if err = operationsgrpc.Register(a.GRPC.GRPC(), a.Operations); err != nil {
 		return fail(err)
 	}
-	recalcJobs, closeRecalc, err := wireRecalculations(ctx, a, reg, opts, now)
+	recalcJobs, closeRecalc, err := wireRecalculations(ctx, a, reg, opts, now, objects)
 	if err != nil {
 		return fail(err)
 	}

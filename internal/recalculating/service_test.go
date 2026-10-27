@@ -104,7 +104,7 @@ func fixture(t *testing.T) (*Service, *repoFake, *publisherFake) {
 	repo := &repoFake{lease: Lease{User: "u", Queue: []QueueRow{{Month: "2026-09-01", Generation: 1}}, Known: []Period{{"month", "2026-08"}}}, active: true, snapshot: importing.Snapshot{TimeZone: "UTC", Uploads: []importing.Upload{{ID: "a", Status: "done", Period: &importing.Period{From: from, To: to}}}}}
 	publish := &publisherFake{}
 	now := func() time.Time { return time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC) }
-	service, err := New(&txFake{}, repo, guardFake{live: true}, publish, now)
+	service, err := New(&txFake{}, repo, guardFake{live: true}, publish, now, coverageFake{ready: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +264,7 @@ func TestUnitRecalculationRequiresEveryBoundary(t *testing.T) {
 		case 4:
 			now = nil
 		}
-		if v, e := New(tx, repo, guard, publish, now); v != nil || e == nil {
+		if v, e := New(tx, repo, guard, publish, now, coverageFake{ready: true}); v != nil || e == nil {
 			t.Fatal("missing boundary accepted", i)
 		}
 	}
@@ -296,5 +296,29 @@ func TestUnitDailyOnlyRecalculationDoesNotSetUserActionFlag(t *testing.T) {
 	}
 	if len(p.values) != 1 || p.values[0].Pending || p.values[0].Recalculating || r.startCalls != 0 {
 		t.Fatal("daily update masqueraded as user action", p.values)
+	}
+}
+
+type coverageFake struct {
+	ready bool
+	err   error
+}
+
+func (f coverageFake) Recover(context.Context, string) (bool, error) { return f.ready, f.err }
+
+func TestUnitLegacyRecoveryWaitAndErrorKeepQueueAndPendingState(t *testing.T) {
+	s, r, p := fixture(t)
+	s.coverage = coverageFake{}
+	if e := s.Recalculate(t.Context(), "u"); e != nil || r.completeCalls != 0 || len(p.values) != 1 || !p.values[0].Pending {
+		t.Fatal("partial recovery published metrics", e, p.values)
+	}
+	boom := errors.New("original unavailable")
+	s.coverage = coverageFake{err: boom}
+	if e := s.Recalculate(t.Context(), "u"); !errors.Is(e, boom) || r.failCalls != 1 || r.completeCalls != 0 {
+		t.Fatal("failed original retired source work", e)
+	}
+	s.coverage = coverageFake{ready: true}
+	if e := s.Recalculate(t.Context(), "u"); e != nil || r.startCalls != 1 || r.completeCalls != 1 {
+		t.Fatal("recovered original did not resume same durable work", e)
 	}
 }

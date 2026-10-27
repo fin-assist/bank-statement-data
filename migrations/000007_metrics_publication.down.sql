@@ -1,3 +1,10 @@
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM metrics_publication) OR EXISTS (SELECT 1 FROM metrics_delivery) THEN
+        RAISE EXCEPTION 'Cannot remove published metric inventory or pending deliveries; roll back the binary while keeping the additive schema';
+    END IF;
+END $$;
+
 DROP TABLE metrics_delivery;
 DROP TABLE metrics_publication;
 

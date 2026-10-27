@@ -3,16 +3,20 @@ package postgres_test
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 	"time"
 
+	"github.com/fin-assist/go-migrate"
 	outbox "github.com/fin-assist/go-outbox"
 	tombstone "github.com/fin-assist/go-tombstone"
 	"github.com/google/uuid"
 
 	"github.com/fin-assist/bank-statement-data/internal/adapter/metricswire"
 	"github.com/fin-assist/bank-statement-data/internal/adapter/postgres"
+	"github.com/fin-assist/bank-statement-data/internal/app"
 	"github.com/fin-assist/bank-statement-data/internal/calculating"
+	"github.com/fin-assist/bank-statement-data/internal/importing"
 	"github.com/fin-assist/bank-statement-data/internal/recalculating"
 )
 
@@ -204,7 +208,7 @@ func TestIntegrationRecalculationBusyGuardSkipsToAnotherUser(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	service, e := recalculating.New(f.db, repo, dead, publish, func() time.Time { return f.now })
+	service, e := recalculating.New(f.db, repo, dead, publish, func() time.Time { return f.now }, noCoverage{})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -293,5 +297,106 @@ func TestIntegrationRecalculationCursorContinuesPastFullBusyBatch(t *testing.T) 
 	}
 	if len(seen) != len(first) {
 		t.Fatal("bounded batch hid later users", len(seen), len(first))
+	}
+}
+
+type noCoverage struct{}
+
+func (noCoverage) Recover(context.Context, string) (bool, error) { return true, nil }
+
+func TestIntegrationLegacyCoverageCASRefusesChangedOrDeletedObject(t *testing.T) {
+	f := importRepository(t)
+	repo := postgres.NewRecalculations(f.db, 0)
+	user, id := uuid.NewString(), uuid.NewString()
+	if err := f.db.Run(t.Context(), func(ctx context.Context) error {
+		if e := f.admitted(ctx, user, id); e != nil {
+			return e
+		}
+		_, e := f.db.Writer(ctx).Exec(ctx, `UPDATE upload SET status='done'WHERE user_id=$1 AND id=$2`, user, id)
+		return e
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := repo.PendingCoverage(t.Context(), user, 16)
+	if err != nil || len(rows) != 1 {
+		t.Fatal(rows, err)
+	}
+	at := time.Date(2026, 9, 1, 0, 30, 0, 0, time.FixedZone("MSK", 3*3600))
+	period := &importing.Period{RawFrom: &at, RawTo: &at, Source: "operations"}
+	if _, err = f.db.Primary().Exec(t.Context(), `UPDATE upload SET object_key='changed-object'WHERE user_id=$1 AND id=$2`, user, id); err != nil {
+		t.Fatal(err)
+	}
+	if err = f.db.Run(t.Context(), func(ctx context.Context) error {
+		if _, e := f.repo.LockUser(ctx, user, false); e != nil {
+			return e
+		}
+		saved, e := repo.SaveCoverage(ctx, rows[0], period, "America/Havana")
+		if saved {
+			t.Fatal("stale object identity overwritten")
+		}
+		return e
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rows[0].Key = "changed-object"
+	if err = f.db.Run(t.Context(), func(ctx context.Context) error {
+		if _, e := f.repo.LockUser(ctx, user, false); e != nil {
+			return e
+		}
+		saved, e := repo.SaveCoverage(ctx, rows[0], period, "America/Havana")
+		if !saved {
+			t.Fatal("same object metadata not restored")
+		}
+		return e
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var from string
+	if err = f.db.Primary().QueryRow(t.Context(), `SELECT statement_from::text FROM upload WHERE user_id=$1 AND id=$2`, user, id).Scan(&from); err != nil || from != "2026-08-31" {
+		t.Fatal("legacy source not reprojected", from, err)
+	}
+	if pending, e := repo.PendingCoverage(t.Context(), user, 16); e != nil || len(pending) != 0 {
+		t.Fatal("durable metadata repair not retired", pending, e)
+	}
+	if _, err = f.db.Primary().Exec(t.Context(), `UPDATE upload SET status='deleted',statement_range_source=NULL WHERE user_id=$1 AND id=$2`, user, id); err != nil {
+		t.Fatal(err)
+	}
+	if err = f.db.Run(t.Context(), func(ctx context.Context) error {
+		saved, e := repo.SaveCoverage(ctx, rows[0], period, "UTC")
+		if saved {
+			t.Fatal("deleted upload recreated")
+		}
+		return e
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestIntegrationRecalculationDownRefusesToLosePublishedInventory(t *testing.T) {
+	f := importRepository(t)
+	user := uuid.NewString()
+	if err := f.db.Run(t.Context(), func(ctx context.Context) error {
+		if _, e := f.repo.LockUser(ctx, user, true); e != nil {
+			return e
+		}
+		_, e := f.db.Writer(ctx).Exec(ctx, `INSERT INTO metrics_publication(user_id)VALUES($1)`, user)
+		return e
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var version int
+	if err := f.db.Primary().QueryRow(t.Context(), `SELECT version FROM schema_migrations`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	cfg := migrate.DefaultConfig(f.dsn)
+	cfg.Logger = slog.New(slog.DiscardHandler)
+	sources := app.MigrationSources()
+	err := migrate.Down(t.Context(), cfg, sources[len(sources)-1], version-6)
+	if err == nil {
+		t.Fatal("unsafe migration down accepted", err)
+	}
+	var remaining int
+	if err = f.db.Primary().QueryRow(t.Context(), `SELECT count(*)FROM metrics_publication WHERE user_id=$1`, user).Scan(&remaining); err != nil || remaining != 1 {
+		t.Fatal("refused down lost published keys", remaining, err)
 	}
 }
