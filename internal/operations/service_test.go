@@ -3,9 +3,11 @@ package operations
 import (
 	"context"
 	"errors"
+	"sort"
 	"testing"
 	"time"
 
+	"github.com/fin-assist/bank-statement-data/internal/domain"
 	"github.com/fin-assist/bank-statement-data/internal/importing"
 )
 
@@ -20,6 +22,9 @@ func moment(s string) time.Time {
 
 var errStorage = errors.New("storage unavailable")
 
+const paymentRef = "019c7714-3b77-74d1-9866-61f484aae201"
+const merchantRef = "019c7714-3b77-74d1-9866-61f484aae202"
+
 type memory struct {
 	importing.Tombstones
 	state                                                     Snapshot
@@ -32,6 +37,9 @@ type memory struct {
 	locatedID                                                 string
 	actual                                                    *time.Time
 	dismissed                                                 bool
+	streamOptions                                             StreamOptions
+	visits, snapshotRows, selections                          int
+	streamCancel                                              context.CancelFunc
 }
 
 func (m *memory) Run(c context.Context, fn func(context.Context) error) error {
@@ -84,7 +92,117 @@ func (m *memory) Snapshot(_ context.Context, _ string, from, to *time.Time) (Sna
 		}
 		s.Operations = filtered
 	}
+	m.snapshotRows = len(s.Operations)
 	return s, nil
+}
+
+func (m *memory) SelectionKey(_ context.Context, _, kind, id string) (string, error) {
+	m.selections++
+	if m.fail == "selection" {
+		return "", errStorage
+	}
+	key := ""
+	switch kind {
+	case domain.ReferenceKindRegular:
+		key = m.state.Regular[id]
+	case domain.ReferenceKindMerchant:
+		key = m.state.Merchants[id]
+	}
+	if key == "" {
+		return "", ErrSelection
+	}
+	return key, nil
+}
+
+func (m *memory) Stream(ctx context.Context, _ string, opts StreamOptions, visit func(Row) error) error {
+	m.streamOptions = opts
+	if m.fail == "stream" {
+		return errStorage
+	}
+	if m.streamCancel != nil {
+		m.streamCancel()
+	}
+	if m.fail == "stream-empty" {
+		return visit(Row{})
+	}
+	zone, err := time.LoadLocation(opts.TimeZone)
+	if err != nil {
+		return ErrState
+	}
+	type stats struct {
+		amounts      []int64
+		months       []string
+		count, total int64
+	}
+	regular := map[string]stats{}
+	small := map[string]stats{}
+	window := map[string]bool{}
+	for _, month := range opts.RegularMonths {
+		window[month] = true
+	}
+	inside := func(at time.Time, from, to *time.Time) bool {
+		return (from == nil || !at.Before(*from)) && (to == nil || at.Before(*to))
+	}
+	for _, op := range m.state.Operations {
+		if op.Direction != "expense" || op.Currency != "RUB" || op.PairID != "" || op.Category == importing.OwnTransferCategory || op.Category == importing.TransfersCategory || op.Description == "" {
+			continue
+		}
+		month := op.At.In(zone).Format("2006-01")
+		if window[month] {
+			r := regular[op.Description]
+			r.count++
+			if r.count <= int64(len(opts.RegularMonths)) {
+				r.amounts = append(r.amounts, op.AmountMinor)
+				r.months = append(r.months, month)
+			}
+			regular[op.Description] = r
+		}
+		if opts.Small && inside(op.At, opts.SmallFrom, opts.SmallTo) {
+			key := month + "\x00" + op.Description
+			r := small[key]
+			r.count++
+			r.total += op.AmountMinor
+			small[key] = r
+		}
+	}
+	ops := append([]importing.Operation(nil), m.state.Operations...)
+	sort.Slice(ops, func(i, j int) bool {
+		if ops[i].At.Equal(ops[j].At) {
+			return ops[i].ID > ops[j].ID
+		}
+		return ops[i].At.After(ops[j].At)
+	})
+	for _, op := range ops {
+		if op.PairID != "" && op.Direction == "income" || !inside(op.At, opts.From, opts.To) {
+			continue
+		}
+		m.visits++
+		row := Row{Facts: []importing.Operation{op}, Details: map[string]Detail{op.ID: m.state.Details[op.ID]}, Dismissed: m.state.Dismissed[op.Description]}
+		if op.PairID != "" {
+			for _, peer := range m.state.Operations {
+				if peer.PairID == op.PairID && peer.Direction == "income" {
+					row.Facts = append(row.Facts, peer)
+					row.Details[peer.ID] = m.state.Details[peer.ID]
+				}
+			}
+		}
+		if m.fail == "stream-many" {
+			row.Facts = append(row.Facts, op)
+		}
+		if m.fail == "stream-project" {
+			row.Details = nil
+		}
+		r := regular[op.Description]
+		if r.count <= int64(len(opts.RegularMonths)) {
+			row.RegularAmounts, row.RegularMonths = r.amounts, r.months
+		}
+		g := small[op.At.In(zone).Format("2006-01")+"\x00"+op.Description]
+		row.SmallCount, row.SmallTotal = g.count, g.total
+		if err = visit(row); err != nil {
+			return err
+		}
+	}
+	return ctx.Err()
 }
 func (m *memory) Locate(_ context.Context, _ string, id string, at time.Time) (time.Time, error) {
 	m.locatedID, m.locatedAt = id, at
@@ -142,7 +260,7 @@ func fixture() *memory {
 		{Category: importing.Category{ID: "salary", Name: "Зарплата", Icon: "income", Income: true, BankName: "Зарплата"}, Assignable: true},
 		{Category: importing.Category{ID: "taxi", Name: "Такси", Icon: "car", Expense: true, BankName: "Такси"}, Assignable: true},
 	}
-	m := &memory{alive: true, state: Snapshot{Snapshot: importing.Snapshot{TimeZone: "Europe/Moscow", Categories: map[string]importing.Category{}}, Accounts: map[int64]Account{1: {TypeName: "Текущий", Mask: ref("··4821"), Spoken: "текущий счёт"}, 2: {TypeName: "Накопительный", Mask: ref("··0734"), Spoken: "накопительный счёт"}}, Details: map[string]Detail{}, Catalog: cats, Regular: map[string]string{"payment": "Cloud"}, Merchants: map[string]string{"merchant": "Coffee"}, Dismissed: map[string]bool{}}}
+	m := &memory{alive: true, state: Snapshot{Snapshot: importing.Snapshot{TimeZone: "Europe/Moscow", Categories: map[string]importing.Category{}}, Accounts: map[int64]Account{1: {TypeName: "Текущий", Mask: ref("··4821"), Spoken: "текущий счёт"}, 2: {TypeName: "Накопительный", Mask: ref("··0734"), Spoken: "накопительный счёт"}}, Details: map[string]Detail{}, Catalog: cats, Regular: map[string]string{paymentRef: "Cloud"}, Merchants: map[string]string{merchantRef: "Coffee"}, Dismissed: map[string]bool{}}}
 	for _, c := range cats {
 		m.state.Categories[c.ID] = c.Category
 	}
@@ -257,6 +375,15 @@ func TestUnitFeedEmptyCoverageAndErrors(t *testing.T) {
 	}
 }
 
+func TestUnitFeedAnchorsAtVisiblePairDebitRatherThanLaterCredit(t *testing.T) {
+	m := pairFixture()
+	s := service(t, m, "2026-10-27T12:00:00+03:00")
+	out, err := s.Feed(t.Context(), "user", nil)
+	if err != nil || len(out.Items) != 1 || out.Items[0].ID != "pair" || out.Range.To.Format("2006-01-02") != "2026-10-01" || out.Range.From.Format("2006-01-02") != "2026-07-01" || out.NextBefore != nil || !out.State.LastOperation.Equal(m.state.Operations[1].At) {
+		t.Fatalf("cross-month pair created empty latest portion or lost raw freshness timestamp: %+v %v", out, err)
+	}
+}
+
 func TestUnitGetAndCategories(t *testing.T) {
 	m := fixture()
 	m.add("op", "2026-09-25T12:00:00.123456+03:00", "expense", "food", "Пятёрочка", 1000)
@@ -336,6 +463,8 @@ func pairFixture() *memory {
 	}
 	m.state.Operations[1].AccountID = 2
 	m.state.Operations[1].AccountKey = "two"
+	m.meta.FirstVisible = ref(m.state.Operations[0].At)
+	m.meta.LastVisible = ref(m.state.Operations[0].At)
 	return m
 }
 

@@ -113,7 +113,7 @@ func TestUnitSearchPairsAndSelections(t *testing.T) {
 	for _, test := range []struct {
 		selection string
 		count     int
-	}{{"s_uncategorized", 2}, {"s_bank_fees", 1}, {"s_regular_payment", 1}, {"s_merchant_merchant", 1}, {"s_small_category_food", 3}, {"s_regular_all", 0}} {
+	}{{"s_uncategorized", 2}, {"s_bank_fees", 1}, {"s_regular_" + paymentRef, 1}, {"s_merchant_" + merchantRef, 1}, {"s_small_category_food", 3}, {"s_regular_all", 0}} {
 		out, e = s.Search(t.Context(), "user", Filter{Selection: test.selection}, true)
 		if e != nil || len(out.Items) != test.count {
 			t.Fatalf("selection %s: %+v %v", test.selection, out, e)
@@ -248,19 +248,19 @@ func TestUnitMerchantSelectionKeepsIncomeRefundAndTransferSemantics(t *testing.T
 		kind, mode string
 		count      int
 	}{{"", "", 5}, {"income", "", 2}, {"expense", "", 2}, {"income", "with", 1}, {"expense", "with", 3}, {"expense", "without", 2}} {
-		out, err := s.Search(t.Context(), "user", Filter{Selection: "s_merchant_merchant", Kind: test.kind, Mode: test.mode}, true)
+		out, err := s.Search(t.Context(), "user", Filter{Selection: "s_merchant_" + merchantRef, Kind: test.kind, Mode: test.mode}, true)
 		if err != nil || len(out.Items) != test.count {
 			t.Fatalf("merchant kind=%s mode=%s: got%d want%d %v", test.kind, test.mode, len(out.Items), test.count, err)
 		}
 	}
-	m.state.Regular["payment"] = "Coffee"
-	if out, err := s.Search(t.Context(), "user", Filter{Selection: "s_small_merchant_merchant", Kind: "expense", Mode: "with"}, true); err != nil || len(out.Items) != 1 || out.Items[0].ID != "0" {
+	m.state.Regular[paymentRef] = "Coffee"
+	if out, err := s.Search(t.Context(), "user", Filter{Selection: "s_small_merchant_" + merchantRef, Kind: "expense", Mode: "with"}, true); err != nil || len(out.Items) != 1 || out.Items[0].ID != "0" {
 		t.Fatalf("small-spending selection must exclude refunds and transfers: %+v %v", out, err)
 	}
 	if _, err := s.Search(t.Context(), "user", Filter{Selection: "s_small_merchant_missing"}, true); !errors.Is(err, ErrSelection) {
 		t.Fatalf("foreign small merchant selection: %v", err)
 	}
-	if out, err := s.Search(t.Context(), "user", Filter{Selection: "s_regular_payment", Kind: "income"}, true); err != nil || len(out.Items) != 0 {
+	if out, err := s.Search(t.Context(), "user", Filter{Selection: "s_regular_" + paymentRef, Kind: "income"}, true); err != nil || len(out.Items) != 0 {
 		t.Fatalf("regular remains an expense observation: %+v %v", out, err)
 	}
 }
@@ -274,10 +274,92 @@ func TestUnitSmallCategoryPartialWindowKeepsWholeMonthMerchantGroups(t *testing.
 	s := service(t, m, "2026-10-27T12:00:00Z")
 	from, to := moment("2026-09-05T00:00:00+03:00"), moment("2026-09-06T00:00:00+03:00")
 	out, err := s.Search(t.Context(), "user", Filter{Selection: "s_small_category_food", Category: "food", Kind: "expense", Mode: "with", From: &from, To: &to}, false)
-	if err != nil || len(out.Items) != 1 || out.Items[0].ID != "residual" || m.from == nil || m.to == nil || !m.from.Equal(moment("2026-09-01T00:00:00+03:00")) || !m.to.Equal(moment("2026-10-01T00:00:00+03:00")) {
+	if err != nil || len(out.Items) != 1 || out.Items[0].ID != "residual" || m.streamOptions.SmallFrom == nil || m.streamOptions.SmallTo == nil || !m.streamOptions.SmallFrom.Equal(moment("2026-09-01T00:00:00+03:00")) || !m.streamOptions.SmallTo.Equal(moment("2026-10-01T00:00:00+03:00")) {
 		t.Fatalf("partial search must retain merchant/category disjointness: %+v bounds %v %v err%v", out, m.from, m.to, err)
 	}
 	if out.Range == nil || !out.Range.From.Equal(from) || !out.Range.To.Equal(to) {
 		t.Fatalf("public range expanded along with internal recognition window: %+v", out.Range)
+	}
+}
+
+func TestUnitSearchStreamingStopsAtLimitAndScansRareMatches(t *testing.T) {
+	m := fixture()
+	for i := 0; i < 20000; i++ {
+		m.add(fmt.Sprintf("%05d", i), "2026-09-01T12:00:00Z", "expense", "food", "Shop", 1)
+	}
+	s := service(t, m, "2026-10-27T12:00:00Z")
+	if _, err := s.Search(t.Context(), "user", Filter{}, true); !errors.Is(err, ErrTooMany) || m.visits != 10001 || m.snapshotRows != 0 || m.from == nil || m.to == nil || !m.from.Equal(*m.to) {
+		t.Fatalf("search materialized raw history or did not stop at10001: visits%d snapshotRows%d err%v", m.visits, m.snapshotRows, err)
+	}
+	m.add("rare", "2026-09-01T11:00:00Z", "expense", "food", "Unique matching description", 2)
+	m.visits = 0
+	out, err := s.Search(t.Context(), "user", Filter{Query: "unique matching"}, true)
+	if err != nil || len(out.Items) != 1 || out.Items[0].ID != "rare" || m.visits != 20001 || m.snapshotRows != 0 {
+		t.Fatalf("rare match truncated or materialized: %+v visits%d snapshotRows%d err%v", out, m.visits, m.snapshotRows, err)
+	}
+}
+
+func TestUnitSearchStreamAndSelectionFailures(t *testing.T) {
+	for _, failure := range []string{"stream", "stream-empty", "stream-many", "stream-project"} {
+		m := fixture()
+		m.add("op", "2026-09-01T12:00:00Z", "expense", "food", "Shop", 1)
+		m.fail = failure
+		s := service(t, m, "2026-10-27T12:00:00Z")
+		_, err := s.Search(t.Context(), "user", Filter{}, true)
+		want := ErrState
+		if failure == "stream" {
+			want = errStorage
+		}
+		if !errors.Is(err, want) {
+			t.Fatalf("%s returned%v want%v", failure, err, want)
+		}
+	}
+	m := fixture()
+	m.fail = "selection"
+	s := service(t, m, "2026-10-27T12:00:00Z")
+	if _, err := s.Search(t.Context(), "user", Filter{Selection: "s_merchant_" + merchantRef}, true); !errors.Is(err, errStorage) || m.selections != 1 || m.visits != 0 {
+		t.Fatalf("selection storage error: %v %+v", err, m)
+	}
+	for _, token := range []string{"s_merchant_019c7714-3b77-74d1-9866-61f484aae203", "s_regular_019c7714-3b77-74d1-9866-61f484aae203", "s_merchant_019C7714-3B77-74D1-9866-61F484AAE202", "s_regular_00000000-0000-0000-0000-000000000000", "s_small_merchant_description-is-private"} {
+		m := fixture()
+		s := service(t, m, "2026-10-27T12:00:00Z")
+		if _, err := s.Search(t.Context(), "user", Filter{Selection: token}, true); !errors.Is(err, ErrSelection) || m.visits != 0 {
+			t.Fatalf("invalid/foreign token %q: %v", token, err)
+		}
+	}
+	m = fixture()
+	m.add("op", "2026-09-01T12:00:00Z", "expense", "food", "Shop", 1)
+	s = service(t, m, "2026-10-27T12:00:00Z")
+	c, cancel := context.WithCancel(t.Context())
+	m.streamCancel = cancel
+	if _, err := s.Search(c, "user", Filter{}, true); !errors.Is(err, context.Canceled) || m.visits != 1 {
+		t.Fatalf("stream cancellation: %v visits%d", err, m.visits)
+	}
+}
+
+func TestUnitStreamingRegularRecognitionUsesFullMonthsAndDismissal(t *testing.T) {
+	m := fixture()
+	m.state.Uploads = []importing.Upload{{ID: "covered", Status: "done", Period: &importing.Period{From: moment("2026-06-01T00:00:00+03:00"), To: moment("2026-09-30T00:00:00+03:00")}}}
+	for _, month := range []string{"07", "08", "09"} {
+		m.add(month, "2026-"+month+"-15T12:00:00+03:00", "expense", "food", "Cloud", 100)
+	}
+	// Current October charge is selected using recognition over the preceding complete months.
+	m.add("october", "2026-10-15T12:00:00+03:00", "expense", "food", "Cloud", 100)
+	from, to := moment("2026-10-01T00:00:00+03:00"), moment("2026-11-01T00:00:00+03:00")
+	s := service(t, m, "2026-10-27T12:00:00+03:00")
+	out, err := s.Search(t.Context(), "user", Filter{Selection: "s_regular_all", From: &from, To: &to, Kind: "expense", Mode: "with"}, false)
+	if err != nil || len(out.Items) != 1 || out.Items[0].ID != "october" || len(m.streamOptions.RegularMonths) != 3 || m.streamOptions.RegularMonths[0] != "2026-07" || m.snapshotRows != 0 {
+		t.Fatalf("bounded regular recognition: %+v opts%+v err%v", out, m.streamOptions, err)
+	}
+	m.state.Dismissed["Cloud"] = true
+	out, err = s.Search(t.Context(), "user", Filter{Selection: "s_regular_all", From: &from, To: &to}, false)
+	if err != nil || len(out.Items) != 0 {
+		t.Fatalf("dismissed recognized group: %+v %v", out, err)
+	}
+	m.state.Dismissed["Cloud"] = false
+	m.add("duplicate", "2026-08-16T12:00:00+03:00", "expense", "food", "Cloud", 100)
+	out, err = s.Search(t.Context(), "user", Filter{Selection: "s_regular_all", From: &from, To: &to}, false)
+	if err != nil || len(out.Items) != 0 {
+		t.Fatalf("duplicate month group: %+v %v", out, err)
 	}
 }
