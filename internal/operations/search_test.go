@@ -218,3 +218,66 @@ func TestUnitQueryAmountAndSelectionPredicateBoundaries(t *testing.T) {
 		t.Fatal("lone own transfer matched expense")
 	}
 }
+
+func TestUnitSearchPairMatchesBothSourceDescriptionsAndCategories(t *testing.T) {
+	m := pairFixture()
+	m.state.Operations[0].Description = "Исходящий платёж"
+	m.state.Operations[0].BankCategory = "food"
+	m.state.Operations[1].Description = "Получение средств"
+	m.state.Operations[1].BankCategory = "salary"
+	s := service(t, m, "2026-10-27T12:00:00+03:00")
+	for _, q := range []string{"ИСХОДЯЩИЙ ПЛАТЕЖ", " получение ", "Продукты", "Зарплата", "0734", "4821"} {
+		out, err := s.Search(t.Context(), "user", Filter{Query: q}, true)
+		if err != nil || len(out.Items) != 1 || out.Items[0].ID != "pair" || out.Items[0].Title != "Перевод между счетами" {
+			t.Fatalf("paired source query %q: %+v %v", q, out, err)
+		}
+	}
+	if out, err := s.Search(t.Context(), "user", Filter{Query: "чужая операция"}, true); err != nil || len(out.Items) != 0 {
+		t.Fatalf("nonmatching pair: %+v %v", out, err)
+	}
+}
+
+func TestUnitMerchantSelectionKeepsIncomeRefundAndTransferSemantics(t *testing.T) {
+	m := fixture()
+	for i, spec := range []struct{ kind, category string }{{"expense", "food"}, {"income", "salary"}, {"income", importing.RefundCategory}, {"expense", importing.OwnTransferCategory}, {"expense", importing.TransfersCategory}} {
+		m.add(fmt.Sprint(i), "2026-09-01T12:00:00Z", spec.kind, spec.category, "Coffee", 100)
+	}
+	m.state.Operations[2].RefundTarget = "food"
+	s := service(t, m, "2026-10-27T12:00:00Z")
+	for _, test := range []struct {
+		kind, mode string
+		count      int
+	}{{"", "", 5}, {"income", "", 2}, {"expense", "", 2}, {"income", "with", 1}, {"expense", "with", 3}, {"expense", "without", 2}} {
+		out, err := s.Search(t.Context(), "user", Filter{Selection: "s_merchant_merchant", Kind: test.kind, Mode: test.mode}, true)
+		if err != nil || len(out.Items) != test.count {
+			t.Fatalf("merchant kind=%s mode=%s: got%d want%d %v", test.kind, test.mode, len(out.Items), test.count, err)
+		}
+	}
+	m.state.Regular["payment"] = "Coffee"
+	if out, err := s.Search(t.Context(), "user", Filter{Selection: "s_small_merchant_merchant", Kind: "expense", Mode: "with"}, true); err != nil || len(out.Items) != 1 || out.Items[0].ID != "0" {
+		t.Fatalf("small-spending selection must exclude refunds and transfers: %+v %v", out, err)
+	}
+	if _, err := s.Search(t.Context(), "user", Filter{Selection: "s_small_merchant_missing"}, true); !errors.Is(err, ErrSelection) {
+		t.Fatalf("foreign small merchant selection: %v", err)
+	}
+	if out, err := s.Search(t.Context(), "user", Filter{Selection: "s_regular_payment", Kind: "income"}, true); err != nil || len(out.Items) != 0 {
+		t.Fatalf("regular remains an expense observation: %+v %v", out, err)
+	}
+}
+
+func TestUnitSmallCategoryPartialWindowKeepsWholeMonthMerchantGroups(t *testing.T) {
+	m := fixture()
+	for i := 0; i < 9; i++ {
+		m.add(fmt.Sprint(i), fmt.Sprintf("2026-09-%02dT12:00:00+03:00", i+1), "expense", "food", "Coffee", 100)
+	}
+	m.add("residual", "2026-09-05T13:00:00+03:00", "expense", "food", "Other", 100)
+	s := service(t, m, "2026-10-27T12:00:00Z")
+	from, to := moment("2026-09-05T00:00:00+03:00"), moment("2026-09-06T00:00:00+03:00")
+	out, err := s.Search(t.Context(), "user", Filter{Selection: "s_small_category_food", Category: "food", Kind: "expense", Mode: "with", From: &from, To: &to}, false)
+	if err != nil || len(out.Items) != 1 || out.Items[0].ID != "residual" || m.from == nil || m.to == nil || !m.from.Equal(moment("2026-09-01T00:00:00+03:00")) || !m.to.Equal(moment("2026-10-01T00:00:00+03:00")) {
+		t.Fatalf("partial search must retain merchant/category disjointness: %+v bounds %v %v err%v", out, m.from, m.to, err)
+	}
+	if out.Range == nil || !out.Range.From.Equal(from) || !out.Range.To.Equal(to) {
+		t.Fatalf("public range expanded along with internal recognition window: %+v", out.Range)
+	}
+}

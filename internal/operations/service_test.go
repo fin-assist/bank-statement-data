@@ -442,7 +442,7 @@ func TestUnitProjectPairsRefundsAndCorruptState(t *testing.T) {
 	m.state.Operations[0].ManualCategory = importing.OwnTransferCategory
 	m.state.Details["credit"] = Detail{Status: "pending"}
 	out, e := project(t.Context(), m.state, true)
-	if e != nil || len(out) != 1 || out[0].ID != "pair" || out[0].Status != "pending" || out[0].At != m.state.Operations[0].At || out[0].Account != nil || out[0].FromAccount == nil || out[0].ToAccount == nil || out[0].Description != nil || !out[0].Manual || out[0].NoteDetails == nil {
+	if e != nil || len(out) != 1 || out[0].ID != "pair" || out[0].Status != "pending" || out[0].At != m.state.Operations[0].At || out[0].Account != nil || out[0].FromAccount == nil || out[0].ToAccount == nil || out[0].Description != nil || out[0].Manual || out[0].NoteDetails == nil {
 		t.Fatalf("pair: %+v %v", out, e)
 	}
 	for _, change := range []func(*memory){func(m *memory) { m.state.TimeZone = "bad" }, func(m *memory) { delete(m.state.Categories, importing.OwnTransferCategory) }, func(m *memory) { m.state.Operations[0].AmountMinor = -1 }, func(m *memory) { delete(m.state.Accounts, 1) }, func(m *memory) { delete(m.state.Details, "debit") }, func(m *memory) { m.state.Operations = m.state.Operations[:1] }, func(m *memory) { m.state.Operations[1].AmountMinor++ }, func(m *memory) { delete(m.state.Accounts, 2) }} {
@@ -459,6 +459,12 @@ func TestUnitProjectPairsRefundsAndCorruptState(t *testing.T) {
 	if e != nil || out[0].Note == nil || *out[0].Note != "возврат · Продукты" || out[0].NoteDetails == nil || *out[0].NoteDetails != "Уменьшает расходы «Продукты» в сентябре" {
 		t.Fatalf("refund: %+v %v", out, e)
 	}
+	m.state.Operations[0].RefundTarget = importing.UncategorizedCategory
+	out, e = project(t.Context(), m.state, true)
+	if e != nil || out[0].Note == nil || *out[0].Note != "возврат" || out[0].NoteDetails == nil || *out[0].NoteDetails != "Уменьшает общие расходы в сентябре" {
+		t.Fatalf("unmatched refund: %+v %v", out, e)
+	}
+	m.state.Operations[0].RefundTarget = "food"
 	delete(m.state.Categories, "food")
 	if _, e = project(t.Context(), m.state, true); !errors.Is(e, ErrState) {
 		t.Fatal(e)

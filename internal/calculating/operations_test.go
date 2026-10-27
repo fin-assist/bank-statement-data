@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -65,6 +66,11 @@ func TestUnitRegularDescriptionsUsesRecognitionAndDismissal(t *testing.T) {
 
 func TestUnitSmallMerchantGroupsUsesMonthAndIntegerGate(t *testing.T) {
 	in := fixtureInput()
+	result := mustBuild(t, in)
+	small := result.Periods[0].Metrics["insights.small_frequent"]
+	if len(small.Small) == 0 || !strings.HasPrefix(small.Small[0].Filter.Selection, "s_small_merchant_") {
+		t.Fatalf("small merchant token must retain expense-only observation semantics: %+v", small)
+	}
 	got, e := SmallMerchantGroups(t.Context(), in.Snapshot, "with")
 	if e != nil || !got["2026-08\x00Coffee"] || got["2026-09\x00Coffee"] || got["2026-08\x00Cloud"] {
 		t.Fatalf("membership: %v %v", got, e)
