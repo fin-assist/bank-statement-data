@@ -251,7 +251,15 @@ func validateFilter(f Filter, all bool) error {
 
 type selection struct {
 	name, key      string
+	merchant       *string
 	regular, small map[string]bool
+}
+
+const smallCategoryMerchantPrefix = "s_small_category_merchant_"
+
+func smallCategoryMerchant(value string) (id, category string) {
+	id, category, _ = strings.Cut(strings.TrimPrefix(value, smallCategoryMerchantPrefix), "_")
+	return
 }
 
 func (s *Service) resolveSelection(ctx context.Context, user string, state *Snapshot, token string) error {
@@ -261,6 +269,9 @@ func (s *Service) resolveSelection(ctx context.Context, user string, state *Snap
 		return nil
 	case strings.HasPrefix(token, "s_regular_"):
 		kind, id = domain.ReferenceKindRegular, strings.TrimPrefix(token, "s_regular_")
+	case strings.HasPrefix(token, smallCategoryMerchantPrefix):
+		id, _ = smallCategoryMerchant(token)
+		kind = domain.ReferenceKindMerchant
 	case strings.HasPrefix(token, "s_small_merchant_"):
 		kind, id = domain.ReferenceKindMerchant, strings.TrimPrefix(token, "s_small_merchant_")
 	case strings.HasPrefix(token, "s_merchant_"):
@@ -291,6 +302,14 @@ func prepareSelection(state Snapshot, value string) (out selection, err error) {
 		return out, nil
 	case strings.HasPrefix(value, "s_regular_"):
 		out.key = state.Regular[strings.TrimPrefix(value, "s_regular_")]
+	case strings.HasPrefix(value, smallCategoryMerchantPrefix):
+		id, category := smallCategoryMerchant(value)
+		key, exists := state.Merchants[id]
+		if _, valid := state.Categories[category]; !exists || !valid {
+			return out, ErrSelection
+		}
+		out.key, out.merchant = category, &key
+		return out, nil
 	case strings.HasPrefix(value, "s_small_merchant_"):
 		out.key = state.Merchants[strings.TrimPrefix(value, "s_small_merchant_")]
 	case strings.HasPrefix(value, "s_merchant_"):
@@ -345,7 +364,7 @@ func matches(row Operation, op importing.Operation, f Filter, selection selectio
 		return op.Direction == "expense" && selection.regular[op.Description] && calculating.Observation(cat)
 	}
 	if strings.HasPrefix(selection.name, "s_small_category_") {
-		return op.Direction == "expense" && cat == selection.key && !selection.small[op.At.In(zone).Format("2006-01")+"\x00"+op.Description] && calculating.Observation(cat)
+		return op.Direction == "expense" && cat == selection.key && (selection.merchant == nil || op.Description == *selection.merchant) && !selection.small[op.At.In(zone).Format("2006-01")+"\x00"+op.Description] && calculating.Observation(cat)
 	}
 	if strings.HasPrefix(selection.name, "s_merchant_") {
 		return op.Description == selection.key

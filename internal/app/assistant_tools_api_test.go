@@ -217,21 +217,38 @@ func toolsSourceScenario(t *testing.T) {
 	// cannot authorize a financial read. Deleted subject is guarded on primary.
 	calls := []func(context.Context) error{
 		func(c context.Context) error {
-			_, e := tools.GetDataOverview(c, &pb.GetDataOverviewRequest{UserId: apiUser})
+			r, e := tools.GetDataOverview(c, &pb.GetDataOverviewRequest{UserId: apiUser})
+			if e != nil && r != nil {
+				t.Fatal("overview error exposed response", r)
+			}
 			return e
 		},
 		func(c context.Context) error {
-			_, e := tools.GetDataVersion(c, &pb.GetDataVersionRequest{UserId: apiUser})
+			r, e := tools.GetDataVersion(c, &pb.GetDataVersionRequest{UserId: apiUser})
+			if e != nil && r != nil {
+				t.Fatal("version error exposed response", r)
+			}
 			return e
 		},
 		func(c context.Context) error {
-			_, e := tools.FindOperations(c, &pb.FindOperationsRequest{UserId: apiUser})
+			r, e := tools.FindOperations(c, &pb.FindOperationsRequest{UserId: apiUser})
+			if e != nil && r != nil {
+				t.Fatal("find error exposed response", r)
+			}
 			return e
 		},
 		func(c context.Context) error {
-			_, e := tools.AggregateOperations(c, &pb.AggregateOperationsRequest{UserId: apiUser, Filter: &common.OperationsFilter{TransferMode: common.TransferMode_TRANSFER_MODE_WITH}})
+			r, e := tools.AggregateOperations(c, &pb.AggregateOperationsRequest{UserId: apiUser, Filter: &common.OperationsFilter{TransferMode: common.TransferMode_TRANSFER_MODE_WITH}})
+			if e != nil && r != nil {
+				t.Fatal("aggregate error exposed response", r)
+			}
 			return e
 		},
+	}
+	const effectsSQL = `SELECT json_build_object('operations',(SELECT count(*) FROM operation WHERE user_id=$1),'uploads',(SELECT count(*) FROM upload WHERE user_id=$1),'categories',categories_revision,'imports',uploads_revision)::text FROM user_state WHERE user_id=$1`
+	var beforeEffects, afterEffects string
+	if err = env.App.DB.Primary().QueryRow(t.Context(), effectsSQL, apiUser).Scan(&beforeEffects); err != nil {
+		t.Fatal(err)
 	}
 	for _, call := range calls {
 		if e := call(t.Context()); status.Code(e) != codes.Unauthenticated {
@@ -240,6 +257,15 @@ func toolsSourceScenario(t *testing.T) {
 		if e := call(apitest.User(t.Context(), apiUser)); status.Code(e) != codes.PermissionDenied {
 			t.Fatal("bank-bff admitted", e)
 		}
+		for _, caller := range []string{"user", "analytics"} {
+			foreign := metadata.AppendToOutgoingContext(apitest.Caller(t.Context(), caller), "authorization", "Bearer dev:"+apiUser)
+			if e := call(foreign); status.Code(e) != codes.PermissionDenied {
+				t.Fatal("foreign system caller admitted", caller, e)
+			}
+		}
+	}
+	if err = env.App.DB.Primary().QueryRow(t.Context(), effectsSQL, apiUser).Scan(&afterEffects); err != nil || beforeEffects != afterEffects {
+		t.Fatal("denied callers changed financial rows or counters", beforeEffects, afterEffects, err)
 	}
 	_, err = deletion.NewUserDeletionServiceClient(env.Conn).PurgeUserData(apitest.Caller(t.Context(), "user"), &deletion.PurgeUserDataRequest{UserId: apiUser})
 	if err != nil {

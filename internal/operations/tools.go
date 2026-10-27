@@ -311,8 +311,12 @@ func (s *Tools) Aggregate(ctx context.Context, user string, f Filter, all bool, 
 						filters.Category = "cat_bank_fees"
 					}
 				case strings.HasPrefix(effective.Selection, "s_small_category_"):
-					filters.Selection = token
-					filters.Category = strings.TrimPrefix(effective.Selection, "s_small_category_")
+					cat := strings.TrimPrefix(effective.Selection, "s_small_category_")
+					if strings.HasPrefix(effective.Selection, smallCategoryMerchantPrefix) {
+						_, cat = smallCategoryMerchant(effective.Selection)
+					}
+					filters.Selection = smallCategoryMerchantPrefix + id + "_" + cat
+					filters.Category = cat
 					filters.Kind = "expense"
 				case effective.Selection == "":
 					filters.Selection = token

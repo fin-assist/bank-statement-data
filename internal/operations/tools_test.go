@@ -68,6 +68,68 @@ func toolFixture() *memory {
 	m.state.Merchants["019c7714-3b77-74d1-9866-61f484aae204"] = "Pay"
 	return m
 }
+
+func TestUnitSmallCategoryMerchantDrilldownPreservesRefundAndMonthlyResidualRules(t *testing.T) {
+	for _, multi := range []bool{false, true} {
+		t.Run(fmt.Sprint("multiple_months=", multi), func(t *testing.T) {
+			m := fixture()
+			if multi {
+				for i := range 9 {
+					m.add(fmt.Sprint("small", i), fmt.Sprintf("2026-08-%02dT12:00:00+03:00", i+1), "expense", "food", "Coffee", 100)
+				}
+			}
+			m.add("expense", "2026-09-01T12:00:00+03:00", "expense", "food", "Coffee", 10000)
+			m.add("refund", "2026-09-02T12:00:00+03:00", "income", importing.RefundCategory, "Coffee", 3000)
+			m.state.Operations[len(m.state.Operations)-1].RefundTarget = "food"
+			s, _ := toolService(t, m)
+			for _, dims := range [][]string{{"merchant"}, {"month", "merchant"}, {"merchant", "month"}} {
+				grouped, err := s.Aggregate(t.Context(), "user", Filter{Mode: "with", Category: "food", Selection: "s_small_category_food"}, true, dims, 50)
+				if err != nil || grouped.Count != 1 || grouped.Amount != 10000 || len(grouped.Groups) != 1 {
+					t.Fatal(grouped, err)
+				}
+				filter := grouped.Groups[0].Filters
+				found, err := s.Find(t.Context(), "user", filter, false, "", 100)
+				if err != nil || found.Count != 1 || found.Items[0].ID != "expense" {
+					t.Fatal("drilldown widened residual group", filter, found, err)
+				}
+				again, err := s.Aggregate(t.Context(), "user", filter, false, []string{"merchant"}, 50)
+				if err != nil || again.Amount != 10000 || again.Count != 1 {
+					t.Fatal("repeated intersection lost rules", again, err)
+				}
+			}
+			for _, token := range []string{smallCategoryMerchantPrefix + "invalid_food", smallCategoryMerchantPrefix + merchantRef, smallCategoryMerchantPrefix + merchantRef + "_missing", smallCategoryMerchantPrefix + "019c7714-3b77-74d1-9866-61f484aae299_food"} {
+				if _, err := s.Find(t.Context(), "user", Filter{Selection: token}, true, "", 100); !errors.Is(err, ErrSelection) {
+					t.Fatal("invalid intersection accepted", token, err)
+				}
+			}
+		})
+	}
+}
+
+func TestUnitUncategorizedAndFeeMerchantDrilldownsKeepSignedIntersection(t *testing.T) {
+	for _, tc := range []struct{ selection, category string }{{"s_uncategorized", importing.UncategorizedCategory}, {"s_bank_fees", "cat_bank_fees"}} {
+		m := fixture()
+		m.state.Categories["cat_bank_fees"] = importing.Category{ID: "cat_bank_fees", Name: "Услуги банка", Expense: true}
+		m.add("expense", "2026-09-01T12:00:00+03:00", "expense", tc.category, "Coffee", 10000)
+		m.add("refund", "2026-09-02T12:00:00+03:00", "income", importing.RefundCategory, "Coffee", 3000)
+		m.state.Operations[1].RefundTarget = tc.category
+		m.add("other", "2026-09-03T12:00:00+03:00", "expense", "food", "Coffee", 20000)
+		s, _ := toolService(t, m)
+		groups, err := s.Aggregate(t.Context(), "user", Filter{Mode: "with", Selection: tc.selection}, true, []string{"merchant"}, 50)
+		if err != nil || groups.Count != 2 || groups.Amount != 7000 || len(groups.Groups) != 1 {
+			t.Fatal(tc, groups, err)
+		}
+		filter := groups.Groups[0].Filters
+		found, err := s.Find(t.Context(), "user", filter, false, "", 100)
+		if err != nil || found.Count != 2 {
+			t.Fatal(tc, found, err)
+		}
+		again, err := s.Aggregate(t.Context(), "user", filter, false, nil, 50)
+		if err != nil || again.Count != 2 || again.Amount != 7000 {
+			t.Fatal(tc, again, err)
+		}
+	}
+}
 func TestUnitToolSignedAggregatesAndExactDrilldown(t *testing.T) {
 	m := toolFixture()
 	s, _ := toolService(t, m)

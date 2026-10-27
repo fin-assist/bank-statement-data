@@ -12,6 +12,7 @@ import (
 
 	"github.com/fin-assist/bank-statement-data/internal/calculating"
 	usecase "github.com/fin-assist/bank-statement-data/internal/operations"
+	"github.com/fin-assist/bank-statement-data/internal/sourcerevision"
 )
 
 // ToolUseCases is the read-only system tool port; user identity is explicit only
@@ -310,21 +311,11 @@ func toolFilter(f usecase.Filter) (*commonv1.OperationsFilter, error) {
 // dataRevisions keeps open codes while refusing corrupt stored metadata. Its
 // stable order makes equal read snapshots byte-stable for downstream provenance.
 func dataRevisions(values map[string]int64) ([]*commonv1.DataRevision, error) {
-	if len(values) > 32 {
+	if !sourcerevision.Valid(values) {
 		return nil, errProjection
 	}
 	keys := make([]string, 0, len(values))
-	for code, value := range values {
-		if len(code) < 1 || len(code) > 64 || value < 0 {
-			return nil, errProjection
-		}
-		for index := range len(code) {
-			c := code[index]
-			if c >= 'a' && c <= 'z' || index > 0 && (c >= '0' && c <= '9' || c == '_') {
-				continue
-			}
-			return nil, errProjection
-		}
+	for code := range values {
 		keys = append(keys, code)
 	}
 	sort.Strings(keys)
