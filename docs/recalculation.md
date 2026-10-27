@@ -114,3 +114,29 @@ removed_periods после повторного обновления. Пуста
 go test -timeout=120s ./internal/recalculating -run '^$' \
   -bench '^BenchmarkFIN357ThirtyYearCalendar$' -benchtime=1x -count=1
 ```
+
+## Ревизии исходных данных (FIN-369)
+
+Вторая транзакция пересчёта читает counters categories/uploads и settings_version пояса под той же
+блокировкой пользователя, которая защищает факты до commit. Этот vector закрепляется в State,
+передаётся во все month/quarter/year snapshots обоих режимов и сохраняется в immutable bytes
+metrics_delivery. Любое глобальное изменение ревизии заменяет весь опубликованный календарь,
+включая финансово не изменившиеся периоды. Состояние финального ACK отличается calc_version и
+recalculating, но сохраняет ровно тот же source vector. Повтор одной calc_version не переоценивает
+счётчики при доставке: sender читает сохранённые bytes, а не текущее source state.
+
+Первое pending-состояние показывает прежние факты: оно сохраняет ревизии прежнего State в
+metrics_publication.state JSON (`data_revisions`). Отсутствие этого поля у legacy остаётся unknown,
+текущие counters в прежние снимки не подставляются. Сохранённый JSON проверяется строго: null внутри
+map, дроби, bool, отрицательные/overflowed значения не становятся известным нулём.
+
+Если хоть одна использованная done-загрузка имеет statement_range_source=NULL, uploads неизвестен:
+его code опускается в tools и primary GetDataVersion. После bounded OFX repair тот же counter снова
+доступен новым ответам; metadata repair не изменяет финансовые факты и не повышает uploads_revision.
+Удалённые, processing и failed загрузки не создают это ограничение.
+
+Проверки: TestUnitRecalculationSourceRevisionsPreservePendingAndReplaceWholeCalendar,
+TestUnitPublicationSourceRevisionsAreImmutableAcrossEveryPairAndFinalState,
+TestUnitRevisionDecodeRejectsNullAndPreservesExactCounters и реальные API/integration
+TestAPISourceRevisionProducerRebuildsWholeCalendarAndRepairsUnknownCoverage. Последний проходит
+два месяца и оба режима, timezone/category, unknown source repair, удаление последней загрузки.

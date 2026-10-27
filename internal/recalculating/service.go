@@ -3,6 +3,7 @@ package recalculating
 import (
 	"context"
 	"errors"
+	"maps"
 	"math"
 	"sync/atomic"
 	"time"
@@ -161,6 +162,7 @@ func (s *Service) Recalculate(ctx context.Context, user string) error {
 				snapshots = append(snapshots, result.Periods...)
 				keys = append(keys, p.Period)
 			}
+			global.Revisions = maps.Clone(lease.Revisions)
 			if err = s.publisher.Publish(ctx, Publication{User: user, Version: lease.Version + 1, State: global, Recalculating: lease.Recalculating || len(lease.Queue) > 0, Periods: snapshots, Removed: removed(lease.Known, keys)}); err != nil {
 				return err
 			}

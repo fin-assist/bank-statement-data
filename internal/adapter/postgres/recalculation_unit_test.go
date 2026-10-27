@@ -46,6 +46,13 @@ func (t *recalcTx) QueryRow(_ context.Context, q string, _ ...any) pgx.Row {
 			*args[0].(*int32) = t.version
 			*args[1].(**time.Time) = nil
 			*args[2].(*string) = "UTC"
+		case strings.Contains(q, "SELECT categories_changed_at"):
+			*args[0].(**time.Time) = nil
+			*args[1].(**time.Time) = nil
+			*args[2].(*int64) = 2
+			*args[3].(*int64) = 5
+			*args[4].(*int64) = 4
+			*args[5].(*bool) = true
 		case strings.Contains(q, "SELECT state,period_keys"):
 			*args[0].(*[]byte) = []byte(`{"TimeZone":"UTC"}`)
 			*args[1].(*[]byte) = []byte(`[{"Kind":"month","Key":"2026-09"}]`)

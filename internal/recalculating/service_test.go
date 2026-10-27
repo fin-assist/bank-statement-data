@@ -322,3 +322,19 @@ func TestUnitLegacyRecoveryWaitAndErrorKeepQueueAndPendingState(t *testing.T) {
 		t.Fatal("recovered original did not resume same durable work", e)
 	}
 }
+
+func TestUnitRecalculationSourceRevisionsPreservePendingAndReplaceWholeCalendar(t *testing.T) {
+	s, r, p := fixture(t)
+	r.lease.Revisions = map[string]int64{"categories": 2, "uploads": 5, "time_zone": 4}
+	r.lease.State.Revisions = map[string]int64{"categories": 1, "uploads": 3, "time_zone": 4}
+	if err := s.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.values) != 2 || p.values[0].State.Revisions["uploads"] != 3 || p.values[1].State.Revisions["uploads"] != 5 || len(p.values[1].Periods) != 6 {
+		t.Fatal(p.values)
+	}
+	r.lease.Revisions["uploads"] = 99
+	if p.values[1].State.Revisions["uploads"] != 5 {
+		t.Fatal("publication aliases mutable lease")
+	}
+}

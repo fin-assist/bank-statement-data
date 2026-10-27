@@ -110,6 +110,7 @@ type Period struct {
 
 // State is the user's global calendar and freshness state.
 type State struct {
+	Revisions                           map[string]int64 `json:"data_revisions,omitempty"`
 	HasData                             bool
 	From, To, LastOperation, StaleAfter *time.Time
 	FullMonths                          int

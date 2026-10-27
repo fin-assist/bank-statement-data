@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- FIN-369: producer передаёт ревизии categories/uploads/time_zone из того же locked snapshot во все периоды полного календаря, оба режима и состояние. Pending сохраняет прежнюю provenance; final ACK и повторная доставка используют immutable payload. Неподтверждённое legacy raw coverage опускает uploads в tools/current version до metadata repair без изменения source counter.
+
 - FIN-358: закреплён опубликованный contracts/gen/go v0.6.0 (FIN-367); необходимые MVS-обновления — grpc v1.85.0, genproto/rpc, OpenTelemetry v1.45.0 и logr v1.4.4. Done-загрузка без raw coverage provenance опускает uploads revision во всех четырёх инструментах до восстановления оригинала без изменения source counters.
 
 - FIN-371: отключена рекомендация Squawk заменять smallint на bigint; разрядность целого определяется предметным диапазоном, существующие типы и применённые миграции не меняются.

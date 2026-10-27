@@ -3,6 +3,7 @@ package metricswire
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -238,6 +239,35 @@ func TestUnitPublicationPropagatesStorageAndDeliveryErrors(t *testing.T) {
 	for _, event := range []outbox.Event{{Topic: "bad"}, {Topic: recalculating.Topic, Payload: []byte{255}}, {Topic: recalculating.Topic, Key: "wrong", Payload: []byte{10, 1, 'x'}}} {
 		if err := deliver(t.Context(), event); err == nil {
 			t.Fatal("untrusted reference accepted")
+		}
+	}
+}
+
+func TestUnitPublicationSourceRevisionsAreImmutableAcrossEveryPairAndFinalState(t *testing.T) {
+	value := wireFixture()
+	value.State.Revisions = map[string]int64{"categories": 0, "uploads": 5, "time_zone": 2, "future_source": math.MaxInt64}
+	chunks, err := publications(value, 4<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, request := range chunks {
+		if len(request.State.DataRevisions) != 4 || request.State.DataRevisions[1].Value != math.MaxInt64 {
+			t.Fatal(request)
+		}
+		for _, period := range request.Periods {
+			if !proto.Equal(&pb.UserDataState{DataRevisions: period.DataRevisions}, &pb.UserDataState{DataRevisions: request.State.DataRevisions}) {
+				t.Fatal("period/state metadata differ")
+			}
+		}
+	}
+	value.State.Revisions["uploads"] = 99
+	if chunks[0].State.DataRevisions[3].Value != 5 {
+		t.Fatal("immutable payload changed")
+	}
+	for _, bad := range []map[string]int64{{"uploads": -1}, {"UPPER": 1}} {
+		value.State.Revisions = bad
+		if _, err := publications(value, 4<<20); err == nil {
+			t.Fatal("invalid provenance published")
 		}
 	}
 }
