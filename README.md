@@ -73,6 +73,10 @@ make run
 
 Тест `internal/config/stand_unit_test.go` отклоняет повтор имени `LoadCredential=`, а также `SetCredential=`, `SetCredentialEncrypted=`, `LoadCredentialEncrypted=` и `ImportCredential=`: секреты unit получает только из явно проверенных файлов `LoadCredential=` (FIN-351). Он проверяет сам unit, но не настоящий env-файл стенда: его в репозитории нет, поэтому чистка env-файла в шагах 2 и 3 — ручная.
 
+## Артефакты stage
+
+[Получение и проверка бинарей](docs/stage-artifacts.md) (FIN-148): CI извлекает бинарь из проверенного образа, сохраняет SHA и контрольную сумму; фактическая выкладка остаётся FIN-149.
+
 ## Библиотеки и обновления
 
 Общий код сервисов — отдельные Go-библиотеки из шаблона [`fin-assist/go-library-template`](https://github.com/fin-assist/go-library-template) ([FIN-118](https://finassist.youtrack.cloud/issue/FIN-118)): [`go-identity`](https://github.com/fin-assist/go-identity) (FIN-119), [`go-idempotency`](https://github.com/fin-assist/go-idempotency) (FIN-78), [`go-outbox`](https://github.com/fin-assist/go-outbox) (FIN-109), [`go-tombstone`](https://github.com/fin-assist/go-tombstone) (FIN-110).
@@ -138,7 +142,3 @@ CI сохраняет `.out`, `.jsonl`, `*.coverage.txt` и `*.report.txt` ка�
 Подробности классификации и исходные дефициты — [docs/testing.md](docs/testing.md).
 
 Модули `github.com/fin-assist/*` берутся из git, минуя прокси (`GOPRIVATE`, задан в `Makefile` и CI). Для приватного — токен с чтением репозиториев fin-assist: локально `git config --global url."https://x-access-token:<token>@github.com/fin-assist/".insteadOf "https://github.com/fin-assist/"`, в CI — секрет `GO_MODULES_TOKEN`, в `docker build` — секрет `netrc`.
-
-## Артефакты stage
-
-[Получение и проверка бинарей](docs/stage-artifacts.md) (FIN-148): CI извлекает бинарь из проверенного образа, сохраняет SHA и контрольную сумму; фактическая выкладка остаётся FIN-149.
