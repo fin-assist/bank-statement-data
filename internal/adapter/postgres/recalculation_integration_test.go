@@ -521,3 +521,100 @@ func TestIntegrationDailyOnlyFailureHasDurableExponentialRetryAndHonestAge(t *te
 		t.Fatal("new source did not reset daily retry", attempts, since, err)
 	}
 }
+
+// The failed calculation releases its source transaction before recovery. A
+// source writer can commit in between; the old daily lease must not rearm it.
+func TestIntegrationStaleDailyFailurePreservesCommittedSourceWriterReset(t *testing.T) {
+	for _, withImport := range []bool{false, true} {
+		name := "empty_timezone_reset"
+		if withImport {
+			name = "new_completed_import"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := importRepository(t)
+			repo := postgres.NewRecalculations(f.db, 0)
+			user := uuid.NewString()
+			oldDue := f.now.Add(-time.Hour)
+			if err := f.db.Run(t.Context(), func(ctx context.Context) error {
+				if _, e := f.repo.LockUser(ctx, user, true); e != nil {
+					return e
+				}
+				_, e := f.db.Writer(ctx).Exec(ctx, `UPDATE user_state SET daily_recalc_due_at=$2,daily_recalc_attempts=3,daily_recalc_failed_since=$2 WHERE user_id=$1`, user, oldDue)
+				return e
+			}); err != nil {
+				t.Fatal(err)
+			}
+			var stale recalculating.Lease
+			abort := errors.New("release failed calculation transaction")
+			err := f.db.Run(t.Context(), func(ctx context.Context) error {
+				var active bool
+				var e error
+				stale, active, e = repo.Lock(ctx, user, f.now)
+				if e != nil || !active || len(stale.Queue) != 0 || stale.DailyDue == nil || !stale.DailyDue.Equal(oldDue) {
+					t.Fatal("daily lease not captured", stale, active, e)
+				}
+				return abort
+			})
+			if !errors.Is(err, abort) {
+				t.Fatal(err)
+			}
+			// This writer commits only after Lock's transaction has rolled back.
+			if err := f.db.Run(t.Context(), func(ctx context.Context) error {
+				if !withImport {
+					if _, e := f.repo.LockUser(ctx, user, false); e != nil {
+						return e
+					}
+					return f.repo.SetTimezone(ctx, user, "UTC", 1, f.now)
+				}
+				id := uuid.NewString()
+				if e := f.admitted(ctx, user, id); e != nil {
+					return e
+				}
+				stage, e := f.repo.Stage(ctx, user, id, repositoryDocument(f.now), f.now)
+				if e != nil {
+					return e
+				}
+				result, e := importing.BuildResult(ctx, importing.ResultInput{Document: repositoryDocument(f.now), Operations: stage.Snapshot.Operations, NewIDs: stage.NewIDs, Now: f.now, Zone: time.UTC, FirstImport: true})
+				if e != nil {
+					return e
+				}
+				return f.repo.Complete(ctx, user, id, stage, stage.Snapshot.Operations, result, nil, f.now)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			var writerDue *time.Time
+			if err := f.db.Primary().QueryRow(t.Context(), `SELECT daily_recalc_due_at FROM user_state WHERE user_id=$1`, user).Scan(&writerDue); err != nil {
+				t.Fatal(err)
+			}
+			if withImport && (writerDue == nil || !writerDue.After(f.now)) || !withImport && writerDue != nil {
+				t.Fatal("source writer did not establish the expected new schedule", writerDue)
+			}
+			if err := f.db.Run(t.Context(), func(ctx context.Context) error { return repo.Fail(ctx, stale, f.now) }); err != nil {
+				t.Fatal(err)
+			}
+			var due, since *time.Time
+			var attempts int
+			if err := f.db.Primary().QueryRow(t.Context(), `SELECT daily_recalc_due_at,daily_recalc_attempts,daily_recalc_failed_since FROM user_state WHERE user_id=$1`, user).Scan(&due, &attempts, &since); err != nil {
+				t.Fatal(err)
+			}
+			if (writerDue == nil) != (due == nil) || due != nil && !due.Equal(*writerDue) || attempts != 0 || since != nil {
+				t.Fatal("old daily failure overwrote committed source reset", writerDue, due, attempts, since)
+			}
+			var queued int
+			if err := f.db.Primary().QueryRow(t.Context(), `SELECT count(*) FROM recalc_queue WHERE user_id=$1`, user).Scan(&queued); err != nil || withImport && queued != 1 || !withImport && queued != 0 {
+				t.Fatal("unexpected durable queue after stale failure", queued, err)
+			}
+			users, err := repo.Pending(t.Context(), f.now, 16)
+			if err != nil || withImport && (len(users) != 1 || users[0] != user) || !withImport && len(users) != 0 {
+				t.Fatal("source queue readiness changed by stale failure", users, err)
+			}
+			if withImport {
+				var queueAttempts int
+				var ready time.Time
+				if err := f.db.Primary().QueryRow(t.Context(), `SELECT attempts,next_attempt_at FROM recalc_queue WHERE user_id=$1`, user).Scan(&queueAttempts, &ready); err != nil || queueAttempts != 0 || !ready.Equal(f.now) {
+					t.Fatal("new import queue backed off by old daily failure", queueAttempts, ready, err)
+				}
+			}
+		})
+	}
+}

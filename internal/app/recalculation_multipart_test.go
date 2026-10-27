@@ -221,27 +221,41 @@ func multipartDurableFlow(t *testing.T) {
 		}
 		return n
 	}
+	// Require a fresh final-event retry AFTER each durable receipt target is
+	// reached. Initial rejected attempts cannot prove the barrier at that target.
+	assertFinalBlocked := func(remaining int) {
+		t.Helper()
+		waitMultipart(t, func() bool { return countPending() == remaining })
+		var before int
+		waitMultipart(t, func() bool {
+			if peer.finals() != 0 {
+				t.Fatal("final RPC passed before all parts were acknowledged", remaining)
+			}
+			return env.App.DB.Primary().QueryRow(t.Context(), `SELECT attempts FROM outbox_events WHERE event_key=$1 AND target='analytics'`, finalID).Scan(&before) == nil
+		})
+		instant.Add(int64(10 * time.Minute))
+		waitMultipart(t, func() bool {
+			if peer.finals() != 0 {
+				t.Fatal("final RPC passed with unacknowledged parts", remaining)
+			}
+			var attempts int
+			return env.App.DB.Primary().QueryRow(t.Context(), `SELECT attempts FROM outbox_events WHERE event_key=$1 AND target='analytics'`, finalID).Scan(&attempts) == nil && attempts > before
+		})
+		if countPending() != remaining || peer.finals() != 0 {
+			t.Fatal("fresh final attempt did not retain the receipt barrier", remaining)
+		}
+	}
 	t.Log("phase: ACK last part first")
 	// ACK the last part first. A single real receipt cannot release final=false.
 	peer.allow(starts[len(starts)-1])
 	instant.Add(int64(10 * time.Minute))
-	waitMultipart(t, func() bool { return countPending() == len(starts)-1 })
-	if peer.finals() != 0 {
-		t.Fatal("one ACK released the final RPC")
-	}
+	assertFinalBlocked(len(starts) - 1)
 	t.Log("phase: ACK all except first")
 	// ACK every part except the first; force the final outbox event to actually
 	// attempt its SQL barrier while exactly one durable receipt remains.
 	peer.allow(starts[1:]...)
 	instant.Add(int64(10 * time.Minute))
-	waitMultipart(t, func() bool { return countPending() == 1 })
-	waitMultipart(t, func() bool {
-		var attempts int
-		return env.App.DB.Primary().QueryRow(t.Context(), `SELECT attempts FROM outbox_events WHERE event_key=$1 AND target='analytics'`, finalID).Scan(&attempts) == nil && attempts > 0
-	})
-	if peer.finals() != 0 {
-		t.Fatal("final RPC passed with an unacknowledged part")
-	}
+	assertFinalBlocked(1)
 	t.Log("phase: restart with one missing ACK")
 	cfg := env.App.Cfg
 	env.Stop()
