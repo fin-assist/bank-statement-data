@@ -23,7 +23,8 @@ import (
 func TestUnitAssemblyWiresImportAndIndependentBarrierPool(t *testing.T) {
 	cfg := config.Config{Service: "bank-statement-data", Env: config.EnvDev,
 		Auth: config.AuthConfig{Mode: config.AuthInsecureDev},
-		DB:   config.DBConfig{PrimaryDSN: "primary", ReplicaDSN: "replica", MaxConns: 7}}
+		DB:   config.DBConfig{PrimaryDSN: "postgres://fixture@127.0.0.1:1/fixture?sslmode=disable", ReplicaDSN: "replica", MaxConns: 7}}
+	cfg.Peers = map[string]string{"analytics": "passthrough:///analytics.invalid:9090"}
 	cfg.ObjectStorage = config.ObjectStorageConfig{Endpoint: "https://objects.test", Bucket: "private", KMSKeyID: "fixture", IAMTokenFile: filepath.Join(t.TempDir(), "iam")}
 	if err := os.WriteFile(cfg.ObjectStorage.IAMTokenFile, []byte("token"), 0600); err != nil {
 		t.Fatal(err)
@@ -34,7 +35,7 @@ func TestUnitAssemblyWiresImportAndIndependentBarrierPool(t *testing.T) {
 	calls := 0
 	a, err := assemble(ctx, cfg, log, prometheus.NewRegistry(), func(got context.Context, opts postgres.Options) (*postgres.DB, error) {
 		calls++
-		if got != ctx || opts.PrimaryDSN != "primary" || calls == 1 && (opts.ReplicaDSN != "replica" || opts.MaxConns != 7 || opts.AppName != "bank-statement-data") || calls == 2 && (opts.ReplicaDSN != "" || opts.MaxConns != 8 || opts.AppName != "bank-statement-data-object-barrier") {
+		if got != ctx || opts.PrimaryDSN != cfg.DB.PrimaryDSN || calls == 1 && (opts.ReplicaDSN != "replica" || opts.MaxConns != 7 || opts.AppName != "bank-statement-data") || calls == 2 && (opts.ReplicaDSN != "" || opts.MaxConns != 8 || opts.AppName != "bank-statement-data-object-barrier") {
 			t.Fatalf("pool configuration was not passed through: %+v", opts)
 		}
 		return db, nil
@@ -51,7 +52,7 @@ func TestUnitAssemblyWiresImportAndIndependentBarrierPool(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer a.Close()
-	if calls != 2 || a.DB != db || a.Log != log || a.Cfg.Service != cfg.Service || a.Clients == nil || a.Tokens == nil || len(a.Jobs) != 3 || a.Imports == nil || a.Operations == nil {
+	if calls != 2 || a.DB != db || a.Log != log || a.Cfg.Service != cfg.Service || a.Clients == nil || a.Tokens == nil || len(a.Jobs) != 5 || a.Imports == nil || a.Operations == nil {
 		t.Fatal("incomplete or unexpectedly populated assembly")
 	}
 	if err := a.GRPC.Check(); err != nil {
@@ -61,7 +62,7 @@ func TestUnitAssemblyWiresImportAndIndependentBarrierPool(t *testing.T) {
 		t.Fatalf("missing import RPCs: %v", info)
 	}
 	sources := MigrationSources()
-	if len(AccessPolicy()) != 6 || len(sources) != 3 || sources[0].Table != tombstone.MigrationsTable || sources[0].Name != tombstone.MigrationsName || sources[2].Table != "schema_migrations" {
+	if len(AccessPolicy()) != 6 || len(sources) != 4 || sources[0].Table != tombstone.MigrationsTable || sources[0].Name != tombstone.MigrationsName || sources[3].Table != "schema_migrations" {
 		t.Fatal("scaffold policy or migration sources changed: the tombstone source must precede the service")
 	}
 }

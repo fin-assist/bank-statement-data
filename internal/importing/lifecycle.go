@@ -487,6 +487,7 @@ func ownedObjectKey(user, key string) bool {
 
 func statementPeriod(document Document, zone *time.Location) *Period {
 	var from, to time.Time
+	source := "tags"
 	for _, period := range document.Periods {
 		if from.IsZero() || period.From.Before(from) {
 			from = period.From
@@ -496,6 +497,7 @@ func statementPeriod(document Document, zone *time.Location) *Period {
 		}
 	}
 	if from.IsZero() {
+		source = "operations"
 		for _, line := range document.Lines {
 			if line.Reason != "" || line.OccurredAt == nil {
 				continue
@@ -511,7 +513,7 @@ func statementPeriod(document Document, zone *time.Location) *Period {
 	if from.IsZero() || to.IsZero() {
 		return nil
 	}
-	return &Period{From: startDay(from, zone), To: startDay(to, zone)}
+	return &Period{From: startDay(from, zone), To: startDay(to, zone), RawFrom: &from, RawTo: &to, Source: source}
 }
 
 func completedPeriods(uploads []Upload) []Period {

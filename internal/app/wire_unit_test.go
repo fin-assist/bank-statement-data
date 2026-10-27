@@ -37,7 +37,8 @@ func wireConfig(t *testing.T) config.Config {
 		t.Fatal(err)
 	}
 	return config.Config{Service: "bank-statement-data", Env: config.EnvDev, Auth: config.AuthConfig{Mode: config.AuthInsecureDev},
-		DB:            config.DBConfig{PrimaryDSN: "primary", ReplicaDSN: "replica", MaxConns: 7},
+		Peers:         map[string]string{"analytics": "passthrough:///analytics.invalid:9090"},
+		DB:            config.DBConfig{PrimaryDSN: "postgres://fixture@127.0.0.1:1/fixture?sslmode=disable", ReplicaDSN: "replica", MaxConns: 7},
 		ObjectStorage: config.ObjectStorageConfig{Endpoint: "https://objects.test", Bucket: "private", KMSKeyID: "fixture", IAMTokenFile: token}}
 }
 func wireResponse(body string, code int) *http.Response {
@@ -192,7 +193,7 @@ func TestUnitImportAssemblyDoesNotOwnInjectedHTTPTransport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if transport.requests != 3 || a.Imports == nil || len(a.Jobs) != 3 {
+	if transport.requests != 3 || a.Imports == nil || len(a.Jobs) != 5 {
 		t.Fatal("incomplete import assembly")
 	}
 	a.Close()

@@ -11,6 +11,7 @@ import (
 	"github.com/fin-assist/go-grpc/server"
 	idem "github.com/fin-assist/go-idempotency"
 	"github.com/fin-assist/go-migrate"
+	outbox "github.com/fin-assist/go-outbox"
 	tombstone "github.com/fin-assist/go-tombstone"
 	"github.com/fin-assist/go-worker"
 	"github.com/google/uuid"
@@ -45,6 +46,7 @@ func MigrationSources() []migrate.Source {
 	return []migrate.Source{
 		{Name: tombstone.MigrationsName, Table: tombstone.MigrationsTable, FS: tombstone.Migrations},
 		{Name: idem.MigrationsName, Table: idem.MigrationsTable, FS: idem.Migrations},
+		{Name: outbox.MigrationsName, Table: outbox.MigrationsTable, FS: outbox.Migrations},
 		{Name: "service", Table: "schema_migrations", FS: migrations.FS},
 	}
 }
@@ -141,5 +143,9 @@ func wire(ctx context.Context, a *App, reg prometheus.Registerer, openDB func(co
 	if err = operationsgrpc.Register(a.GRPC.GRPC(), a.Operations); err != nil {
 		return fail(err)
 	}
-	return []worker.Job{{Name: "statement-import", Run: service.Run}, {Name: "statement-files", Run: service.RunCleanup}, cleanup}, closeAll, nil
+	recalcJobs, closeRecalc, err := wireRecalculations(ctx, a, reg, opts, now)
+	if err != nil {
+		return fail(err)
+	}
+	return append([]worker.Job{{Name: "statement-import", Run: service.Run}, {Name: "statement-files", Run: service.RunCleanup}, cleanup}, recalcJobs...), func() { closeRecalc(); closeAll() }, nil
 }

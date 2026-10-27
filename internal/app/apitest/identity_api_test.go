@@ -34,7 +34,7 @@ func TestAPIStageVerifyAssemblyServes(t *testing.T) {
 	for _, j := range env.App.Jobs {
 		jobs[j.Name] = true
 	}
-	if !jobs["identity-keys"] || len(env.App.Jobs) != 4 {
+	if !jobs["identity-keys"] || len(env.App.Jobs) != 6 {
 		t.Fatalf("jobs %v: the user key refresh must run with the service", jobs)
 	}
 	token, err := env.App.Tokens.Token(t.Context())

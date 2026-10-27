@@ -24,14 +24,18 @@ func (r *Imports) Complete(ctx context.Context, user, id string, stage importing
 		return errImportStorage
 	}
 	var from, to any
+	var rawFrom, rawTo *time.Time
+	source := "none"
 	if period != nil {
 		from, to = period.From.Format("2006-01-02"), period.To.Format("2006-01-02")
+		rawFrom, rawTo = period.RawFrom, period.RawTo
+		source = period.Source
 	}
 	accounts := stage.AccountIDs
 	if accounts == nil {
 		accounts = []int64{}
 	}
-	tag, err := r.db.Writer(ctx).Exec(ctx, `UPDATE upload SET status='done',percent=100,finished_at=$3,operation_count=$4,account_ids=$5,statement_from=$6::date,statement_to=$7::date,result=$8::jsonb WHERE user_id=$1 AND id=$2 AND status='processing'`, user, id, now, result.OperationCount, accounts, from, to, payload)
+	tag, err := r.db.Writer(ctx).Exec(ctx, `UPDATE upload SET status='done',percent=100,finished_at=$3,operation_count=$4,account_ids=$5,statement_from=$6::date,statement_to=$7::date,result=$8::jsonb,statement_from_instant=$9,statement_to_instant=$10,statement_range_source=$11 WHERE user_id=$1 AND id=$2 AND status='processing'`, user, id, now, result.OperationCount, accounts, from, to, payload, rawFrom, rawTo, source)
 	if err != nil {
 		return importError(ctx, err)
 	}

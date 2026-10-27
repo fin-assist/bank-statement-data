@@ -38,7 +38,7 @@ func TestIntegrationStartIsolatesConfigurationDatabaseAndCleanup(t *testing.T) {
 				}
 			}
 			if name == "defaults" {
-				if env.App.Cfg.Service != "apitest" || env.App.DB.Primary().Config().MaxConns != 4 || len(env.App.Cfg.Peers) != 0 {
+				if env.App.Cfg.Service != "apitest" || env.App.DB.Primary().Config().MaxConns != 4 || len(env.App.Cfg.Peers) != 1 || env.App.Cfg.Peers["analytics"] == "" {
 					t.Fatal("previous test mutated defaults")
 				}
 			}

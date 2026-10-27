@@ -26,20 +26,22 @@ import (
 	"github.com/fin-assist/bank-statement-data/internal/config"
 	"github.com/fin-assist/bank-statement-data/internal/importing"
 	"github.com/fin-assist/bank-statement-data/internal/operations"
+	"github.com/fin-assist/bank-statement-data/internal/recalculating"
 )
 
 // App is the assembled service. Wire reads its fields to build adapters and usecases.
 type App struct {
-	Cfg          config.Config
-	Log          *slog.Logger
-	DB           *postgres.DB
-	GRPC         *server.Server
-	Clients      *client.Metrics
-	Tokens       client.TokenSource
-	Jobs         []worker.Job
-	Imports      *importing.Service
-	Calculations *calculating.Service
-	Operations   *operations.Service
+	Cfg            config.Config
+	Log            *slog.Logger
+	DB             *postgres.DB
+	GRPC           *server.Server
+	Clients        *client.Metrics
+	Tokens         client.TokenSource
+	Jobs           []worker.Job
+	Imports        *importing.Service
+	Calculations   *calculating.Service
+	Operations     *operations.Service
+	Recalculations *recalculating.Service
 
 	closers []func()
 }
@@ -48,6 +50,10 @@ type App struct {
 type Options struct {
 	ObjectClient *http.Client
 	Now          func() time.Time
+	// AnalyticsDialOptions supplies explicit transport options, such as a bufconn dialer.
+	AnalyticsDialOptions []grpc.DialOption
+	// RecalculationClock supplies scheduler timers; business instants still use Now.
+	RecalculationClock worker.Clock
 }
 
 // New assembles the service from cfg. Close releases what it opened.

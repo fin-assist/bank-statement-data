@@ -121,7 +121,7 @@ func (r *Imports) snapshot(ctx context.Context, user string, from, to *time.Time
 	return state, importError(ctx, rows.Err())
 }
 
-const uploadColumns = `id::text,user_id::text,file_name,object_key,size_bytes,content_sha256,status,COALESCE(error_code,''),percent,uploaded_at,finished_at,file_deleted_at,COALESCE(operation_count,0),account_ids,statement_from,statement_to,result`
+const uploadColumns = `id::text,user_id::text,file_name,object_key,size_bytes,content_sha256,status,COALESCE(error_code,''),percent,uploaded_at,finished_at,file_deleted_at,COALESCE(operation_count,0),account_ids,statement_from,statement_to,result,statement_from_instant,statement_to_instant`
 
 func (r *Imports) uploads(ctx context.Context, user string, zone *time.Location) ([]importing.Upload, error) {
 	rows, err := r.db.Writer(ctx).Query(ctx, `SELECT `+uploadColumns+` FROM upload WHERE user_id=$1 ORDER BY uploaded_at DESC,id DESC`, user)
@@ -145,17 +145,23 @@ type importRow interface{ Scan(...any) error }
 func scanUpload(row importRow, zone *time.Location) (importing.Upload, error) {
 	var upload importing.Upload
 	var hash, raw []byte
-	var from, to *time.Time
-	err := row.Scan(&upload.ID, &upload.UserID, &upload.FileName, &upload.ObjectKey, &upload.SizeBytes, &hash, &upload.Status, &upload.ErrorCode, &upload.Percent, &upload.UploadedAt, &upload.FinishedAt, &upload.FileDeletedAt, &upload.OperationCount, &upload.AccountIDs, &from, &to, &raw)
+	var from, to, rawFrom, rawTo *time.Time
+	err := row.Scan(&upload.ID, &upload.UserID, &upload.FileName, &upload.ObjectKey, &upload.SizeBytes, &hash, &upload.Status, &upload.ErrorCode, &upload.Percent, &upload.UploadedAt, &upload.FinishedAt, &upload.FileDeletedAt, &upload.OperationCount, &upload.AccountIDs, &from, &to, &raw, &rawFrom, &rawTo)
 	if err != nil {
 		return upload, err
 	}
-	if len(hash) != 32 || upload.SizeBytes <= 0 || upload.Percent < 0 || upload.Percent > 100 || (from == nil) != (to == nil) {
+	if len(hash) != 32 || upload.SizeBytes <= 0 || upload.Percent < 0 || upload.Percent > 100 || (from == nil) != (to == nil) || (rawFrom == nil) != (rawTo == nil) {
 		return upload, errImportStorage
 	}
 	copy(upload.Digest[:], hash)
 	if from != nil {
 		upload.Period = &importing.Period{From: importDay(*from, zone), To: importDay(*to, zone)}
+	}
+	if rawFrom != nil {
+		if rawFrom.After(*rawTo) {
+			return upload, errImportStorage
+		}
+		upload.Period = &importing.Period{From: accounting.StartOfDay(*rawFrom, zone), To: accounting.StartOfDay(*rawTo, zone), RawFrom: rawFrom, RawTo: rawTo}
 	}
 	if raw != nil {
 		var wire statementv1.ImportResult

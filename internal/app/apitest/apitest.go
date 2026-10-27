@@ -55,6 +55,9 @@ func Start(t *testing.T, mutate ...func(*config.Config)) *Env {
 func StartWith(t *testing.T, options app.Options, mutate ...func(*config.Config)) *Env {
 	t.Helper()
 	objects := testobjects.New(t)
+	if options.RecalculationClock == nil {
+		options.RecalculationClock = quietScheduler{}
+	}
 	deps := realDependencies()
 	deps.assemble = func(ctx context.Context, cfg config.Config) (*app.App, service, func(), error) {
 		objects.Configure(&cfg)
@@ -130,7 +133,7 @@ func start(t testing.TB, ctx context.Context, dsn string, deps dependencies, mut
 		Service: "apitest", Env: config.EnvDev,
 		Auth: config.AuthConfig{Mode: config.AuthInsecureDev},
 		DB:   config.DBConfig{PrimaryDSN: dsn, MaxConns: 4},
-		GRPC: config.GRPCConfig{MaxRecvMsgSize: 4 << 20}, Peers: map[string]string{}, DailyRecalculationOffset: testconfig.DefaultDailyRecalculationOffset(t),
+		GRPC: config.GRPCConfig{MaxRecvMsgSize: 4 << 20}, Peers: map[string]string{"analytics": "passthrough:///analytics.invalid:9090"}, DailyRecalculationOffset: testconfig.DefaultDailyRecalculationOffset(t),
 	}
 	for _, m := range mutate {
 		m(&cfg)

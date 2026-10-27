@@ -31,3 +31,18 @@
 Logger и Prometheus registry создаёт сервис и явно передаёт библиотекам. `go-grpc` не должен молча отключить прежние server/client metrics из-за nil metrics/registry; logger по умолчанию в библиотеке не заменяет сервисный logger. Имена и метки сохраняются: `grpc_server_handled_total{method,code,reason}`, `grpc_server_handling_seconds{method}`, `finassist_grpc_denied_total{method,caller,cause}`, `grpc_client_handled_total{peer,method,code}`, `grpc_client_handling_seconds{peer,method}`. Пользовательские идентификаторы и другие неограниченные значения в labels запрещены.
 
 `internal/logx` использует значения из `go-grpc/reqctx`. Логи не раскрывают токены, ключи, DSN и банковские данные; параметры маскирования и безопасного сообщения об ошибке задаёт контракт библиотеки. `/metrics`, `/healthz`, `/readyz` и readiness ping primary остаются в `internal/ops` и сборке сервиса. FIN-342 регистрирует `finassist_idempotency_requests_total{endpoint,outcome}` опубликованной go-idempotency v0.6.0 в том же реестре: endpoint ограничен зарегистрированным UploadStatement, outcome — фиксированным набором решений библиотеки. Нового process-wide logger/registry нет.
+
+## Пересчёт и доставка метрик (FIN-357)
+
+`PEER_ANALYTICS_ADDR` обязателен. `metrics-recalculation` и `metrics-outbox` запускаются штатным
+supervisor вместе с импортом; отмена jobs предшествует закрытию отдельного primary outbox pool
+(4 соединения) и gRPC клиента. `UpsertUserMetrics` — системный вызов с дедлайном 30 секунд,
+идемпотентный по calc_version; пользовательская metadata не передаётся.
+
+`finassist_recalculation_queue_users`, `finassist_recalculation_oldest_age_seconds` и
+`finassist_recalculation_errors_total` имеют фиксированные имена без пользовательских labels.
+Ошибка наблюдения не заменяет прошлое успешное значение нулём. Outbox дополнительно регистрирует
+`finassist_outbox_rows{target}`, `finassist_outbox_oldest_age_seconds{target}` и
+`finassist_outbox_delivery_errors_total{target}`, target ограничен конфигурацией (`analytics`).
+Обязательный алерт: `finassist_outbox_oldest_age_seconds > 3600` для всех target, включая пустой.
+Подробности транзакций, версий, удаления и восстановления — [recalculation.md](recalculation.md).
