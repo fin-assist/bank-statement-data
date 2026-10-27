@@ -102,13 +102,14 @@ func (m *memory) SelectionKey(_ context.Context, _, kind, id string) (string, er
 		return "", errStorage
 	}
 	key := ""
+	var exists bool
 	switch kind {
 	case domain.ReferenceKindRegular:
-		key = m.state.Regular[id]
+		key, exists = m.state.Regular[id]
 	case domain.ReferenceKindMerchant:
-		key = m.state.Merchants[id]
+		key, exists = m.state.Merchants[id]
 	}
-	if key == "" {
+	if !exists {
 		return "", ErrSelection
 	}
 	return key, nil

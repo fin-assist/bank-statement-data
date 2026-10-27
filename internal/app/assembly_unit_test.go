@@ -58,11 +58,11 @@ func TestUnitAssemblyWiresImportAndIndependentBarrierPool(t *testing.T) {
 	if err := a.GRPC.Check(); err != nil {
 		t.Fatal(err)
 	}
-	if info := a.GRPC.GRPC().GetServiceInfo(); len(info) != 7 || info["finassist.statementdata.v1.StatementsService"].Methods == nil {
+	if info := a.GRPC.GRPC().GetServiceInfo(); len(info) != 8 || len(info["finassist.statementdata.v1.AssistantToolsService"].Methods) != 4 || info["finassist.statementdata.v1.StatementsService"].Methods == nil {
 		t.Fatalf("missing import RPCs: %v", info)
 	}
 	sources := MigrationSources()
-	if len(AccessPolicy()) != 6 || len(sources) != 4 || sources[0].Table != tombstone.MigrationsTable || sources[0].Name != tombstone.MigrationsName || sources[3].Table != "schema_migrations" {
+	if len(AccessPolicy()) != 7 || len(sources) != 4 || sources[0].Table != tombstone.MigrationsTable || sources[0].Name != tombstone.MigrationsName || sources[3].Table != "schema_migrations" {
 		t.Fatal("scaffold policy or migration sources changed: the tombstone source must precede the service")
 	}
 }

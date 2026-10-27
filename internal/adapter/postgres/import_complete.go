@@ -42,6 +42,9 @@ func (r *Imports) Complete(ctx context.Context, user, id string, stage importing
 	if tag.RowsAffected() != 1 {
 		return importing.ErrNotFound
 	}
+	if err := r.uploadsChanged(ctx, user, now); err != nil {
+		return err
+	}
 	return r.SaveRules(ctx, user, operations, now)
 }
 
@@ -82,6 +85,9 @@ func (r *Imports) Remove(ctx context.Context, user, id string, now time.Time) ([
 			return nil, importError(ctx, err)
 		}
 	}
+	if err := r.uploadsChanged(ctx, user, now); err != nil {
+		return nil, err
+	}
 	return r.operations(ctx, user)
 }
 
@@ -103,4 +109,11 @@ func (r *Imports) SaveUnread(ctx context.Context, user string, lines []importing
 		}
 	}
 	return nil
+}
+
+// uploadsChanged advances source history independently from file cleanup and jobs.
+// The caller already holds the user's import/delete lock and owns the transaction.
+func (r *Imports) uploadsChanged(ctx context.Context, user string, now time.Time) error {
+	_, err := r.db.Writer(ctx).Exec(ctx, `UPDATE user_state SET uploads_changed_at=GREATEST($2,uploads_changed_at+interval '1 microsecond') WHERE user_id=$1`, user, now)
+	return importError(ctx, err)
 }
