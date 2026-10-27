@@ -243,6 +243,8 @@ func prepareSelection(ctx context.Context, state Snapshot, f Filter, now time.Ti
 		return
 	case strings.HasPrefix(f.Selection, "s_regular_"):
 		out.key = state.Regular[strings.TrimPrefix(f.Selection, "s_regular_")]
+	case strings.HasPrefix(f.Selection, "s_small_merchant_"):
+		out.key = state.Merchants[strings.TrimPrefix(f.Selection, "s_small_merchant_")]
 	case strings.HasPrefix(f.Selection, "s_merchant_"):
 		out.key = state.Merchants[strings.TrimPrefix(f.Selection, "s_merchant_")]
 	case strings.HasPrefix(f.Selection, "s_small_category_"):

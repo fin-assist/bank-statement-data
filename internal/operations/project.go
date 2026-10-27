@@ -64,9 +64,15 @@ func project(ctx context.Context, state Snapshot, details bool) ([]Operation, er
 				return nil, ErrState
 			}
 			item.Note = text("возврат · " + target.Name)
+			if op.RefundTarget == "cat_uncategorized" {
+				item.Note = text("возврат")
+			}
 			if details {
 				months := []string{"январе", "феврале", "марте", "апреле", "мае", "июне", "июле", "августе", "сентябре", "октябре", "ноябре", "декабре"}
 				item.NoteDetails = text("Уменьшает расходы «" + target.Name + "» в " + months[int(op.At.In(zone).Month())-1])
+				if op.RefundTarget == "cat_uncategorized" {
+					item.NoteDetails = text("Уменьшает общие расходы в " + months[int(op.At.In(zone).Month())-1])
+				}
 			}
 		}
 		if op.PairID != "" {
@@ -74,7 +80,7 @@ func project(ctx context.Context, state Snapshot, details bool) ([]Operation, er
 			if len(indices) != 2 {
 				return nil, ErrState
 			}
-			var incomeIndex int = -1
+			incomeIndex := -1
 			for _, i := range indices {
 				other := state.Operations[i]
 				if other.Direction == "income" && other.Currency == op.Currency && other.AmountMinor == op.AmountMinor {
@@ -93,7 +99,7 @@ func project(ctx context.Context, state Snapshot, details bool) ([]Operation, er
 				to.Spoken = ""
 			}
 			item.ID, item.Kind, item.Title = op.PairID, "own_transfer", "Перевод между счетами"
-			item.Manual = item.Manual || other.ManualCategory != ""
+			item.Manual = false
 			item.Account = nil
 			item.FromAccount = &account
 			item.ToAccount = &to

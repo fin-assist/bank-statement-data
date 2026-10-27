@@ -239,7 +239,7 @@ func (c *calculator) small(r Range) Metric {
 		used[name] = true
 		ref := c.reference(domain.ReferenceKindMerchant, name)
 		f := c.filter(mr, "expense", "")
-		f.Selection, f.Name = "s_merchant_"+ref.ID, name
+		f.Selection, f.Name = "s_small_merchant_"+ref.ID, name
 		out.Small = append(out.Small, c.smallGroup(name, group, amount, f))
 		total = c.add(total, amount)
 	}
