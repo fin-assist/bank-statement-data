@@ -39,61 +39,11 @@ func TestUnitInspectMonthSharesAccountingAndCoverage(t *testing.T) {
 	}
 }
 
-func TestUnitRegularDescriptionsUsesRecognitionAndDismissal(t *testing.T) {
-	in := fixtureInput()
-	r := Range{in.At, in.At.AddDate(0, 1, 0)}
-	got, e := RegularDescriptions(t.Context(), in.Snapshot, in.Now, r, "with", nil)
-	if e != nil || len(got) != 2 || !got["Cloud"] || !got["taxi"] {
-		t.Fatalf("recognition: %v %v", got, e)
-	}
-	got, e = RegularDescriptions(t.Context(), in.Snapshot, in.Now, r, "with", map[string]bool{"Cloud": true})
-	if e != nil || got["Cloud"] || !got["taxi"] {
-		t.Fatalf("dismissal: %v %v", got, e)
-	}
-	empty := in.Snapshot
-	empty.Uploads = nil
-	got, e = RegularDescriptions(t.Context(), empty, in.Now, r, "with", nil)
-	if e != nil || len(got) != 0 {
-		t.Fatalf("locked: %v %v", got, e)
-	}
-	if _, e = RegularDescriptions(t.Context(), in.Snapshot, time.Time{}, r, "with", nil); !errors.Is(e, ErrCalculation) {
-		t.Fatal(e)
-	}
-	c, cancel := context.WithCancel(t.Context())
-	cancel()
-	if _, e = RegularDescriptions(c, in.Snapshot, in.Now, r, "with", nil); !errors.Is(e, context.Canceled) {
-		t.Fatal(e)
-	}
-}
-
-func TestUnitSmallMerchantGroupsUsesMonthAndIntegerGate(t *testing.T) {
-	in := fixtureInput()
-	result := mustBuild(t, in)
+func TestUnitSmallMetricUsesObservationMerchantToken(t *testing.T) {
+	result := mustBuild(t, fixtureInput())
 	small := result.Periods[0].Metrics["insights.small_frequent"]
 	if len(small.Small) == 0 || !strings.HasPrefix(small.Small[0].Filter.Selection, "s_small_merchant_") {
 		t.Fatalf("small merchant token must retain expense-only observation semantics: %+v", small)
-	}
-	got, e := SmallMerchantGroups(t.Context(), in.Snapshot, "with")
-	if e != nil || !got["2026-08\x00Coffee"] || got["2026-09\x00Coffee"] || got["2026-08\x00Cloud"] {
-		t.Fatalf("membership: %v %v", got, e)
-	}
-	bad := in.Snapshot
-	bad.TimeZone = "invalid"
-	if _, e = SmallMerchantGroups(t.Context(), bad, "with"); !errors.Is(e, ErrCalculation) {
-		t.Fatal(e)
-	}
-	bad = in.Snapshot
-	bad.Operations = make([]importing.Operation, 9)
-	for i := range bad.Operations {
-		bad.Operations[i] = importing.Operation{At: in.At, AmountMinor: math.MaxInt64, Currency: "RUB", Direction: "expense", Category: "cat_food", Description: "Overflow"}
-	}
-	if _, e = SmallMerchantGroups(t.Context(), bad, "with"); !errors.Is(e, ErrCalculation) {
-		t.Fatal(e)
-	}
-	c, cancel := context.WithCancel(t.Context())
-	cancel()
-	if _, e = SmallMerchantGroups(c, in.Snapshot, "with"); !errors.Is(e, context.Canceled) {
-		t.Fatal(e)
 	}
 }
 

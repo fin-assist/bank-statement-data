@@ -127,8 +127,11 @@ func TestUnitSearchPairsAndSelections(t *testing.T) {
 	}
 	bad := m.state
 	bad.TimeZone = "invalid"
-	if _, e = prepareSelection(t.Context(), bad, Filter{Selection: "s_regular_all"}, moment("2026-10-01T12:00:00Z")); !errors.Is(e, ErrState) {
-		t.Fatal(e)
+	for _, token := range []string{"s_regular_all", "s_small_category_food"} {
+		prepared, err := prepareSelection(bad, token)
+		if err != nil || prepared.regular != nil || prepared.small != nil {
+			t.Fatalf("token validation unexpectedly calculated recognition: %+v %v", prepared, err)
+		}
 	}
 }
 
@@ -169,10 +172,10 @@ func TestUnitSearchLimitValidationAndFailures(t *testing.T) {
 	}
 	m = fixture()
 	m.add("op", "2026-09-01T12:00:00Z", "expense", "food", "Shop", 1)
-	m.state.TimeZone = "bad"
+	m.state.TimeZone = "not-read-in-stream"
 	s = service(t, m, "2026-10-27T12:00:00Z")
-	if _, e = s.Search(t.Context(), "user", Filter{}, true); !errors.Is(e, ErrState) {
-		t.Fatal(e)
+	if out, e = s.Search(t.Context(), "user", Filter{}, true); e != nil || len(out.Items) != 1 {
+		t.Fatal("stream reloaded zone instead of reusing request calendar", out, e)
 	}
 	m = fixture()
 	m.add("op", "2026-09-01T12:00:00Z", "expense", "food", "Shop", 1)

@@ -132,7 +132,7 @@ func (s *Service) Search(ctx context.Context, user string, f Filter, allTime boo
 		if e = s.resolveSelection(ctx, user, &state, f.Selection); e != nil {
 			return e
 		}
-		selected, e := prepareSelection(ctx, state, f, s.now())
+		selected, e := prepareSelection(state, f.Selection)
 		if e != nil {
 			return e
 		}
@@ -169,7 +169,7 @@ func (s *Service) Search(ctx context.Context, user string, f Filter, allTime boo
 			one := state
 			one.Operations = candidate.Facts
 			one.Details = candidate.Details
-			rows, e := project(ctx, one, false)
+			rows, e := projectInZone(ctx, one, false, zone)
 			if e != nil {
 				return e
 			}
@@ -267,43 +267,23 @@ func (s *Service) resolveSelection(ctx context.Context, user string, state *Snap
 	return nil
 }
 
-func prepareSelection(ctx context.Context, state Snapshot, f Filter, now time.Time) (out selection, err error) {
-	out.name = f.Selection
-	mode := f.Mode
-	if mode == "" {
-		mode = "with"
-	}
+func prepareSelection(state Snapshot, value string) (out selection, err error) {
+	out.name = value
 	switch {
-	case f.Selection == "", f.Selection == "s_uncategorized", f.Selection == "s_bank_fees":
+	case value == "", value == "s_uncategorized", value == "s_bank_fees", value == "s_regular_all":
 		return out, nil
-	case f.Selection == "s_regular_all":
-		zone, e := time.LoadLocation(state.TimeZone)
-		if e != nil {
-			return out, ErrState
-		}
-		from := accounting.MonthStart(now.In(zone), 0)
-		to := accounting.MonthStart(from, 1)
-		if f.From != nil {
-			from = *f.From
-		}
-		if f.To != nil {
-			to = *f.To
-		}
-		out.regular, err = calculating.RegularDescriptions(ctx, state.Snapshot, now, calculating.Range{From: from, To: to}, mode, state.Dismissed)
-		return
-	case strings.HasPrefix(f.Selection, "s_regular_"):
-		out.key = state.Regular[strings.TrimPrefix(f.Selection, "s_regular_")]
-	case strings.HasPrefix(f.Selection, "s_small_merchant_"):
-		out.key = state.Merchants[strings.TrimPrefix(f.Selection, "s_small_merchant_")]
-	case strings.HasPrefix(f.Selection, "s_merchant_"):
-		out.key = state.Merchants[strings.TrimPrefix(f.Selection, "s_merchant_")]
-	case strings.HasPrefix(f.Selection, "s_small_category_"):
-		out.key = strings.TrimPrefix(f.Selection, "s_small_category_")
+	case strings.HasPrefix(value, "s_regular_"):
+		out.key = state.Regular[strings.TrimPrefix(value, "s_regular_")]
+	case strings.HasPrefix(value, "s_small_merchant_"):
+		out.key = state.Merchants[strings.TrimPrefix(value, "s_small_merchant_")]
+	case strings.HasPrefix(value, "s_merchant_"):
+		out.key = state.Merchants[strings.TrimPrefix(value, "s_merchant_")]
+	case strings.HasPrefix(value, "s_small_category_"):
+		out.key = strings.TrimPrefix(value, "s_small_category_")
 		if _, ok := state.Categories[out.key]; !ok {
 			return out, ErrSelection
 		}
-		out.small, err = calculating.SmallMerchantGroups(ctx, state.Snapshot, mode)
-		return
+		return out, nil
 	default:
 		return out, ErrSelection
 	}

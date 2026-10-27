@@ -13,6 +13,11 @@ func project(ctx context.Context, state Snapshot, details bool) ([]Operation, er
 	if err != nil {
 		return nil, ErrState
 	}
+	return projectInZone(ctx, state, details, zone)
+}
+
+// projectInZone reuses the request's validated calendar for every streamed row.
+func projectInZone(ctx context.Context, state Snapshot, details bool, zone *time.Location) ([]Operation, error) {
 	pairs := make(map[string][]int)
 	for i, op := range state.Operations {
 		if op.PairID != "" {
