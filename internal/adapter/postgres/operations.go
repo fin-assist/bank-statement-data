@@ -16,7 +16,9 @@ import (
 type Operations struct{ *Imports }
 
 // NewOperations shares the same pools and transaction owner as imports.
-func NewOperations(db *DB) *Operations { return &Operations{NewImports(db)} }
+func NewOperations(db *DB, dailyRecalculationOffset time.Duration) *Operations {
+	return &Operations{NewImports(db, dailyRecalculationOffset)}
+}
 
 // Enqueue marks existing civil months without loading the user's operation history.
 func (r *Operations) Enqueue(ctx context.Context, user string, now time.Time) error {

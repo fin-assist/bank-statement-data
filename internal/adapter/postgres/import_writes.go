@@ -9,7 +9,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/fin-assist/bank-statement-data/internal/accounting"
-	"github.com/fin-assist/bank-statement-data/internal/domain"
 	"github.com/fin-assist/bank-statement-data/internal/importing"
 )
 
@@ -247,9 +246,9 @@ func (r *Imports) schedule(ctx context.Context, user string, operations []import
 	var due any
 	if len(months) > 0 {
 		local := now.In(zone)
-		next := accounting.StartOfDay(local, zone).Add(domain.DailyRecalculationOffset)
+		next := accounting.StartOfDay(local, zone).Add(r.dailyRecalculationOffset)
 		if !next.After(now) {
-			next = accounting.AddDays(accounting.StartOfDay(local, zone), 1).Add(domain.DailyRecalculationOffset)
+			next = accounting.AddDays(accounting.StartOfDay(local, zone), 1).Add(r.dailyRecalculationOffset)
 		}
 		due = next
 	}

@@ -56,6 +56,9 @@ func New(ctx context.Context, cfg config.Config, log *slog.Logger, reg prometheu
 }
 
 func assemble(ctx context.Context, cfg config.Config, log *slog.Logger, reg prometheus.Registerer, openDB func(context.Context, postgres.Options) (*postgres.DB, error), options ...Options) (*App, error) {
+	if err := config.ValidateDailyRecalculationOffset(cfg.DailyRecalculationOffset); err != nil {
+		return nil, err
+	}
 	// Client metrics come first: the identity connection to user reports into them too.
 	clients, err := client.NewMetrics(reg)
 	if err != nil {

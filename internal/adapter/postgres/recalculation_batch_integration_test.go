@@ -62,7 +62,7 @@ func TestIntegrationRecalculationBatchDeduplicatesResetsWrapsAndRollsBack(t *tes
 		t.Fatal(err)
 	}
 	foreignBefore, foreignDue := batchScheduleState(t, f, other)
-	repo := postgres.NewOperations(f.db)
+	repo := postgres.NewOperations(f.db, 5*time.Minute)
 	for attempt := range 2 {
 		now := f.now.Add(time.Duration(attempt) * time.Hour)
 		if err := f.db.Run(t.Context(), func(ctx context.Context) error {
@@ -104,14 +104,24 @@ func TestIntegrationRecalculationBatchDeduplicatesResetsWrapsAndRollsBack(t *tes
 
 func TestIntegrationDailyRecalculationUsesLocalCivilDayAndExistingGapRules(t *testing.T) {
 	f := importRepository(t)
-	for _, tc := range []struct{ name, zone, now, want string }{
-		{"before offset", "UTC", "2026-10-01T00:04:00Z", "2026-10-01T00:05:00Z"},
-		{"at offset", "UTC", "2026-10-01T00:05:00Z", "2026-10-02T00:05:00Z"},
-		{"spring DST", "Europe/Berlin", "2026-03-28T23:06:00Z", "2026-03-29T22:05:00Z"},
-		{"fall DST", "Europe/Berlin", "2026-10-24T22:06:00Z", "2026-10-25T23:05:00Z"},
-		{"midnight gap", "America/Havana", "2012-04-01T04:30:00Z", "2012-04-01T05:05:00Z"},
-		{"inside first real hour", "America/Havana", "2012-04-01T05:01:00Z", "2012-04-01T05:05:00Z"},
-		{"skipped date", "Pacific/Apia", "2011-12-30T09:59:00Z", "2011-12-30T10:05:00Z"},
+	for _, tc := range []struct {
+		name, zone, now, want string
+		offset                time.Duration
+	}{
+		{"before offset", "UTC", "2026-10-01T00:04:00Z", "2026-10-01T00:05:00Z", 5 * time.Minute},
+		{"at offset", "UTC", "2026-10-01T00:05:00Z", "2026-10-02T00:05:00Z", 5 * time.Minute},
+		{"spring DST", "Europe/Berlin", "2026-03-28T23:06:00Z", "2026-03-29T22:05:00Z", 5 * time.Minute},
+		{"fall DST", "Europe/Berlin", "2026-10-24T22:06:00Z", "2026-10-25T23:05:00Z", 5 * time.Minute},
+		{"midnight gap", "America/Havana", "2012-04-01T04:30:00Z", "2012-04-01T05:05:00Z", 5 * time.Minute},
+		{"inside first real hour", "America/Havana", "2012-04-01T05:01:00Z", "2012-04-01T05:05:00Z", 5 * time.Minute},
+		{"skipped date", "Pacific/Apia", "2011-12-30T09:59:00Z", "2011-12-30T10:05:00Z", 5 * time.Minute},
+
+		{"custom before offset", "UTC", "2026-10-01T00:06:00Z", "2026-10-01T00:10:00Z", 10 * time.Minute},
+		{"custom exact offset", "UTC", "2026-10-01T00:10:00Z", "2026-10-02T00:10:00Z", 10 * time.Minute},
+		{"explicit midnight", "UTC", "2026-10-01T00:00:00Z", "2026-10-02T00:00:00Z", 0},
+		{"custom midnight gap", "America/Havana", "2012-04-01T04:30:00Z", "2012-04-01T05:10:00Z", 10 * time.Minute},
+		{"midnight skipped date", "Pacific/Apia", "2011-12-30T09:59:00Z", "2011-12-30T10:00:00Z", 0},
+		{"elapsed across spring transition", "Europe/Berlin", "2026-03-29T00:00:00Z", "2026-03-29T22:30:00Z", 23*time.Hour + 30*time.Minute},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			user := uuid.NewString()
@@ -127,7 +137,9 @@ func TestIntegrationDailyRecalculationUsesLocalCivilDayAndExistingGapRules(t *te
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err = f.db.Run(t.Context(), func(ctx context.Context) error { return postgres.NewOperations(f.db).Enqueue(ctx, user, now) }); err != nil {
+			if err = f.db.Run(t.Context(), func(ctx context.Context) error {
+				return postgres.NewOperations(f.db, tc.offset).Enqueue(ctx, user, now)
+			}); err != nil {
 				t.Fatal(err)
 			}
 			_, due := batchScheduleState(t, f, user)
@@ -146,7 +158,9 @@ func TestIntegrationDailyRecalculationUsesLocalCivilDayAndExistingGapRules(t *te
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.db.Run(t.Context(), func(ctx context.Context) error { return postgres.NewOperations(f.db).Enqueue(ctx, user, f.now) }); err != nil {
+	if err := f.db.Run(t.Context(), func(ctx context.Context) error {
+		return postgres.NewOperations(f.db, 5*time.Minute).Enqueue(ctx, user, f.now)
+	}); err != nil {
 		t.Fatal(err)
 	}
 	rows, due := batchScheduleState(t, f, user)

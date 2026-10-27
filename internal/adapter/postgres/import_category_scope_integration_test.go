@@ -3,6 +3,7 @@ package postgres_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -67,7 +68,7 @@ func TestIntegrationSnapshotCategoryScopeKeepsStaticAndAllOwnReferencesOnly(t *t
 		t.Fatal(err)
 	}
 	defer routed.Close()
-	repo := postgres.NewImports(routed)
+	repo := postgres.NewImports(routed, 5*time.Minute)
 	check := func(user string, want []string, forbidden []string) {
 		t.Helper()
 		var state importing.Snapshot

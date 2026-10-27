@@ -98,7 +98,7 @@ func wire(ctx context.Context, a *App, reg prometheus.Registerer, openDB func(co
 	if err != nil {
 		return fail(err)
 	}
-	service, err := importing.New(a.DB, postgres.NewImports(a.DB), objects, postgres.NewObjectBarrier(barrier.Primary()), ofx.Parser{}, keyadapter.New(keys), deleted, now,
+	service, err := importing.New(a.DB, postgres.NewImports(a.DB, a.Cfg.DailyRecalculationOffset), objects, postgres.NewObjectBarrier(barrier.Primary()), ofx.Parser{}, keyadapter.New(keys), deleted, now,
 		func() (string, error) {
 			id, err := uuid.NewV7()
 			if err != nil {
@@ -129,12 +129,12 @@ func wire(ctx context.Context, a *App, reg prometheus.Registerer, openDB func(co
 	if err != nil {
 		return fail(err)
 	}
-	a.Calculations, err = calculating.New(a.DB, postgres.NewImports(a.DB), deleted, now)
+	a.Calculations, err = calculating.New(a.DB, postgres.NewImports(a.DB, a.Cfg.DailyRecalculationOffset), deleted, now)
 	if err != nil {
 		return fail(err)
 	}
 	a.Imports = service
-	a.Operations, err = operations.New(a.DB, postgres.NewOperations(a.DB), deleted, now, func() (string, error) { id, err := uuid.NewV7(); return id.String(), err })
+	a.Operations, err = operations.New(a.DB, postgres.NewOperations(a.DB, a.Cfg.DailyRecalculationOffset), deleted, now, func() (string, error) { id, err := uuid.NewV7(); return id.String(), err })
 	if err != nil {
 		return fail(err)
 	}

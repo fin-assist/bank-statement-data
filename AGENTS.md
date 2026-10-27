@@ -42,7 +42,7 @@ updates them in the same PR. A service made from the template rewrites the first
 | Commands `serve`, `migrate`: listeners, shutdown | `cmd/bank-statement-data/` (`serve.go`, `migrate.go`) |
 | Assembly: identity, pools, server; wiring of adapters, usecases and handlers (`wire()`), the access table (`AccessPolicy()`), migration sources | `internal/app/` (`app.go`, `wire.go`) |
 | The whole service in-process for API tests | `internal/app/apitest/` |
-| Entities, account kind/display constants, daily recalc timing, shared reference kinds and invariants (no pgx, gRPC or generated code) | `internal/domain/` |
+| Entities, account kind/display constants, shared reference kinds and invariants (no pgx, gRPC or generated code) | `internal/domain/` |
 | Usecases and the interfaces of repositories and clients they need | `internal/<feature>/`; financial calculator — `internal/calculating/`, shared definition catalog/classification and cancellable IANA calendar helpers — `internal/accounting/` |
 | Shared gRPC server, client and request context | `github.com/fin-assist/go-grpc/{server,client,reqctx}` v0.2.1; service wiring — `internal/app/`, `docs/server.md` |
 | gRPC handlers (messages ↔ usecases) | `internal/adapter/grpc/<feature>/` |
@@ -53,7 +53,7 @@ updates them in the same PR. A service made from the template rewrites the first
 | SQL migrations (embedded) and schema constraint tests | `migrations/` (`schema_test.go`); rules — `docs/migrations.md`, schema and code invariants — `docs/schema.md` |
 | Application-specific peer adapters, when needed | `internal/adapter/client/<peer>/`; shared dialing/token contracts — go-grpc/client |
 | Shared job lifecycle; application jobs when needed | `github.com/fin-assist/go-worker` v0.1.1; `internal/worker/<job>/` |
-| Configuration: every variable with its default and description | `internal/config/vars.go` (`Vars`); generated tables — `docs/config.md` |
+| Configuration: every variable with its default and description; daily recalc offset is explicitly passed by app to repositories | `internal/config/vars.go` (`Vars`); generated tables — `docs/config.md` |
 | Request-scoped values (request ID, caller, user, bank-bff hints) | `github.com/fin-assist/go-grpc/reqctx` |
 | Logger, metrics endpoint, readiness | `internal/logx/`, `internal/ops/` |
 | Image, local run, stand | `Dockerfile`, `compose.yaml`, `Makefile`, `deploy/systemd/` |

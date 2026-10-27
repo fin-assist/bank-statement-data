@@ -129,7 +129,7 @@ func start(ctx context.Context, dsn string, deps dependencies, mutate ...func(*c
 		Service: "apitest", Env: config.EnvDev,
 		Auth: config.AuthConfig{Mode: config.AuthInsecureDev},
 		DB:   config.DBConfig{PrimaryDSN: dsn, MaxConns: 4},
-		GRPC: config.GRPCConfig{MaxRecvMsgSize: 4 << 20}, Peers: map[string]string{},
+		GRPC: config.GRPCConfig{MaxRecvMsgSize: 4 << 20}, Peers: map[string]string{}, DailyRecalculationOffset: 5 * time.Minute,
 	}
 	for _, m := range mutate {
 		m(&cfg)

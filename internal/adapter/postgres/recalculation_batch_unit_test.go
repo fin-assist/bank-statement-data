@@ -42,7 +42,9 @@ func TestUnitScheduleQueuesDistinctMonthsInOneStatement(t *testing.T) {
 	tx := &scheduleSQLTx{}
 	db := &DB{transactions: pgstore.New(unitBeginner{tx})}
 	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
-	if err := db.Run(t.Context(), func(ctx context.Context) error { return NewImports(db).schedule(ctx, "actor", operations, now) }); err != nil {
+	if err := db.Run(t.Context(), func(ctx context.Context) error {
+		return NewImports(db, 5*time.Minute).schedule(ctx, "actor", operations, now)
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if tx.queueCalls != 1 || tx.dueCalls != 1 || len(tx.queueArgs) != 3 || tx.queueArgs[0] != "actor" || !tx.queueArgs[2].(time.Time).Equal(now) {
@@ -76,7 +78,9 @@ func TestUnitScheduleEmptyHistorySkipsQueueAndBatchFailureDoesNotUpdateDue(t *te
 			operations = append(operations, importing.Operation{At: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)})
 		}
 		db := &DB{transactions: pgstore.New(unitBeginner{tx})}
-		err := db.Run(t.Context(), func(ctx context.Context) error { return NewImports(db).schedule(ctx, "actor", operations, time.Now()) })
+		err := db.Run(t.Context(), func(ctx context.Context) error {
+			return NewImports(db, 5*time.Minute).schedule(ctx, "actor", operations, time.Now())
+		})
 		if fail {
 			if !errors.Is(err, errImportStorage) || tx.queueCalls != 1 || tx.dueCalls != 0 {
 				t.Fatal("failed batch updated due", err, tx)

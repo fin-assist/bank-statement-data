@@ -18,12 +18,18 @@ import (
 var errImportStorage = errors.New("statement storage unavailable")
 
 // Imports stores durable source facts; business rules are supplied by the usecase.
-type Imports struct{ db *DB }
+type Imports struct {
+	db                       *DB
+	dailyRecalculationOffset time.Duration
+}
 
 var _ importing.Repository = (*Imports)(nil)
 
-// NewImports wires the service-owned transaction and primary routing adapter.
-func NewImports(db *DB) *Imports { return &Imports{db: db} }
+// NewImports wires the transaction owner and the validated elapsed offset from
+// the first real local day start. Zero is an explicit start-of-day schedule.
+func NewImports(db *DB, dailyRecalculationOffset time.Duration) *Imports {
+	return &Imports{db: db, dailyRecalculationOffset: dailyRecalculationOffset}
+}
 
 // TimeZone reads profile metadata without loading the user's entire history.
 func (r *Imports) TimeZone(ctx context.Context, user string) (string, error) {
