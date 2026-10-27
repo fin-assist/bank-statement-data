@@ -142,3 +142,9 @@ CI сохраняет `.out`, `.jsonl`, `*.coverage.txt` и `*.report.txt` ка�
 Подробности классификации и исходные дефициты — [docs/testing.md](docs/testing.md).
 
 Модули `github.com/fin-assist/*` берутся из git, минуя прокси (`GOPRIVATE`, задан в `Makefile` и CI). Для приватного — токен с чтением репозиториев fin-assist: локально `git config --global url."https://x-access-token:<token>@github.com/fin-assist/".insteadOf "https://github.com/fin-assist/"`, в CI — секрет `GO_MODULES_TOKEN`, в `docker build` — секрет `netrc`.
+
+## Расчёты MVP (FIN-355)
+
+Собран внутренний `App.Calculations`: полный снимок одного периода сразу в двух режимах переводов,
+с общими правилами импортных RUB-итогов и типизированным выходом для analytics. Формулы, календарь,
+реестр и выборки — [docs/calculations.md](docs/calculations.md). Фоновый конвейер/доставка — FIN-357.

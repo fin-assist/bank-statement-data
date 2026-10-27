@@ -261,3 +261,13 @@ ID записи — `operation.id` одиночной операции или `t
 Партиции `operation` — не ограничение-валидатор, а хранение. Операция вне всех партиций (нет партиции на год) роняет вставку с SQLSTATE 23514 — это сигнал создать партицию (FIN-193), а не правило данных.
 
 FIN-342 добавляет приватный статус `staging`: короткая транзакция сохраняет намерение до любого облачного PUT; история и parser-worker его не показывают. Подтверждённый PUT переводит staging в processing в транзакции результата ключа. Неизвестный исход остаётся для восстановления; структура таблиц не меняется. Общий период DTSTART/DTEND применяется ко всем счетам загрузки (решение владельца 26.10.2026), без account_periods JSONB. Удаление в хранилище теперь означает бессрочный зашифрованный пустой маркер: подробности и условия ведра — [import.md](import.md).
+
+## Расчётные ссылки (FIN-355)
+
+`regular_payment` и `merchant` используются без изменения схемы. `calculation.Service` держит
+tombstone guard и блокировку `user_state` до вычисления обоих режимов и upsert ссылок.
+
+| Инвариант в коде сервиса | Проверка |
+| --- | --- |
+| Расчёт не создаёт пользователя и не возвращает ссылки после purge | `TestUnitCalculationServiceGuardAndFailures`, `TestIntegrationCalculationFromCommittedFixtureHistory`, `TestAPICalculationUsesOnlyCompletedPublicImportsAndHonorsPurge` |
+| UUID принадлежит user_id, сохраняется при пересчёте; upsert не снимает dismissal | `TestIntegrationCalculationReferencesRequireOwnedTransactionAndKeepDismissals`, `TestIntegrationCalculationReferencesAreStableAndTenantScoped` |

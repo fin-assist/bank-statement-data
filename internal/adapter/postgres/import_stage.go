@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/fin-assist/bank-statement-data/internal/accounting"
 	"github.com/fin-assist/bank-statement-data/internal/importing"
 )
 
@@ -106,7 +107,7 @@ func (r *Imports) Stage(ctx context.Context, user, id string, document importing
 }
 
 func (r *Imports) bankCategory(ctx context.Context, raw string) (string, error) {
-	name := truncateText(raw, 64)
+	name := truncateText(raw, accounting.CategoryNameLimit)
 	if name == "" || name == "Без категории" || name == "Возврат" {
 		return importing.UncategorizedCategory, nil
 	}

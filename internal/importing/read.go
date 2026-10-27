@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strconv"
 	"time"
+
+	"github.com/fin-assist/bank-statement-data/internal/accounting"
 )
 
 // Config builds browser links and the suggested calendar range from one coherent snapshot.
@@ -33,7 +35,7 @@ func (s *Service) Config(ctx context.Context, user string) (Config, error) {
 	if loaded != nil {
 		from = startDay(loaded.Last, zone)
 	}
-	to := today.AddDate(0, 0, 1)
+	to := accounting.AddDays(today, 1)
 	if !readTime(from) || !readTime(to) || !from.Before(to) {
 		return Config{}, errAccounting
 	}

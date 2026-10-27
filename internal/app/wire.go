@@ -21,6 +21,7 @@ import (
 	"github.com/fin-assist/bank-statement-data/internal/adapter/objectstore"
 	"github.com/fin-assist/bank-statement-data/internal/adapter/ofx"
 	"github.com/fin-assist/bank-statement-data/internal/adapter/postgres"
+	"github.com/fin-assist/bank-statement-data/internal/calculating"
 	"github.com/fin-assist/bank-statement-data/internal/importing"
 	"github.com/fin-assist/bank-statement-data/migrations"
 )
@@ -120,6 +121,10 @@ func wire(ctx context.Context, a *App, reg prometheus.Registerer, openDB func(co
 			}
 		}
 	})
+	if err != nil {
+		return fail(err)
+	}
+	a.Calculations, err = calculating.New(a.DB, postgres.NewImports(a.DB), deleted, now)
 	if err != nil {
 		return fail(err)
 	}
