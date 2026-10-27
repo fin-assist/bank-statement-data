@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/encoding/protojson"
 
+	"github.com/fin-assist/bank-statement-data/internal/accounting"
 	"github.com/fin-assist/bank-statement-data/internal/adapter/statementwire"
 	"github.com/fin-assist/bank-statement-data/internal/importing"
 )
@@ -228,7 +229,9 @@ func (r *Imports) unread(ctx context.Context, user string) ([]importing.Unread, 
 }
 
 func importDay(value time.Time, zone *time.Location) time.Time {
-	return time.Date(value.Year(), value.Month(), value.Day(), 0, 0, 0, 0, zone)
+	// SQL date contains a civil label, not a UTC instant. Noon preserves that
+	// label when midnight is skipped, then the shared helper finds the true start.
+	return accounting.StartOfDay(time.Date(value.Year(), value.Month(), value.Day(), 12, 0, 0, 0, zone), zone)
 }
 
 func importError(ctx context.Context, err error) error {

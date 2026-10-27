@@ -159,10 +159,11 @@ func TestIntegrationCalculationFromCommittedFixtureHistory(t *testing.T) {
 }
 func TestIntegrationCalculationReferencesAreStableAndTenantScoped(t *testing.T) {
 	a, _ := importAssembly(t, calculationNow)
-	importFile(t, a, "01-2025-10-15_2026-06-30.ofx")
+	importCalculationBody(t, a, apiUser, calculationRuleOFX())
+	importCalculationBody(t, a, apiOther, calculationRuleOFX())
 	var first, second calculating.Result
 	for i := 0; i < 2; i++ {
-		result, err := a.Calculations.Calculate(t.Context(), apiUser, "month", calculationDate(t, "2026-06"))
+		result, err := a.Calculations.Calculate(t.Context(), apiUser, "month", calculationDate(t, "2026-09"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -172,6 +173,30 @@ func TestIntegrationCalculationReferencesAreStableAndTenantScoped(t *testing.T) 
 			second = result
 		}
 	}
+	regular := first.Periods[0].Metrics["insights.regular_payments"].Payments
+	small := first.Periods[0].Metrics["insights.small_frequent"].Small
+	if len(regular) != 2 || len(small) != 1 || small[0].Filter.Selection == "" {
+		t.Fatal("stable identity fixture must produce regular and merchant UUIDs")
+	}
+	foreign, err := a.Calculations.Calculate(t.Context(), apiOther, "month", calculationDate(t, "2026-09"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignRegular := foreign.Periods[0].Metrics["insights.regular_payments"].Payments
+	foreignSmall := foreign.Periods[0].Metrics["insights.small_frequent"].Small
+	if len(foreignRegular) != 2 || len(foreignSmall) != 1 {
+		t.Fatal("second tenant must also be populated")
+	}
+	for i, payment := range regular {
+		if payment.ID == "" || payment.ID != second.Periods[0].Metrics["insights.regular_payments"].Payments[i].ID || payment.ID == foreignRegular[i].ID || payment.Title != foreignRegular[i].Title {
+			t.Fatal("regular identity not stable or tenant-scoped")
+		}
+	}
+	if small[0].Filter.Selection != second.Periods[0].Metrics["insights.small_frequent"].Small[0].Filter.Selection || small[0].Filter.Selection == foreignSmall[0].Filter.Selection {
+		t.Fatal("merchant identity not stable or tenant-scoped")
+	}
+	calculationSelection(t, a, apiUser, first.Periods[0], small[0].Filter, 9, 252000)
+	calculationSelection(t, a, apiOther, foreign.Periods[0], foreignSmall[0].Filter, 9, 252000)
 	_, one, err := metricswire.Encode(first)
 	if err != nil {
 		t.Fatal(err)
@@ -185,7 +210,7 @@ func TestIntegrationCalculationReferencesAreStableAndTenantScoped(t *testing.T) 
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if _, err := a.Calculations.Calculate(ctx, apiUser, "month", calculationDate(t, "2026-06")); !errors.Is(err, context.Canceled) {
+	if _, err := a.Calculations.Calculate(ctx, apiUser, "month", calculationDate(t, "2026-09")); !errors.Is(err, context.Canceled) {
 		t.Fatal("cancelled computation", err)
 	}
 }

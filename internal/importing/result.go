@@ -151,7 +151,7 @@ func BuildResult(ctx context.Context, in ResultInput) (Result, error) {
 		result.Totals = &totals
 	}
 	if result.UncategorizedCount > 0 {
-		result.UncategorizedRange = &TimeRange{From: startDay(*firstNew, in.Zone), To: startDay(*lastNew, in.Zone).AddDate(0, 0, 1)}
+		result.UncategorizedRange = &TimeRange{From: startDay(*firstNew, in.Zone), To: accounting.AddDays(startDay(*lastNew, in.Zone), 1)}
 		// This published built-in selection includes untargeted refunds too;
 		// filtering only by cat_uncategorized would return a different set.
 		result.UncategorizedSelection = "s_uncategorized"

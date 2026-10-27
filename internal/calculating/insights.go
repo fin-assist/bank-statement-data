@@ -138,7 +138,7 @@ func (c *calculator) notable(r Range) Metric {
 		}
 		var total int64
 		for _, m := range window {
-			total = c.add(total, c.sum(Range{m, m.AddDate(0, 1, 0)}, "expense", cat.ID))
+			total = c.add(total, c.sum(Range{m, shiftMonths(m, 1)}, "expense", cat.ID))
 		}
 		typical := c.scale(total, 1, int64(threshold), true)
 		// Compare without float rounding or overflowing a cross multiplication.
@@ -206,7 +206,7 @@ func (c *calculator) small(r Range) Metric {
 		return locked("need_full_months", threshold, len(full))
 	}
 	selected := full[len(full)-1]
-	mr := Range{selected, selected.AddDate(0, 1, 0)}
+	mr := Range{selected, shiftMonths(selected, 1)}
 	out := Metric{Status: "ready"}
 	if !selected.Equal(r.From) {
 		out.Basis = basis([]time.Time{selected})
@@ -292,6 +292,7 @@ func (c *calculator) smallAmount(group []importing.Operation) (int64, bool) {
 	for _, op := range group {
 		amount = c.add(amount, op.AmountMinor)
 	}
+	// calc.md 1 and 5 define the average as integer division, including its gate.
 	return amount, amount/int64(len(group)) <= accounting.SmallMaximumAverageMinor
 }
 func (c *calculator) smallGroup(name string, group []importing.Operation, amount int64, f Filter) Small {

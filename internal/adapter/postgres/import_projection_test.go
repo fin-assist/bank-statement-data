@@ -110,3 +110,14 @@ func TestUnitBankCategoryIdentityIsBoundedAndDeterministic(t *testing.T) {
 		t.Fatal("short category changed")
 	}
 }
+
+func TestUnitDateProjectionPreservesCivilLabelAtMidnightGap(t *testing.T) {
+	zone, err := time.LoadLocation("America/Havana")
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := importDay(time.Date(2012, 4, 1, 0, 0, 0, 0, time.UTC), zone)
+	if at.Month() != time.April || at.Day() != 1 || at.Hour() != 1 {
+		t.Fatal("SQL date moved to previous civil day", at)
+	}
+}

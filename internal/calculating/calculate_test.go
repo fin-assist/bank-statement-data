@@ -379,3 +379,109 @@ func TestUnitProfileZoneChangeMovesOperationToPreviousCalendarMonth(t *testing.T
 		t.Fatalf("profile calendar not rebuilt %+v", ny.Bounds)
 	}
 }
+
+func TestUnitCalculationApiaSkippedDateTerminatesAndCountsRealDays(t *testing.T) {
+	zone, err := time.LoadLocation("Pacific/Apia")
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := fixtureInput()
+	in.Snapshot.TimeZone = zone.String()
+	in.At = time.Date(2011, 12, 1, 0, 0, 0, 0, zone)
+	in.Now = time.Date(2011, 12, 31, 12, 0, 0, 0, zone)
+	in.Snapshot.Uploads[0].Period = &importing.Period{From: in.At, To: time.Date(2011, 12, 31, 0, 0, 0, 0, zone)}
+	in.Snapshot.Operations = []importing.Operation{{ID: "apia", At: time.Date(2011, 12, 29, 12, 0, 0, 0, zone), Currency: "RUB", Direction: "expense", Category: "cat_food", AmountMinor: 30000}}
+	in.Snapshot.Unread = nil
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	out, err := Build(ctx, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := out.Periods[0]
+	value(t, p, "tiles.daily_expense", 1000)
+	value(t, p, "tiles.forecast", 30000)
+	in.Now = time.Date(2012, 1, 1, 12, 0, 0, 0, zone)
+	out, err = Build(ctx, in)
+	if err != nil || out.Periods[0].Bounds.Coverage != "complete" || out.State.FullMonths != 1 {
+		t.Fatal("missing date prevented complete month", err)
+	}
+	cal, err := makeCalendar(ctx, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	if cal.complete(out.Periods[0].Range) {
+		t.Fatal("cancelled completeness succeeded")
+	}
+	if _, err = dates(ctx, out.Periods[0].Range); !errors.Is(err, context.Canceled) {
+		t.Fatal("date counter ignored cancellation", err)
+	}
+}
+func TestUnitGlobalExclusiveBoundsAndSignedDailyForecastContract(t *testing.T) {
+	in := fixtureInput()
+	in.Snapshot.Operations = []importing.Operation{{ID: "refund", At: in.At.AddDate(0, 0, 24), AmountMinor: 120001, Currency: "RUB", Direction: "income", Category: importing.RefundCategory, RefundTarget: "cat_food"}}
+	in.Snapshot.Operations = append(in.Snapshot.Operations, importing.Operation{ID: "previous-refund", At: in.At.AddDate(0, -1, 24), AmountMinor: 120002, Currency: "RUB", Direction: "income", Category: importing.RefundCategory, RefundTarget: "cat_food"})
+	out := mustBuild(t, in)
+	p := out.Periods[0]
+	value(t, p, "tiles.daily_expense", -4800)
+	value(t, p, "tiles.daily_expense.comparison", -3871)
+	value(t, p, "tiles.forecast", -144001)
+	if !out.State.To.Equal(in.At.AddDate(0, 1, -5)) || p.Bounds.To.Day() != 25 || !p.Bounds.To.Before(*out.State.To) {
+		t.Fatalf("global exclusive vs period inclusive %+v %+v", out.State, p.Bounds)
+	}
+	in.Snapshot.Uploads[0].Period.To = in.At.AddDate(0, 0, 25)
+	in.Snapshot.Operations[0].At = in.At.AddDate(0, 0, 25)
+	out = mustBuild(t, in)
+	value(t, out.Periods[0], "tiles.daily_expense", -4615)
+	value(t, out.Periods[0], "tiles.forecast", -138462)
+}
+func TestUnitSmallAverageGateUsesSpecifiedIntegerAverage(t *testing.T) {
+	for _, total := range []int64{450000, 450001, 450008, 450009} {
+		c := calculator{}
+		ops := make([]importing.Operation, 9)
+		for i := range ops {
+			ops[i].AmountMinor = 50000
+		}
+		ops[0].AmountMinor += total - 450000
+		amount, eligible := c.smallAmount(ops)
+		if amount != total || eligible != (total < 450009) {
+			t.Fatal("calc.md integer-average threshold", total, eligible)
+		}
+	}
+}
+func TestUnitManualTransferRefundUsesFinalCategoryVisibilityBeforeTarget(t *testing.T) {
+	in := fixtureInput()
+	at := in.At.AddDate(0, 0, 1)
+	in.Snapshot.Operations = []importing.Operation{
+		{ID: "spend", At: at, Currency: "RUB", Direction: "expense", Category: "cat_food", BankCategory: "cat_food", ManualCategory: importing.TransfersCategory, AmountMinor: 1000, Description: "Shop"},
+		{ID: "refund", At: at.AddDate(0, 0, 1), Currency: "RUB", Direction: "income", Category: "cat_food", BankCategory: "cat_food", AmountMinor: 1000, Description: "Shop"},
+	}
+	ops, err := importing.ApplyRules(t.Context(), in.Snapshot.Operations, in.Snapshot.Categories, func() (string, error) { return "unused", nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ops[0].Category != importing.TransfersCategory || ops[1].Category != importing.RefundCategory || ops[1].RefundTarget != importing.TransfersCategory {
+		t.Fatal("rules fixture did not reach reviewed case", ops)
+	}
+	in.Snapshot.Operations = ops
+	out := mustBuild(t, in)
+	value(t, out.Periods[0], "tiles.expense", 0)
+	value(t, out.Periods[1], "tiles.expense", -1000)
+	f := out.Periods[1].Metrics["expense_categories"].Categories[0].Filter
+	count := 0
+	var sum int64
+	for _, op := range ops {
+		if Match(op, f, "", nil) {
+			_, _, v, _ := FinancialRow(op, "without")
+			count++
+			sum += v
+		}
+	}
+	if count != 1 || sum != -1000 || f.Category != importing.TransfersCategory {
+		t.Fatal("generic selection disagrees with target accounting")
+	}
+	if out.Periods[1].Metrics["insights.notable_spending"].Status != "none" {
+		t.Fatal("observation admitted transfer target")
+	}
+}

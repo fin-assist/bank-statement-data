@@ -2,6 +2,7 @@ package calculating
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -11,6 +12,7 @@ import (
 )
 
 type calendar struct {
+	ctx          context.Context
 	ranges       []Range
 	months, full []time.Time
 	now          time.Time
@@ -18,13 +20,11 @@ type calendar struct {
 	ops          []importing.Operation
 }
 
-func day(at time.Time, zone *time.Location) time.Time {
-	at = at.In(zone)
-	return time.Date(at.Year(), at.Month(), at.Day(), 0, 0, 0, 0, zone)
-}
-func month(at time.Time) time.Time {
-	return time.Date(at.Year(), at.Month(), 1, 0, 0, 0, 0, at.Location())
-}
+func day(at time.Time, zone *time.Location) time.Time { return accounting.StartOfDay(at, zone) }
+func nextDay(at time.Time) time.Time                  { return accounting.AddDays(at, 1) }
+func previousDay(at time.Time) time.Time              { return accounting.AddDays(at, -1) }
+func month(at time.Time) time.Time                    { return accounting.MonthStart(at, 0) }
+func shiftMonths(at time.Time, n int) time.Time       { return accounting.MonthStart(at, n) }
 func periodRange(at time.Time, kind string) (Range, error) {
 	var from time.Time
 	var months int
@@ -32,13 +32,13 @@ func periodRange(at time.Time, kind string) (Range, error) {
 	case "month":
 		from, months = month(at), 1
 	case "quarter":
-		from, months = time.Date(at.Year(), ((at.Month()-1)/3)*3+1, 1, 0, 0, 0, 0, at.Location()), 3
+		from, months = month(time.Date(at.Year(), ((at.Month()-1)/3)*3+1, 1, 12, 0, 0, 0, at.Location())), 3
 	case "year":
-		from, months = time.Date(at.Year(), 1, 1, 0, 0, 0, 0, at.Location()), 12
+		from, months = month(time.Date(at.Year(), 1, 1, 12, 0, 0, 0, at.Location())), 12
 	default:
 		return Range{}, ErrCalculation
 	}
-	to := from.AddDate(0, months, 0)
+	to := shiftMonths(from, months)
 	if from.Year() < 1 || to.Year() > 9999 {
 		return Range{}, ErrCalculation
 	}
@@ -62,12 +62,10 @@ func (c calendar) covered(at time.Time) bool {
 	}
 	return false
 }
-func dates(r Range) int {
+func dates(ctx context.Context, r Range) (int, error) {
 	count := 0
-	for d := r.From; d.Before(r.To); d = d.AddDate(0, 0, 1) {
-		count++
-	}
-	return count
+	err := accounting.WalkDays(ctx, r.From, r.To, func(time.Time) error { count++; return nil })
+	return count, err
 }
 func minTime(a, b time.Time) time.Time {
 	if a.Before(b) {
@@ -81,21 +79,28 @@ func maxTime(a, b time.Time) time.Time {
 	}
 	return b
 }
+
+var errUncoveredDay = errors.New("uncovered calendar day")
+
 func (c calendar) complete(r Range) bool {
 	if r.To.After(c.now) {
 		return false
 	}
-	for d := r.From; d.Before(r.To); d = d.AddDate(0, 0, 1) {
-		if !c.covered(d) {
-			return false
+	err := accounting.WalkDays(c.ctx, r.From, r.To, func(at time.Time) error {
+		if !c.covered(at) {
+			return errUncoveredDay
 		}
-	}
-	return true
+		return nil
+	})
+	return err == nil
 }
 func (c calendar) bounds(r Range) Bounds {
 	b := Bounds{Coverage: "no_data"}
 	var first, last time.Time
 	for _, v := range c.ranges {
+		if c.ctx.Err() != nil {
+			return Bounds{}
+		}
 		start, end := maxTime(v.From, r.From), minTime(v.To, r.To)
 		if !start.Before(end) {
 			continue
@@ -103,7 +108,7 @@ func (c calendar) bounds(r Range) Bounds {
 		if first.IsZero() {
 			first = start
 		}
-		last = end.AddDate(0, 0, -1)
+		last = previousDay(end)
 	}
 	if first.IsZero() {
 		return b
@@ -113,9 +118,12 @@ func (c calendar) bounds(r Range) Bounds {
 		b.Coverage = "complete"
 	}
 	b.From = &first
-	end := last.AddDate(0, 0, 1).Add(-time.Second)
+	end := nextDay(last).Add(-time.Second)
 	var latest time.Time
 	for _, op := range c.ops {
+		if c.ctx.Err() != nil {
+			return Bounds{}
+		}
 		if !op.At.Before(r.From) && op.At.Before(r.To) && day(op.At, c.zone).Equal(last) && op.At.After(latest) {
 			latest = op.At
 		}
@@ -140,13 +148,13 @@ func makeCalendar(ctx context.Context, in Input) (calendar, error) {
 	if err != nil || in.Now.IsZero() || in.At.IsZero() {
 		return calendar{}, ErrCalculation
 	}
-	c := calendar{zone: zone, now: day(in.Now, zone), ops: in.Snapshot.Operations}
+	c := calendar{ctx: ctx, zone: zone, now: day(in.Now, zone), ops: in.Snapshot.Operations}
 	periods, err := importing.CompletedPeriods(ctx, in.Snapshot, zone)
 	if err != nil {
 		return c, err
 	}
 	for _, p := range periods {
-		r := Range{day(p.From, zone), day(p.To, zone).AddDate(0, 0, 1)}
+		r := Range{day(p.From, zone), nextDay(day(p.To, zone))}
 		if !r.From.Before(r.To) || r.To.Year() > 9999 {
 			return c, ErrCalculation
 		}
@@ -164,11 +172,11 @@ func makeCalendar(ctx context.Context, in Input) (calendar, error) {
 	}
 	c.ranges = merged
 	if len(merged) > 0 {
-		for m := month(merged[0].From); m.Before(merged[len(merged)-1].To); m = m.AddDate(0, 1, 0) {
+		for m := month(merged[0].From); m.Before(merged[len(merged)-1].To); m = shiftMonths(m, 1) {
 			if err := ctx.Err(); err != nil {
 				return c, err
 			}
-			r := Range{m, m.AddDate(0, 1, 0)}
+			r := Range{m, shiftMonths(m, 1)}
 			if c.bounds(r).From != nil {
 				c.months = append(c.months, m)
 			}
@@ -177,16 +185,23 @@ func makeCalendar(ctx context.Context, in Input) (calendar, error) {
 			}
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return c, err
+	}
 	return c, nil
 }
 func (c calendar) state(now time.Time) State {
 	s := State{TimeZone: c.zone.String(), CalculatedAt: now, FullMonths: len(c.full), HasData: len(c.ops) > 0 && len(c.ranges) > 0}
 	if len(c.ranges) > 0 {
+		// Global state is [first day; day after last), unlike inclusive period bounds (calc.md 4).
 		first, last := c.ranges[0].From, c.ranges[len(c.ranges)-1].To
-		stale := last.AddDate(0, 0, accounting.StaleDays)
+		stale := accounting.AddDays(last, accounting.StaleDays)
 		s.From, s.To, s.StaleAfter = &first, &last, &stale
 	}
 	for _, op := range c.ops {
+		if c.ctx.Err() != nil {
+			return State{}
+		}
 		if s.LastOperation == nil || op.At.After(*s.LastOperation) {
 			at := op.At
 			s.LastOperation = &at
@@ -198,7 +213,7 @@ func basis(months []time.Time) *Basis {
 	if len(months) == 0 {
 		return nil
 	}
-	return &Basis{Range: Range{months[0], months[len(months)-1].AddDate(0, 1, 0)}, FullMonths: len(months)}
+	return &Basis{Range: Range{months[0], shiftMonths(months[len(months)-1], 1)}, FullMonths: len(months)}
 }
 func (c calendar) before(end time.Time) []time.Time {
 	var out []time.Time

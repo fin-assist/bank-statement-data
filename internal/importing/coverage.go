@@ -79,7 +79,7 @@ func EvaluateCoverage(ctx context.Context, before, after []Period, operationTime
 			}
 			continue
 		}
-		end := month.AddDate(0, 1, 0)
+		end := accounting.MonthStart(month, 1)
 		if end.Year() > 9999 {
 			return Coverage{}, errAccounting
 		}
@@ -88,7 +88,7 @@ func EvaluateCoverage(ctx context.Context, before, after []Period, operationTime
 			if err := ctx.Err(); err != nil {
 				return Coverage{}, err
 			}
-			a, b := later(covered.from, month), earlier(covered.to, end.AddDate(0, 0, -1))
+			a, b := later(covered.from, month), earlier(covered.to, accounting.AddDays(end, -1))
 			if a.After(b) {
 				continue
 			}
@@ -97,7 +97,7 @@ func EvaluateCoverage(ctx context.Context, before, after []Period, operationTime
 			}
 			last = b
 		}
-		dataTo := last.AddDate(0, 0, 1).Add(-time.Second)
+		dataTo := accounting.AddDays(last, 1).Add(-time.Second)
 		var latest time.Time
 		for _, at := range operationTimes {
 			if err := ctx.Err(); err != nil {
@@ -113,7 +113,7 @@ func EvaluateCoverage(ctx context.Context, before, after []Period, operationTime
 		if !latest.IsZero() {
 			dataTo = latest
 		}
-		incomplete := IncompleteMonth{Month: key, Range: TimeRange{month, end}, DataFrom: first, DataTo: dataTo, InProgress: !end.AddDate(0, 0, -1).Before(today)}
+		incomplete := IncompleteMonth{Month: key, Range: TimeRange{month, end}, DataFrom: first, DataTo: dataTo, InProgress: !accounting.AddDays(end, -1).Before(today)}
 		for _, gap := range coverageGaps(current) {
 			if gap.From.Before(end) && gap.To.After(month) {
 				incomplete.Gaps = append(incomplete.Gaps, gap)
@@ -160,7 +160,7 @@ func mergedDays(ctx context.Context, periods []Period, zone *time.Location) ([]d
 			return nil, err
 		}
 		last := len(merged) - 1
-		if last >= 0 && !interval.from.After(merged[last].to.AddDate(0, 0, 1)) {
+		if last >= 0 && !interval.from.After(accounting.AddDays(merged[last].to, 1)) {
 			merged[last].to = later(merged[last].to, interval.to)
 		} else {
 			merged = append(merged, interval)
@@ -176,12 +176,12 @@ func calendarMonths(ctx context.Context, ranges []days, today time.Time) (map[st
 		return full, months, nil
 	}
 	start := ranges[0].from
-	month := time.Date(start.Year(), start.Month(), 1, 0, 0, 0, 0, start.Location())
+	month := accounting.MonthStart(start, 0)
 	for !month.After(ranges[len(ranges)-1].to) {
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
 		}
-		end := month.AddDate(0, 1, 0)
+		end := accounting.MonthStart(month, 1)
 		hasData := false
 		for _, r := range ranges {
 			if err := ctx.Err(); err != nil {
@@ -190,7 +190,7 @@ func calendarMonths(ctx context.Context, ranges []days, today time.Time) (map[st
 			if !r.to.Before(month) && r.from.Before(end) {
 				hasData = true
 			}
-			if !r.from.After(month) && !r.to.Before(end.AddDate(0, 0, -1)) && end.AddDate(0, 0, -1).Before(today) {
+			if !r.from.After(month) && !r.to.Before(accounting.AddDays(end, -1)) && accounting.AddDays(end, -1).Before(today) {
 				full[month.Format("2006-01")] = true
 			}
 		}
@@ -205,14 +205,13 @@ func calendarMonths(ctx context.Context, ranges []days, today time.Time) (map[st
 func coverageGaps(ranges []days) []TimeRange {
 	var gaps []TimeRange
 	for i := 1; i < len(ranges); i++ {
-		gaps = append(gaps, TimeRange{ranges[i-1].to.AddDate(0, 0, 1), ranges[i].from})
+		gaps = append(gaps, TimeRange{accounting.AddDays(ranges[i-1].to, 1), ranges[i].from})
 	}
 	return gaps
 }
 
 func startDay(at time.Time, zone *time.Location) time.Time {
-	at = at.In(zone)
-	return time.Date(at.Year(), at.Month(), at.Day(), 0, 0, 0, 0, zone)
+	return accounting.StartOfDay(at, zone)
 }
 
 func later(a, b time.Time) time.Time {

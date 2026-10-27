@@ -40,3 +40,9 @@ FIN-258 заменил инфраструктурные копии опубли�
 Новые unit/integration/API сценарии расчёта, fixture-источники, проверка UUID/отметок и границы
 публичного API описаны в [calculations.md](calculations.md#проверки). Все три набора по-прежнему
 инструментируют весь production-модуль; пороги/исключения не менялись.
+
+FIN-355 review: hand-computed OFX-сценарий проверяет на обоих реальных уровнях суммы/статусы/базы
+наблюдений и исторических метрик, каждую финансовую selection; отдельный Apia-сценарий проходит
+импорт/расчёт через PG и API. Unit различает exclusive global/inclusive period bounds, signed trunc,
+целочисленную границу среднего и точный ApplyRules-кейс ручного transfer/refund. Гонка calculation/purge
+подтверждает PostgreSQL blocker до освобождения транзакции; UUID-проверка использует два непустых tenant.

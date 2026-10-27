@@ -4,6 +4,7 @@ import (
 	"context"
 	"math/big"
 	"sort"
+	"time"
 
 	"github.com/fin-assist/bank-statement-data/internal/accounting"
 	"github.com/fin-assist/bank-statement-data/internal/importing"
@@ -148,11 +149,15 @@ func (c *calculator) period(r Range) Period {
 		}
 		m["tiles.balance"] = balance
 		days := 0
-		for d := r.From; d.Before(r.To) && !d.After(c.cal.now); d = d.AddDate(0, 0, 1) {
+		if err := accounting.WalkDays(c.ctx, r.From, minTime(r.To, nextDay(c.cal.now)), func(d time.Time) error {
 			if c.cal.covered(d) {
 				days++
 			}
+			return nil
+		}); err != nil {
+			c.err = err
 		}
+		// calc.md 1: dividing by days truncates toward zero even for net refunds.
 		m["tiles.daily_expense"] = ready(expense/int64(max(1, days)), nil)
 		m["expense_categories"], m["income_categories"] = c.categories(r, "expense"), c.categories(r, "income")
 	}
@@ -210,29 +215,33 @@ func (c *calculator) categories(r Range, kind string) Metric {
 }
 func (c *calculator) historical(m map[string]Metric, r Range, b Bounds) {
 	months := periodMonths(c.in.Kind)
-	prev := Range{r.From.AddDate(0, -months, 0), r.From}
+	prev := Range{shiftMonths(r.From, -months), r.From}
 	fullPrevious := c.cal.complete(prev)
 	m["tiles.expense.comparison"] = locked("need_full_months", months, 0)
 	m["tiles.daily_expense.comparison"] = locked("need_full_months", months, 0)
 	if fullPrevious {
 		cutoff := prev.To
 		if b.To != nil {
-			days := dates(Range{r.From, day(*b.To, c.cal.zone).AddDate(0, 0, 1)})
-			cutoff = minTime(prev.From.AddDate(0, 0, days), prev.To)
+			days := c.dates(Range{r.From, nextDay(day(*b.To, c.cal.zone))})
+			cutoff = minTime(accounting.AddDays(prev.From, days), prev.To)
 		}
 		comparisonRange := Range{prev.From, cutoff}
 		comparison := c.value(comparisonRange, "expense")
 		comparison.Range = &comparisonRange
 		m["tiles.expense.comparison"] = comparison
-		m["tiles.daily_expense.comparison"] = ready(c.sum(prev, "expense", "")/int64(dates(prev)), nil)
+		m["tiles.daily_expense.comparison"] = ready(c.sum(prev, "expense", "")/int64(max(1, c.dates(prev))), nil)
 	}
 	var previous []Range
 	if len(c.cal.months) > 0 {
-		for at := r.From.AddDate(0, -months, 0); !at.Before(month(c.cal.months[0])); at = at.AddDate(0, -months, 0) {
+		for at := shiftMonths(r.From, -months); !at.Before(month(c.cal.months[0])); at = shiftMonths(at, -months) {
+			if err := c.ctx.Err(); err != nil {
+				c.err = err
+				return
+			}
 			if at.Year() < 1 {
 				break
 			}
-			candidate := Range{at, at.AddDate(0, months, 0)}
+			candidate := Range{at, shiftMonths(at, months)}
 			if c.cal.complete(candidate) {
 				previous = append(previous, candidate)
 			}
@@ -260,7 +269,7 @@ func (c *calculator) historical(m map[string]Metric, r Range, b Bounds) {
 		return
 	}
 	if months == 1 && c.cal.now.Day() < accounting.ForecastDay {
-		at := r.From.AddDate(0, 0, accounting.ForecastDay-1)
+		at := accounting.AddDays(r.From, accounting.ForecastDay-1)
 		m["tiles.forecast"] = Metric{Status: "locked", Lock: &Lock{Reason: "too_early_in_month", AvailableFrom: &at}}
 		return
 	}
@@ -274,8 +283,8 @@ func (c *calculator) historical(m map[string]Metric, r Range, b Bounds) {
 		if b.To != nil {
 			end = minTime(end, day(*b.To, c.cal.zone))
 		}
-		elapsed := max(1, dates(Range{r.From, end.AddDate(0, 0, 1)}))
-		m["tiles.forecast"] = ready(c.scale(expense, int64(dates(r)), int64(elapsed), false), nil)
+		elapsed := max(1, c.dates(Range{r.From, nextDay(end)}))
+		m["tiles.forecast"] = ready(c.scale(expense, int64(c.dates(r)), int64(elapsed), false), nil)
 		return
 	}
 	base := lastMonths(c.cal.full, months)
@@ -286,15 +295,15 @@ func (c *calculator) historical(m map[string]Metric, r Range, b Bounds) {
 	var baseSum int64
 	var baseDays int
 	for _, v := range base {
-		br := Range{v, v.AddDate(0, 1, 0)}
+		br := Range{v, shiftMonths(v, 1)}
 		baseSum = c.add(baseSum, c.sum(br, "expense", ""))
-		baseDays += dates(br)
+		baseDays += c.dates(br)
 	}
 	start := r.From
 	if b.To != nil {
-		start = day(*b.To, c.cal.zone).AddDate(0, 0, 1)
+		start = nextDay(day(*b.To, c.cal.zone))
 	}
-	remaining := dates(Range{start, r.To})
+	remaining := c.dates(Range{start, r.To})
 	forecast := ready(c.add(expense, c.scale(baseSum, int64(remaining), int64(baseDays), true)), nil)
 	forecast.Basis = basis(base)
 	m["tiles.forecast"] = forecast
@@ -307,12 +316,12 @@ func (c *calculator) chart(r Range) Metric {
 	months := periodMonths(c.in.Kind)
 	start := r.From
 	if months == 1 {
-		months, start = 6, r.From.AddDate(0, -5, 0)
+		months, start = 6, shiftMonths(r.From, -5)
 	}
 	out := Metric{Status: "ready"}
 	for i := 0; i < months; i++ {
-		from := start.AddDate(0, i, 0)
-		v := Range{from, from.AddDate(0, 1, 0)}
+		from := shiftMonths(start, i)
+		v := Range{from, shiftMonths(from, 1)}
 		p := Point{Month: from.Format("2006-01"), Range: v, Bounds: c.cal.bounds(v)}
 		if p.Bounds.From != nil {
 			e, in := c.sum(v, "expense", ""), c.sum(v, "income", "")
@@ -321,4 +330,12 @@ func (c *calculator) chart(r Range) Metric {
 		out.Points = append(out.Points, p)
 	}
 	return out
+}
+
+func (c *calculator) dates(r Range) int {
+	count, err := dates(c.ctx, r)
+	if err != nil {
+		c.err = err
+	}
+	return count
 }

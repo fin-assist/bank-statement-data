@@ -22,6 +22,8 @@ func Classify(f Fact, mode string) (kind, category string, amount int64, ok bool
 	if mode != "with" && mode != "without" || f.Currency != "RUB" || f.PairID != "" || f.Category == OwnTransferCategory || mode == "without" && f.Category == TransfersCategory {
 		return
 	}
+	// calc.md 3.5–3.6: visibility uses the final category; a refund retains
+	// cat_refund and resolves its expense target only after that selection.
 	if f.Category == RefundCategory {
 		target := f.RefundTarget
 		if target == "" {
