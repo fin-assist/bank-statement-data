@@ -108,3 +108,21 @@ type Change struct {
 	ReplacedID *string
 	TimeZone   string
 }
+
+// Row is a bounded public candidate with optional peer facts and recognition statistics.
+type Row struct {
+	Facts                  []importing.Operation
+	Details                map[string]Detail
+	RegularAmounts         []int64
+	RegularMonths          []string
+	Dismissed              bool
+	SmallCount, SmallTotal int64
+}
+
+// StreamOptions separates result bounds from full-month recognition windows.
+type StreamOptions struct {
+	From, To, SmallFrom, SmallTo *time.Time
+	TimeZone                     string
+	RegularMonths                []string
+	Small                        bool
+}

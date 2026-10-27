@@ -10,8 +10,9 @@ import (
 
 // Metadata contains global operation bounds without scanning public result rows.
 type Metadata struct {
-	TimeZone    string
-	First, Last *time.Time
+	TimeZone                  string
+	First, Last               *time.Time
+	FirstVisible, LastVisible *time.Time
 }
 
 // Repository supplies coherent routed reads and transaction-only accounting writes.
@@ -23,6 +24,8 @@ type Repository interface {
 	SaveRules(context.Context, string, []importing.Operation, time.Time) error
 	Changed(context.Context, string, time.Time) error
 	SetDismissed(context.Context, string, string, bool, time.Time) (bool, error)
+	Stream(context.Context, string, StreamOptions, func(Row) error) error
+	SelectionKey(context.Context, string, string, string) (string, error)
 }
 
 // Transactions owns primary writes and coherent replica/primary public reads.

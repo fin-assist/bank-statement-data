@@ -9,7 +9,9 @@ import (
 
 	"github.com/fin-assist/bank-statement-data/internal/accounting"
 	"github.com/fin-assist/bank-statement-data/internal/calculating"
+	"github.com/fin-assist/bank-statement-data/internal/domain"
 	"github.com/fin-assist/bank-statement-data/internal/importing"
+	"github.com/google/uuid"
 )
 
 // Feed selects three calendar months anchored at the newest operation or cursor.
@@ -23,9 +25,16 @@ func (s *Service) Feed(ctx context.Context, user string, before *time.Time) (out
 		if e != nil {
 			return ErrState
 		}
+		first, last := meta.FirstVisible, meta.LastVisible
+		if first == nil {
+			first = meta.First
+		}
+		if last == nil {
+			last = meta.Last
+		}
 		anchor := s.now().In(zone)
-		if meta.Last != nil {
-			anchor = meta.Last.In(zone)
+		if last != nil {
+			anchor = last.In(zone)
 		}
 		to := accounting.MonthStart(anchor, 1)
 		if before != nil {
@@ -52,7 +61,7 @@ func (s *Service) Feed(ctx context.Context, user string, before *time.Time) (out
 				out.Items = append(out.Items, item)
 			}
 		}
-		if meta.First != nil && meta.First.Before(from) {
+		if first != nil && first.Before(from) {
 			out.NextBefore = &from
 		}
 		for m := accounting.MonthStart(to, -1); !m.Before(from); m = accounting.MonthStart(m, -1) {
@@ -112,76 +121,86 @@ func (s *Service) Search(ctx context.Context, user string, f Filter, allTime boo
 		if f.From != nil && f.To != nil {
 			out.Range = &Range{*f.From, *f.To}
 		}
-		// Regular recognition needs its preceding full-month window; ordinary
-		// searches load only the SQL date window. All-time is an explicit caller choice.
-		loadFrom, loadTo := f.From, f.To
+		// Only registry/account/coverage metadata is materialized. Raw operations
+		// arrive as one public candidate at a time, even for explicit all-time reads.
+		empty := time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC)
+		state, e := s.repo.Snapshot(ctx, user, &empty, &empty)
+		if e != nil {
+			return e
+		}
+		if e = s.resolveSelection(ctx, user, &state, f.Selection); e != nil {
+			return e
+		}
+		selected, e := prepareSelection(ctx, state, f, s.now())
+		if e != nil {
+			return e
+		}
+		opts := StreamOptions{From: f.From, To: f.To, TimeZone: meta.TimeZone}
 		if f.Selection == "s_regular_all" {
-			loadFrom = nil
+			end := accounting.MonthStart(s.now().In(zone), 1)
+			if f.To != nil {
+				end = *f.To
+			}
+			opts.RegularMonths, e = calculating.RegularWindow(ctx, state.Snapshot, s.now(), end)
+			if e != nil {
+				return e
+			}
 		}
 		if strings.HasPrefix(f.Selection, "s_small_category_") {
-			if loadFrom != nil {
-				v := accounting.MonthStart(loadFrom.In(zone), 0)
-				loadFrom = &v
+			opts.Small = true
+			opts.SmallFrom, opts.SmallTo = f.From, f.To
+			if opts.SmallFrom != nil {
+				v := accounting.MonthStart(opts.SmallFrom.In(zone), 0)
+				opts.SmallFrom = &v
 			}
-			if loadTo != nil {
-				v := loadTo.In(zone)
+			if opts.SmallTo != nil {
+				v := opts.SmallTo.In(zone)
 				if !v.Equal(accounting.MonthStart(v, 0)) {
 					v = accounting.MonthStart(v, 1)
 				}
-				loadTo = &v
+				opts.SmallTo = &v
 			}
 		}
-		state, e := s.repo.Snapshot(ctx, user, loadFrom, loadTo)
-		if e != nil {
-			return e
-		}
-		rows, e := project(ctx, state, false)
-		if e != nil {
-			return e
-		}
-		selection, e := prepareSelection(ctx, state, f, s.now())
-		if e != nil {
-			return e
-		}
-		raw := make(map[string]importing.Operation, len(state.Operations))
-		queryFacts := make(map[string][]importing.Operation)
-		for _, op := range state.Operations {
-			qid := op.ID
-			if op.PairID != "" {
-				qid = op.PairID
-			}
-			queryFacts[qid] = append(queryFacts[qid], op)
-			if op.PairID == "" || op.Direction == "expense" {
-				id := op.ID
-				if op.PairID != "" {
-					id = op.PairID
-				}
-				raw[id] = op
-			}
-		}
-		for _, row := range rows {
+		return s.repo.Stream(ctx, user, opts, func(candidate Row) error {
 			if e := ctx.Err(); e != nil {
 				return e
 			}
-			op := raw[row.ID]
+			one := state
+			one.Operations = candidate.Facts
+			one.Details = candidate.Details
+			rows, e := project(ctx, one, false)
+			if e != nil {
+				return e
+			}
+			if len(rows) != 1 || len(candidate.Facts) == 0 {
+				return ErrState
+			}
+			row, op := rows[0], candidate.Facts[0]
 			queryOK := f.Query == ""
-			for _, fact := range queryFacts[row.ID] {
+			for _, fact := range candidate.Facts {
 				if queryMatches(row, state.Categories[fact.BankCategory].Name, f.Query) || strings.Contains(normalized(fact.Description), normalized(strings.TrimSpace(f.Query))) {
 					queryOK = true
 					break
 				}
 			}
 			if !queryOK {
-				continue
+				return nil
 			}
-			if matches(row, op, f, selection, zone, state.Categories[op.BankCategory].Name) {
+			local := selected
+			if f.Selection == "s_regular_all" {
+				local.regular = map[string]bool{op.Description: !candidate.Dismissed && calculating.RegularGroup(candidate.RegularAmounts, candidate.RegularMonths, opts.RegularMonths)}
+			}
+			if opts.Small {
+				local.small = map[string]bool{op.At.In(zone).Format("2006-01") + "\x00" + op.Description: calculating.SmallGroup(candidate.SmallCount, candidate.SmallTotal)}
+			}
+			if matches(row, op, f, local, zone, state.Categories[op.BankCategory].Name) {
 				out.Items = append(out.Items, row)
 				if len(out.Items) > 10000 {
 					return ErrTooMany
 				}
 			}
-		}
-		return nil
+			return nil
+		})
 	})
 	return
 }
@@ -215,6 +234,36 @@ func validateFilter(f Filter, all bool) error {
 type selection struct {
 	name, key      string
 	regular, small map[string]bool
+}
+
+func (s *Service) resolveSelection(ctx context.Context, user string, state *Snapshot, token string) error {
+	var kind, id string
+	switch {
+	case token == "s_regular_all":
+		return nil
+	case strings.HasPrefix(token, "s_regular_"):
+		kind, id = domain.ReferenceKindRegular, strings.TrimPrefix(token, "s_regular_")
+	case strings.HasPrefix(token, "s_small_merchant_"):
+		kind, id = domain.ReferenceKindMerchant, strings.TrimPrefix(token, "s_small_merchant_")
+	case strings.HasPrefix(token, "s_merchant_"):
+		kind, id = domain.ReferenceKindMerchant, strings.TrimPrefix(token, "s_merchant_")
+	default:
+		return nil
+	}
+	parsed, err := uuid.Parse(id)
+	if err != nil || parsed == uuid.Nil || id != parsed.String() {
+		return ErrSelection
+	}
+	key, err := s.repo.SelectionKey(ctx, user, kind, id)
+	if err != nil {
+		return err
+	}
+	if kind == domain.ReferenceKindRegular {
+		state.Regular = map[string]string{id: key}
+	} else {
+		state.Merchants = map[string]string{id: key}
+	}
+	return nil
 }
 
 func prepareSelection(ctx context.Context, state Snapshot, f Filter, now time.Time) (out selection, err error) {

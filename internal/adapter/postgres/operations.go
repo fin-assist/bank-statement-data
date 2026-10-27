@@ -26,7 +26,7 @@ func (r *Operations) Metadata(ctx context.Context, user string) (out operations.
 	if err != nil {
 		return out, importError(ctx, err)
 	}
-	err = r.db.Writer(ctx).QueryRow(ctx, `SELECT min(occurred_at),max(occurred_at) FROM operation WHERE user_id=$1`, user).Scan(&out.First, &out.Last)
+	err = r.db.Writer(ctx).QueryRow(ctx, `SELECT min(occurred_at),max(occurred_at),min(occurred_at) FILTER (WHERE transfer_pair_id IS NULL OR direction='expense'),max(occurred_at) FILTER (WHERE transfer_pair_id IS NULL OR direction='expense') FROM operation WHERE user_id=$1`, user).Scan(&out.First, &out.Last, &out.FirstVisible, &out.LastVisible)
 	return out, importError(ctx, err)
 }
 
@@ -97,35 +97,7 @@ func (r *Operations) Snapshot(ctx context.Context, user string, from, to *time.T
 	if err != nil {
 		return out, err
 	}
-	rows, err = r.db.Writer(ctx).Query(ctx, `SELECT id::text,description,dismissed_at IS NOT NULL FROM regular_payment WHERE user_id=$1`, user)
-	if err != nil {
-		return out, importError(ctx, err)
-	}
-	for rows.Next() {
-		var id, name string
-		var dismissed bool
-		if err = rows.Scan(&id, &name, &dismissed); err != nil {
-			break
-		}
-		out.Regular[id] = name
-		out.Dismissed[name] = dismissed
-	}
-	err = finishRows(ctx, rows, err)
-	if err != nil {
-		return out, err
-	}
-	rows, err = r.db.Writer(ctx).Query(ctx, `SELECT id::text,key FROM merchant WHERE user_id=$1`, user)
-	if err != nil {
-		return out, importError(ctx, err)
-	}
-	for rows.Next() {
-		var id, name string
-		if err = rows.Scan(&id, &name); err != nil {
-			break
-		}
-		out.Merchants[id] = name
-	}
-	return out, finishRows(ctx, rows, err)
+	return out, nil
 }
 
 func finishRows(ctx context.Context, rows pgx.Rows, err error) error {
