@@ -146,4 +146,5 @@ TestUnitPublicationSourceRevisionsAreImmutableAcrossEveryPairAndFinalState,
 TestUnitPublicationRequiresClearingAckBeforePartsAndFinal,
 TestUnitRevisionDecodeRejectsNullAndPreservesExactCounters и реальные API/integration
 TestAPISourceRevisionProducerRebuildsWholeCalendarAndRepairsUnknownCoverage. Последний проходит
-два месяца и оба режима, timezone/category, unknown source repair, удаление последней загрузки.
+два месяца и оба режима, category, daily-triggered source repair без изменения source counters,
+удаление последней загрузки. Пояс отдельно проверяет сценарий RecalculationImportEditTimezoneDeletionAndDurableDelivery.

@@ -7,7 +7,6 @@ import (
 
 	common "github.com/fin-assist/contracts/gen/go/finassist/common/v1"
 	pb "github.com/fin-assist/contracts/gen/go/finassist/statementdata/v1"
-	settings "github.com/fin-assist/contracts/gen/go/finassist/usersettings/v1"
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
 
@@ -53,8 +52,12 @@ func producerRevisionScenario(t *testing.T) {
 		if err := env.App.Recalculations.Tick(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		eventuallyMetrics(t, func() bool { return peer.settled() && peer.version() > previous && peer.count() == wantCount })
 		want := current()
+		eventuallyMetrics(t, func() bool {
+			peer.mu.Lock()
+			defer peer.mu.Unlock()
+			return peer.state != nil && !peer.state.Recalculating && peer.stateVersion > previous && len(peer.periods) == wantCount && reflect.DeepEqual(producerRevisions(peer.state.DataRevisions), want)
+		})
 		peer.mu.Lock()
 		defer peer.mu.Unlock()
 		if !reflect.DeepEqual(producerRevisions(peer.state.DataRevisions), want) {
@@ -82,6 +85,7 @@ func producerRevisionScenario(t *testing.T) {
 	frozen := proto.Clone(peer.requests[0])
 	peer.mu.Unlock()
 	// Legacy raw coverage has no trustworthy baseline until bounded source repair.
+	beforeRepair := current()
 	if _, err := env.App.DB.Primary().Exec(t.Context(), `UPDATE upload SET statement_from_instant=NULL,statement_to_instant=NULL,statement_range_source=NULL WHERE user_id=$1 AND id=$2`, apiUser, ids[0]); err != nil {
 		t.Fatal(err)
 	}
@@ -95,11 +99,12 @@ func producerRevisionScenario(t *testing.T) {
 	if _, known := producerRevisions(overview.GetVersion().GetRevisions())["uploads"]; known {
 		t.Fatal("overview certified unrepaired coverage")
 	}
-	if _, err := settings.NewUserSettingsSyncServiceClient(env.Conn).SetUserTimezone(apitest.Caller(t.Context(), "user"), &settings.SetUserTimezoneRequest{UserId: apiUser, Timezone: "Europe/Moscow", SettingsVersion: 2}); err != nil {
+	// A daily deadline triggers metadata repair without any source revision write.
+	if _, err := env.App.DB.Primary().Exec(t.Context(), `UPDATE user_state SET daily_recalc_due_at=$2 WHERE user_id=$1`, apiUser, calculationNow().AddDate(0, 0, -1)); err != nil {
 		t.Fatal(err)
 	}
 	check(8)
-	if now := current(); now["uploads"] != 2 || now["time_zone"] != 2 {
+	if now := current(); !reflect.DeepEqual(now, beforeRepair) {
 		t.Fatal("repair changed source counter", now)
 	}
 	operations := pb.NewOperationsServiceClient(env.Conn)
