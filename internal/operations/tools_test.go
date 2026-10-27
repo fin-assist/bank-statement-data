@@ -120,7 +120,11 @@ func TestUnitToolOverviewEmptyCoveredAndSourceVersions(t *testing.T) {
 	if e != nil || !out.State.HasData || !out.HasSource || out.State.FullMonths != 2 || len(out.Months) != 2 || out.State.To == nil || !out.State.To.Equal(moment("2026-10-01T00:00:00+03:00")) {
 		t.Fatal(out, e)
 	}
+	readsBeforeVersion := m.reads
 	version, e := s.Version(t.Context(), "user")
+	if m.reads != readsBeforeVersion {
+		t.Fatal("current version used routed replica transaction")
+	}
 	if e != nil || !reflect.DeepEqual(version, out.Version) {
 		t.Fatal(version, e)
 	}

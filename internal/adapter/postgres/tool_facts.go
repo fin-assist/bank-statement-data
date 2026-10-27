@@ -19,13 +19,20 @@ func NewToolFacts(db *DB) *ToolFacts { return &ToolFacts{db: db} }
 // Version includes successful imports and retained deletion timestamps, including
 // deletion of the last upload. Failed/processing uploads are not financial changes.
 func (r *ToolFacts) Version(ctx context.Context, user string) (out operations.DataVersion, err error) {
-	err = r.db.Writer(ctx).QueryRow(ctx, `SELECT s.categories_changed_at,
- s.uploads_changed_at
- FROM user_state s WHERE s.user_id=$1`, user).Scan(&out.Categories, &out.Uploads)
+	out.Revisions = map[string]int64{"categories": 0, "uploads": 0, "time_zone": 0}
+	var categories, uploads, timezone int64
+	err = r.db.Writer(ctx).QueryRow(ctx, `SELECT categories_changed_at,uploads_changed_at,categories_revision,uploads_revision,settings_version FROM user_state WHERE user_id=$1`, user).Scan(&out.Categories, &out.Uploads, &categories, &uploads, &timezone)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return out, nil
 	}
-	return out, importError(ctx, err)
+	if err != nil {
+		return out, importError(ctx, err)
+	}
+	if categories < 0 || uploads < 0 || timezone < 0 {
+		return out, operations.ErrState
+	}
+	out.Revisions["categories"], out.Revisions["uploads"], out.Revisions["time_zone"] = categories, uploads, timezone
+	return out, nil
 }
 
 // Facts loads only daily latest instants and opaque dictionaries, never the raw ledger.

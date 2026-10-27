@@ -50,7 +50,15 @@ func (s *Tools) read(ctx context.Context, user string, fn func(context.Context) 
 
 // Version returns committed source timestamps in one routed read transaction.
 func (s *Tools) Version(ctx context.Context, user string) (out DataVersion, err error) {
-	err = s.read(ctx, user, func(ctx context.Context) error { var e error; out, e = s.facts.Version(ctx, user); return e })
+	if err = s.admission(ctx, user); err != nil {
+		return out, err
+	}
+	// One query outside the routed read transaction deliberately uses primary.
+	// A lagging replica must not hide a commit from history invalidation.
+	out, err = s.facts.Version(ctx, user)
+	if err == nil {
+		err = s.admission(ctx, user)
+	}
 	return
 }
 

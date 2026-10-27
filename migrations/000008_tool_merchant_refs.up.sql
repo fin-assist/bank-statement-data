@@ -16,3 +16,12 @@ UPDATE user_state s SET uploads_changed_at=(
 INSERT INTO regular_payment(user_id,periodicity,description)
 SELECT DISTINCT user_id,'monthly',description FROM operation WHERE direction='expense' AND description<>''
 ON CONFLICT(user_id,periodicity,description) DO NOTHING;
+
+ALTER TABLE user_state ADD COLUMN categories_revision bigint NOT NULL DEFAULT 0;
+ALTER TABLE user_state ADD COLUMN uploads_revision bigint NOT NULL DEFAULT 0;
+COMMENT ON COLUMN user_state.categories_revision IS
+ 'Монотонная ревизия учётных правок. Продвигается в транзакции изменения для точного changed_since помощника.';
+COMMENT ON COLUMN user_state.uploads_revision IS
+ 'Монотонная ревизия успешных импортов и удалений загрузок. Не зависит от часов или фоновых расчётов.';
+UPDATE user_state SET categories_revision=CASE WHEN categories_changed_at IS NULL THEN 0 ELSE 1 END,
+ uploads_revision=CASE WHEN uploads_changed_at IS NULL THEN 0 ELSE 1 END;

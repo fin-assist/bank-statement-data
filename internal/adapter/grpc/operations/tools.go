@@ -3,6 +3,7 @@ package operations
 import (
 	"context"
 	"errors"
+	"sort"
 	"time"
 
 	commonv1 "github.com/fin-assist/contracts/gen/go/finassist/common/v1"
@@ -233,7 +234,11 @@ func toolVersion(v usecase.DataVersion) (*statementv1.DataVersion, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &statementv1.DataVersion{CategoriesChangedAt: categories, UploadsChangedAt: uploads}, nil
+	revisions, err := dataRevisions(v.Revisions)
+	if err != nil {
+		return nil, err
+	}
+	return &statementv1.DataVersion{CategoriesChangedAt: categories, UploadsChangedAt: uploads, Revisions: revisions}, nil
 }
 func toolBounds(b calculating.Bounds) (*commonv1.DataBounds, error) {
 	coverage, ok := map[string]commonv1.Coverage{"complete": commonv1.Coverage_COVERAGE_COMPLETE, "partial": commonv1.Coverage_COVERAGE_PARTIAL, "no_data": commonv1.Coverage_COVERAGE_NO_DATA}[b.Coverage]
@@ -298,6 +303,34 @@ func toolFilter(f usecase.Filter) (*commonv1.OperationsFilter, error) {
 	case "":
 	default:
 		return nil, errProjection
+	}
+	return out, nil
+}
+
+// dataRevisions keeps open codes while refusing corrupt stored metadata. Its
+// stable order makes equal read snapshots byte-stable for downstream provenance.
+func dataRevisions(values map[string]int64) ([]*commonv1.DataRevision, error) {
+	if len(values) > 32 {
+		return nil, errProjection
+	}
+	keys := make([]string, 0, len(values))
+	for code, value := range values {
+		if len(code) < 1 || len(code) > 64 || value < 0 {
+			return nil, errProjection
+		}
+		for index := range len(code) {
+			c := code[index]
+			if c >= 'a' && c <= 'z' || index > 0 && (c >= '0' && c <= '9' || c == '_') {
+				continue
+			}
+			return nil, errProjection
+		}
+		keys = append(keys, code)
+	}
+	sort.Strings(keys)
+	out := make([]*commonv1.DataRevision, 0, len(keys))
+	for _, code := range keys {
+		out = append(out, &commonv1.DataRevision{Code: code, Value: values[code]})
 	}
 	return out, nil
 }

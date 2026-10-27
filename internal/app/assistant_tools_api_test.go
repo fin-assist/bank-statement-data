@@ -35,7 +35,7 @@ func toolsSourceScenario(t *testing.T) {
 		t.Fatal("empty overview", empty, err)
 	}
 	version, err := tools.GetDataVersion(ctx, &pb.GetDataVersionRequest{UserId: apiUser})
-	if err != nil || version.Version.GetUploadsChangedAt() != nil {
+	if err != nil || version.Version.GetUploadsChangedAt() != nil || len(version.Version.Revisions) != 3 {
 		t.Fatal(version, err)
 	}
 	operationsAPIImport(t, env, calculationRuleOFX())
@@ -121,6 +121,9 @@ func toolsSourceScenario(t *testing.T) {
 	}
 	// Edits/dismissals/reimports advance source timestamps, calculations do not.
 	v1, err := tools.GetDataVersion(ctx, &pb.GetDataVersionRequest{UserId: apiUser})
+	if err == nil && toolRevision(t, v1.Version, "uploads") != 1 {
+		t.Fatal("successful import revision", v1)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +133,7 @@ func toolsSourceScenario(t *testing.T) {
 		t.Fatal(err)
 	}
 	v2, err := tools.GetDataVersion(ctx, &pb.GetDataVersionRequest{UserId: apiUser})
-	if err != nil || v2.Version.CategoriesChangedAt == nil {
+	if err != nil || v2.Version.CategoriesChangedAt == nil || toolRevision(t, v2.Version, "categories") != 1 {
 		t.Fatal(v2, err)
 	}
 	id := strings.TrimPrefix(regular.Groups[0].Filters.GetSelection(), "s_regular_")
@@ -139,7 +142,7 @@ func toolsSourceScenario(t *testing.T) {
 		t.Fatal(err)
 	}
 	v3, err := tools.GetDataVersion(ctx, &pb.GetDataVersionRequest{UserId: apiUser})
-	if err != nil || !v3.Version.CategoriesChangedAt.AsTime().After(v2.Version.CategoriesChangedAt.AsTime()) {
+	if err != nil || !v3.Version.CategoriesChangedAt.AsTime().After(v2.Version.CategoriesChangedAt.AsTime()) || toolRevision(t, v3.Version, "categories") != 2 {
 		t.Fatal("same clock dismissal not advanced", v3, err)
 	}
 	_, err = pb.NewRegularPaymentsServiceClient(env.Conn).RestoreRegularPayment(apitest.User(t.Context(), apiUser), &pb.RestoreRegularPaymentRequest{RegularPaymentId: id})
@@ -157,7 +160,7 @@ func toolsSourceScenario(t *testing.T) {
 	micros.Add(-time.Hour.Microseconds())
 	operationsAPIImport(t, env, calculationRuleOFX())
 	imported, err := tools.GetDataVersion(ctx, &pb.GetDataVersionRequest{UserId: apiUser})
-	if err != nil || !imported.Version.UploadsChangedAt.AsTime().After(v1.Version.UploadsChangedAt.AsTime()) {
+	if err != nil || !imported.Version.UploadsChangedAt.AsTime().After(v1.Version.UploadsChangedAt.AsTime()) || toolRevision(t, imported.Version, "uploads") != 2 {
 		t.Fatal("backward clock import", imported, err)
 	}
 	history, err := pb.NewStatementsServiceClient(env.Conn).ListUploads(apitest.User(t.Context(), apiUser), &pb.ListUploadsRequest{})
@@ -281,4 +284,24 @@ func toolsLargeSelection(t *testing.T) {
 	}
 	_, err = pb.NewOperationsServiceClient(env.Conn).SearchOperations(apitest.User(t.Context(), apiUser), &pb.SearchOperationsRequest{AllTime: true})
 	operationsReason(t, err, codes.FailedPrecondition, "TOO_MANY_RESULTS")
+}
+
+func toolRevision(t *testing.T, version *pb.DataVersion, code string) int64 {
+	t.Helper()
+	seen := map[string]bool{}
+	var value int64
+	found := false
+	for _, revision := range version.GetRevisions() {
+		if revision == nil || seen[revision.Code] || revision.Value < 0 {
+			t.Fatal("invalid source provenance", version)
+		}
+		seen[revision.Code] = true
+		if revision.Code == code {
+			value, found = revision.Value, true
+		}
+	}
+	if !found {
+		t.Fatal("known source revision missing", code, version)
+	}
+	return value
 }

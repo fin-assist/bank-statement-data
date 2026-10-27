@@ -3,6 +3,8 @@ package operations
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -165,5 +167,28 @@ func TestUnitToolHandlerValidationAndSafeFailures(t *testing.T) {
 	s.aggregate.Groups[0].Keys = []usecase.GroupKey{{}}
 	if _, e := h.AggregateOperations(t.Context(), &pb.AggregateOperationsRequest{UserId: user, Filter: &common.OperationsFilter{TransferMode: common.TransferMode_TRANSFER_MODE_WITH}}); !errors.Is(e, errProjection) {
 		t.Fatal(e)
+	}
+}
+
+func TestUnitToolRevisionProjectionKeepsOpenCodesAndRejectsCorruption(t *testing.T) {
+	projected, err := dataRevisions(map[string]int64{"uploads": 2, "future_source": 9, "categories": 0})
+	if err != nil || len(projected) != 3 || projected[0].Code != "categories" || projected[0].Value != 0 || projected[1].Code != "future_source" || projected[1].Value != 9 {
+		t.Fatal(projected, err)
+	}
+	for _, values := range []map[string]int64{{"": 0}, {"UPPER": 1}, {"1source": 1}, {"source-name": 1}, {"source": -1}, {strings.Repeat("a", 65): 0}, {"источник": 1}} {
+		if _, err := dataRevisions(values); err == nil {
+			t.Fatal("invalid revision emitted", values)
+		}
+	}
+	maximum := map[string]int64{}
+	for i := range 32 {
+		maximum[fmt.Sprintf("source_%d", i)] = int64(i)
+	}
+	if _, err := dataRevisions(maximum); err != nil {
+		t.Fatal(err)
+	}
+	maximum["extra"] = 0
+	if _, err := dataRevisions(maximum); err == nil {
+		t.Fatal("unbounded revisions")
 	}
 }

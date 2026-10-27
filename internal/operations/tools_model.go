@@ -9,7 +9,10 @@ import (
 )
 
 // DataVersion records committed source changes; calculation jobs never advance it.
-type DataVersion struct{ Categories, Uploads *time.Time }
+type DataVersion struct {
+	Categories, Uploads *time.Time
+	Revisions           map[string]int64
+}
 
 // ToolFacts is the repository's compact source and opaque-reference projection.
 type ToolFacts struct {

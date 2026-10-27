@@ -39,7 +39,7 @@ func (tx *toolFactTx) Query(_ context.Context, q string, args ...any) (pgx.Rows,
 func TestUnitToolFactsReadOnlyProjectionAndStorageFailures(t *testing.T) {
 	at := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
 	fixture := func() *toolFactTx {
-		return &toolFactTx{row: importScanRow{values: []any{&at, &at}}, days: &categoryScopeRows{values: [][]any{{at}}}, refs: &categoryScopeRows{values: [][]any{{"merchant", "", "m"}, {"regular", "Cloud", "r"}}}}
+		return &toolFactTx{row: importScanRow{values: []any{&at, &at, int64(3), int64(7), int64(2)}}, days: &categoryScopeRows{values: [][]any{{at}}}, refs: &categoryScopeRows{values: [][]any{{"merchant", "", "m"}, {"regular", "Cloud", "r"}}}}
 	}
 	run := func(tx *toolFactTx, fn func(context.Context, *ToolFacts)) {
 		db := &DB{transactions: pgstore.New(unitBeginner{tx})}
@@ -83,11 +83,20 @@ func TestUnitToolFactsReadOnlyProjectionAndStorageFailures(t *testing.T) {
 			}
 		})
 	}
+	for _, index := range []int{2, 3, 4} {
+		tx = fixture()
+		tx.row.values[index] = int64(-1)
+		run(tx, func(ctx context.Context, r *ToolFacts) {
+			if _, err := r.Version(ctx, "tenant"); err == nil {
+				t.Fatal("negative source revision emitted", index)
+			}
+		})
+	}
 	tx = fixture()
 	tx.row.err = pgx.ErrNoRows
 	run(tx, func(ctx context.Context, r *ToolFacts) {
 		v, err := r.Version(ctx, "absent")
-		if err != nil || v.Categories != nil || v.Uploads != nil {
+		if err != nil || v.Categories != nil || v.Uploads != nil || len(v.Revisions) != 3 || v.Revisions["time_zone"] != 0 {
 			t.Fatal(v, err)
 		}
 	})

@@ -69,8 +69,9 @@ func TestIntegrationToolIdentityUpgradePreservesFinancialFactsAndExistingUUIDs(t
 		if err := conn.QueryRow(t.Context(), `SELECT jsonb_agg(to_jsonb(o)ORDER BY user_id,occurred_at,id)::text FROM operation o`).Scan(&id); err != nil || id != before {
 			t.Fatal("financial facts changed", err)
 		}
-		if err := conn.QueryRow(t.Context(), `SELECT uploads_changed_at FROM user_state WHERE user_id=$1`, userA).Scan(&at); err != nil || at.IsZero() {
-			t.Fatal("source timestamp missing", at, err)
+		var categoriesRevision, uploadsRevision int64
+		if err := conn.QueryRow(t.Context(), `SELECT uploads_changed_at,categories_revision,uploads_revision FROM user_state WHERE user_id=$1`, userA).Scan(&at, &categoriesRevision, &uploadsRevision); err != nil || at.IsZero() || categoriesRevision != 0 || uploadsRevision != 1 {
+			t.Fatal("legacy baseline not initialized from known changes", at, categoriesRevision, uploadsRevision, err)
 		}
 	}
 	check()

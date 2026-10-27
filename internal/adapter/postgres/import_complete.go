@@ -114,6 +114,6 @@ func (r *Imports) SaveUnread(ctx context.Context, user string, lines []importing
 // uploadsChanged advances source history independently from file cleanup and jobs.
 // The caller already holds the user's import/delete lock and owns the transaction.
 func (r *Imports) uploadsChanged(ctx context.Context, user string, now time.Time) error {
-	_, err := r.db.Writer(ctx).Exec(ctx, `UPDATE user_state SET uploads_changed_at=GREATEST($2,uploads_changed_at+interval '1 microsecond') WHERE user_id=$1`, user, now)
+	_, err := r.db.Writer(ctx).Exec(ctx, `UPDATE user_state SET uploads_changed_at=GREATEST($2,uploads_changed_at+interval '1 microsecond'),uploads_revision=uploads_revision+1 WHERE user_id=$1`, user, now)
 	return importError(ctx, err)
 }

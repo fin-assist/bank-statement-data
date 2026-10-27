@@ -318,10 +318,12 @@ Daily-only ошибки хранят `user_state.daily_recalc_attempts` (0…327
 
 ## Источники инструментов помощника (FIN-358)
 
-Миграция `000008_tool_merchant_refs` добавляет `user_state.uploads_changed_at` и заполняет его максимумом
+Миграция `000008_tool_merchant_refs` добавляет `user_state.uploads_changed_at`, `categories_revision`
+и `uploads_revision` (bigint NOT NULL DEFAULT0) и заполняет timestamp максимумом
 `finished_at/deleted_at` завершённых/удалённых загрузок. Отсутствующие UUID `merchant` и месячных
 `regular_payment` заполняются из прежних операций; существующие UUID и dismissal сохраняются.
-Откат удаляет только новый timestamp, созданные долговечные ссылки сохраняет: прежний калькулятор
+Существующий timestamp даёт начальную revision1, его отсутствие —0; `time_zone` проецируется из `settings_version`.
+Откат удаляет новые timestamp/counters, созданные долговечные ссылки сохраняет: прежний калькулятор
 работает с ними без изменения схемы. Обратная миграция не удаляет пользовательские или финансовые факты.
 
 | Инвариант в коде сервиса | Проверка |
@@ -329,3 +331,12 @@ Daily-only ошибки хранят `user_state.daily_recalc_attempts` (0…327
 | Успешный импорт/удаление загрузки продвигают `uploads_changed_at` в той же транзакции; одинаковая микросекунда и откат часов дают прежнее значение +1 мкс. Ошибки/cleanup/расчёт значение не меняют; удаление последней загрузки timestamp не теряет | `TestAPIAssistantToolsRealSourcesAndExactSelections`, `TestIntegrationAssistantToolsRealSourcesAndExactSelections` |
 | `SaveRules` создаёт отсутствующие ссылки одним fixed upsert на каждый вид под прежней блокировкой пользователя, до commit; не заменяет UUID/dismissal; SQL ограничен tenant | те же сценарии: готовые переходы сразу после импорта, повторный импорт, dismiss/restore, удаление и возврат данных |
 | Системные tools проверяют primary tombstone до и после routed read snapshot, не создают `user_state`, ссылки или финансовые данные | те же сценарии + `TestUnitToolValidationErrorsAndAdmission` |
+
+Строгий provenance (FIN-367/FIN-368): `categories_revision +=1` вместе с ручной категорией,
+разделением пары и dismiss/restore; `uploads_revision +=1` вместе с successful Complete/Remove.
+Повтор без фактического изменения не увеличивает значение; ошибка/rollback откатывает и факт,
+и revision. Отрицательное хранимое значение не уходит в wire; переполнение bigint отклоняет
+транзакцию. `settings_version` остаётся единственным счётчиком пояса. Проверки:
+`TestIntegrationToolRevisionsCommitAtomicallyAndSurviveClockRollback` и API tools scenarios.
+Сборка, не знающая этих инвариантов, не допускается как прозрачный rollback после включения
+revision-aware ответов; нужен отдельный план признания provenance неизвестным.
