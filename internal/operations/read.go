@@ -118,6 +118,19 @@ func (s *Service) Search(ctx context.Context, user string, f Filter, allTime boo
 		if f.Selection == "s_regular_all" {
 			loadFrom = nil
 		}
+		if strings.HasPrefix(f.Selection, "s_small_category_") {
+			if loadFrom != nil {
+				v := accounting.MonthStart(loadFrom.In(zone), 0)
+				loadFrom = &v
+			}
+			if loadTo != nil {
+				v := loadTo.In(zone)
+				if !v.Equal(accounting.MonthStart(v, 0)) {
+					v = accounting.MonthStart(v, 1)
+				}
+				loadTo = &v
+			}
+		}
 		state, e := s.repo.Snapshot(ctx, user, loadFrom, loadTo)
 		if e != nil {
 			return e
@@ -131,7 +144,13 @@ func (s *Service) Search(ctx context.Context, user string, f Filter, allTime boo
 			return e
 		}
 		raw := make(map[string]importing.Operation, len(state.Operations))
+		queryFacts := make(map[string][]importing.Operation)
 		for _, op := range state.Operations {
+			qid := op.ID
+			if op.PairID != "" {
+				qid = op.PairID
+			}
+			queryFacts[qid] = append(queryFacts[qid], op)
 			if op.PairID == "" || op.Direction == "expense" {
 				id := op.ID
 				if op.PairID != "" {
@@ -145,6 +164,16 @@ func (s *Service) Search(ctx context.Context, user string, f Filter, allTime boo
 				return e
 			}
 			op := raw[row.ID]
+			queryOK := f.Query == ""
+			for _, fact := range queryFacts[row.ID] {
+				if queryMatches(row, state.Categories[fact.BankCategory].Name, f.Query) || strings.Contains(normalized(fact.Description), normalized(strings.TrimSpace(f.Query))) {
+					queryOK = true
+					break
+				}
+			}
+			if !queryOK {
+				continue
+			}
 			if matches(row, op, f, selection, zone, state.Categories[op.BankCategory].Name) {
 				out.Items = append(out.Items, row)
 				if len(out.Items) > 10000 {
@@ -250,9 +279,7 @@ func matches(row Operation, op importing.Operation, f Filter, selection selectio
 	if f.Category != "" && cat != f.Category {
 		return false
 	}
-	if f.Query != "" && !queryMatches(row, bankName, f.Query) {
-		return false
-	}
+	_ = bankName // Text matching also visits the paired source facts in Search.
 	switch selection.name {
 	case "":
 		return true
@@ -266,6 +293,9 @@ func matches(row Operation, op importing.Operation, f Filter, selection selectio
 	}
 	if strings.HasPrefix(selection.name, "s_small_category_") {
 		return op.Direction == "expense" && cat == selection.key && !selection.small[op.At.In(zone).Format("2006-01")+"\x00"+op.Description] && calculating.Observation(cat)
+	}
+	if strings.HasPrefix(selection.name, "s_merchant_") {
+		return op.Description == selection.key
 	}
 	return op.Direction == "expense" && op.Description == selection.key && calculating.Observation(cat)
 }
