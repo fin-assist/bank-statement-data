@@ -150,7 +150,19 @@ func TestIntegrationToolsLedgerAccountingDrilldownsAndReadOnlyRPCProjection(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = conn.Close(); server.Stop(); _ = listener.Close(); <-done })
+	t.Cleanup(func() {
+		_ = conn.Close()
+		server.Stop()
+		_ = listener.Close()
+		select {
+		case err := <-done:
+			if err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+				t.Error(err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Error("component gRPC shutdown timed out")
+		}
+	})
 	client := pb.NewAssistantToolsServiceClient(conn)
 	rangeReply, err := client.GetDataOverview(t.Context(), &pb.GetDataOverviewRequest{UserId: user})
 	if err != nil || !rangeReply.HasData || len(rangeReply.SuppliedFields) == 0 || len(rangeReply.Months) != 2 {
