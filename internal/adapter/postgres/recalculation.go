@@ -37,7 +37,8 @@ func (r *Recalculations) Pending(ctx context.Context, now time.Time, limit int, 
 	}
 	rows, err := r.db.Writer(ctx).Query(ctx, `SELECT u.user_id::text FROM user_state u
  WHERE NOT EXISTS(SELECT 1 FROM tombstone_users t WHERE t.user_id=u.user_id)
- AND (u.daily_recalc_due_at<=$1 OR EXISTS(SELECT 1 FROM recalc_queue q WHERE q.user_id=u.user_id AND q.next_attempt_at<=$1))
+ AND (EXISTS(SELECT 1 FROM recalc_queue q WHERE q.user_id=u.user_id AND q.next_attempt_at<=$1)
+ OR(u.daily_recalc_due_at<=$1 AND NOT EXISTS(SELECT 1 FROM recalc_queue q WHERE q.user_id=u.user_id)))
  ORDER BY CASE WHEN u.user_id::text>$3 THEN 0 ELSE 1 END,u.user_id LIMIT $2`, now, limit, after)
 	if err != nil {
 		return nil, importError(ctx, err)
@@ -82,8 +83,16 @@ func (r *Recalculations) Lock(ctx context.Context, user string, now time.Time) (
 	if err != nil {
 		return out, false, err
 	}
-	if len(out.Queue) == 0 && (out.DailyDue == nil || out.DailyDue.After(now)) {
-		return out, false, nil
+	if len(out.Queue) == 0 {
+		var queued bool
+		err = r.db.Writer(ctx).QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM recalc_queue WHERE user_id=$1)`, user).Scan(&queued)
+		if err != nil {
+			return out, false, importError(ctx, err)
+		}
+		// A queued source change owns retry timing, even if the daily deadline expired.
+		if queued || out.DailyDue == nil || out.DailyDue.After(now) {
+			return out, false, nil
+		}
 	}
 	var state, keys []byte
 	err = r.db.Writer(ctx).QueryRow(ctx, `SELECT state,period_keys,recalculating FROM metrics_publication WHERE user_id=$1`, user).Scan(&state, &keys, &out.Recalculating)
@@ -169,7 +178,7 @@ func (r *Recalculations) Complete(ctx context.Context, lease recalculating.Lease
 		}
 		due = accounting.NextDailyAfter(now, zone, r.dailyRecalculationOffset)
 	}
-	_, err = r.db.Writer(ctx).Exec(ctx, `UPDATE user_state SET daily_recalc_due_at=$2 WHERE user_id=$1`, lease.User, due)
+	_, err = r.db.Writer(ctx).Exec(ctx, `UPDATE user_state SET daily_recalc_due_at=$2,daily_recalc_attempts=0,daily_recalc_failed_since=NULL WHERE user_id=$1`, lease.User, due)
 	return importError(ctx, err)
 }
 
@@ -191,8 +200,10 @@ func (r *Recalculations) Fail(ctx context.Context, lease recalculating.Lease, no
 			return importError(ctx, err)
 		}
 	}
-	if lease.DailyDue != nil && !lease.DailyDue.After(now) {
-		_, err := r.db.Writer(ctx).Exec(ctx, `UPDATE user_state SET daily_recalc_due_at=$3 WHERE user_id=$1 AND daily_recalc_due_at=$2`, lease.User, *lease.DailyDue, now.Add(time.Minute))
+	if len(lease.Queue) == 0 && lease.DailyDue != nil && !lease.DailyDue.After(now) {
+		_, err := r.db.Writer(ctx).Exec(ctx, `UPDATE user_state SET daily_recalc_due_at=$3::timestamptz+make_interval(secs=>LEAST(300,power(2,LEAST(daily_recalc_attempts,9)))::integer),
+ daily_recalc_attempts=LEAST(daily_recalc_attempts+1,32767),daily_recalc_failed_since=COALESCE(daily_recalc_failed_since,$2::timestamptz)
+ WHERE user_id=$1 AND daily_recalc_due_at=$2 AND NOT EXISTS(SELECT 1 FROM recalc_queue WHERE user_id=$1)`, lease.User, *lease.DailyDue, now)
 		return importError(ctx, err)
 	}
 	return nil
@@ -203,7 +214,7 @@ func (r *Recalculations) QueueStats(ctx context.Context, now time.Time) (count i
 	var oldest *time.Time
 	err = r.db.Writer(ctx).QueryRow(ctx, `SELECT count(*),min(due_at)FROM(
  SELECT q.user_id,min(q.enqueued_at)AS due_at FROM recalc_queue q WHERE NOT EXISTS(SELECT 1 FROM tombstone_users t WHERE t.user_id=q.user_id)GROUP BY q.user_id
- UNION ALL SELECT u.user_id,u.daily_recalc_due_at FROM user_state u WHERE u.daily_recalc_due_at<=$1 AND NOT EXISTS(SELECT 1 FROM recalc_queue q WHERE q.user_id=u.user_id)AND NOT EXISTS(SELECT 1 FROM tombstone_users t WHERE t.user_id=u.user_id)
+ UNION ALL SELECT u.user_id,COALESCE(u.daily_recalc_failed_since,u.daily_recalc_due_at) FROM user_state u WHERE(u.daily_recalc_due_at<=$1 OR u.daily_recalc_attempts>0)AND NOT EXISTS(SELECT 1 FROM recalc_queue q WHERE q.user_id=u.user_id)AND NOT EXISTS(SELECT 1 FROM tombstone_users t WHERE t.user_id=u.user_id)
  )pending`, now).Scan(&count, &oldest)
 	if err != nil {
 		return 0, 0, importError(ctx, err)

@@ -1,3 +1,8 @@
+ALTER TABLE user_state ADD COLUMN daily_recalc_attempts smallint NOT NULL DEFAULT 0;
+ALTER TABLE user_state ADD COLUMN daily_recalc_failed_since timestamptz;
+COMMENT ON COLUMN user_state.daily_recalc_attempts IS 'Число последовательных сбоев ежедневного пересчёта без пользовательской очереди, ограниченное 32767; успех или новое пользовательское изменение сбрасывает счётчик.';
+COMMENT ON COLUMN user_state.daily_recalc_failed_since IS 'Первый пропущенный ежедневный срок при повторных ошибках; сохраняет честный возраст ожидающего пересчёта, пока next_attempt переносится по backoff.';
+
 ALTER TABLE upload ADD COLUMN statement_from_instant timestamptz;
 ALTER TABLE upload ADD COLUMN statement_to_instant timestamptz;
 ALTER TABLE upload ADD COLUMN statement_range_source text;

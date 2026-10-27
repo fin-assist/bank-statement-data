@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -42,6 +43,8 @@ type Env struct {
 	Conn    *grpc.ClientConn
 	DSN     string             // the test database, for arranging and checking rows directly
 	Objects *testobjects.Store // owned TLS provider fixture, for explicit cloud failure scenarios
+	// Stop closes this process assembly; its test-owned database and objects remain until cleanup.
+	Stop func()
 }
 
 // Start runs the service for the test and stops it at the end. mutate, if given, adjusts
@@ -73,7 +76,9 @@ func StartWith(t *testing.T, options app.Options, mutate ...func(*config.Config)
 		t.Fatal(err)
 	}
 	env.Objects = objects
-	t.Cleanup(closeEnv)
+	var once sync.Once
+	env.Stop = func() { once.Do(closeEnv) }
+	t.Cleanup(env.Stop)
 	return env
 }
 

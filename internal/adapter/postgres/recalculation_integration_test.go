@@ -400,3 +400,124 @@ func TestIntegrationRecalculationDownRefusesToLosePublishedInventory(t *testing.
 		t.Fatal("refused down lost published keys", remaining, err)
 	}
 }
+
+func TestIntegrationDailyDeadlineCannotBypassQueuedBackoff(t *testing.T) {
+	f := importRepository(t)
+	repo := postgres.NewRecalculations(f.db, 0)
+	user := uuid.NewString()
+	past := f.now.Add(-time.Hour)
+	if err := f.db.Run(t.Context(), func(ctx context.Context) error {
+		if _, e := f.repo.LockUser(ctx, user, true); e != nil {
+			return e
+		}
+		if _, e := f.db.Writer(ctx).Exec(ctx, `UPDATE user_state SET daily_recalc_due_at=$2 WHERE user_id=$1`, user, past); e != nil {
+			return e
+		}
+		_, e := f.db.Writer(ctx).Exec(ctx, `INSERT INTO recalc_queue(user_id,month,enqueued_at,next_attempt_at)VALUES($1,'2026-09-01',$2,$2)`, user, f.now)
+		return e
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var lease recalculating.Lease
+	if err := f.db.Run(t.Context(), func(ctx context.Context) error {
+		var ok bool
+		var e error
+		lease, ok, e = repo.Lock(ctx, user, f.now)
+		if e != nil || !ok {
+			t.Fatal("initial queue not due", e)
+		}
+		return repo.Fail(ctx, lease, f.now)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if rows, e := repo.Pending(t.Context(), f.now, 16); e != nil || len(rows) != 0 {
+		t.Fatal("expired daily deadline bypassed queue backoff", rows, e)
+	}
+	if err := f.db.Run(t.Context(), func(ctx context.Context) error {
+		_, active, e := repo.Lock(ctx, user, f.now)
+		if e != nil || active {
+			t.Fatal("direct Recalculate could bypass retry", active, e)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var due time.Time
+	var attempts int
+	if err := f.db.Primary().QueryRow(t.Context(), `SELECT daily_recalc_due_at,daily_recalc_attempts FROM user_state WHERE user_id=$1`, user).Scan(&due, &attempts); err != nil || !due.Equal(past) || attempts != 0 {
+		t.Fatal("queue failure pretended daily progress", due, attempts, err)
+	}
+	if rows, e := repo.Pending(t.Context(), f.now.Add(time.Second), 16); e != nil || len(rows) != 1 {
+		t.Fatal("backed-off queue did not become due", rows, e)
+	}
+}
+
+func TestIntegrationDailyOnlyFailureHasDurableExponentialRetryAndHonestAge(t *testing.T) {
+	f := importRepository(t)
+	repo := postgres.NewRecalculations(f.db, 0)
+	user := uuid.NewString()
+	firstDue := f.now.Add(-time.Hour)
+	if err := f.db.Run(t.Context(), func(ctx context.Context) error {
+		if _, e := f.repo.LockUser(ctx, user, true); e != nil {
+			return e
+		}
+		_, e := f.db.Writer(ctx).Exec(ctx, `UPDATE user_state SET daily_recalc_due_at=$2 WHERE user_id=$1`, user, firstDue)
+		return e
+	}); err != nil {
+		t.Fatal(err)
+	}
+	current := f.now
+	for i, delay := range []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 32 * time.Second, 64 * time.Second, 128 * time.Second, 256 * time.Second, 300 * time.Second, 300 * time.Second} {
+		if err := f.db.Run(t.Context(), func(ctx context.Context) error {
+			lease, active, e := repo.Lock(ctx, user, current)
+			if e != nil || !active || len(lease.Queue) != 0 {
+				t.Fatal("daily-only lease", active, e)
+			}
+			return repo.Fail(ctx, lease, current)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		var due, since time.Time
+		var attempts int
+		if err := f.db.Primary().QueryRow(t.Context(), `SELECT daily_recalc_due_at,daily_recalc_attempts,daily_recalc_failed_since FROM user_state WHERE user_id=$1`, user).Scan(&due, &attempts, &since); err != nil || !due.Equal(current.Add(delay)) || attempts != i+1 || !since.Equal(firstDue) {
+			t.Fatal("daily exponential retry/state", i, due, attempts, since, err)
+		}
+		if rows, e := repo.Pending(t.Context(), due.Add(-time.Nanosecond), 16); e != nil || len(rows) != 0 {
+			t.Fatal("daily retry became due early", rows, e)
+		}
+		count, age, e := repo.QueueStats(t.Context(), current)
+		if e != nil || count != 1 || age != current.Sub(firstDue).Seconds() {
+			t.Fatal("retry hid original backlog age", count, age, e)
+		}
+		current = due
+	}
+	if err := f.db.Run(t.Context(), func(ctx context.Context) error {
+		lease, active, e := repo.Lock(ctx, user, current)
+		if e != nil || !active {
+			t.Fatal(e)
+		}
+		return repo.Complete(ctx, lease, calculating.State{TimeZone: "Europe/Moscow", CalculatedAt: current}, []recalculating.Period{{Kind: "month", Key: "2026-09"}}, current)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var attempts int
+	var since *time.Time
+	if err := f.db.Primary().QueryRow(t.Context(), `SELECT daily_recalc_attempts,daily_recalc_failed_since FROM user_state WHERE user_id=$1`, user).Scan(&attempts, &since); err != nil || attempts != 0 || since != nil {
+		t.Fatal("success did not reset daily retry", attempts, since, err)
+	}
+	// A new user mutation also resets an obsolete daily-only failure sequence.
+	if _, err := f.db.Primary().Exec(t.Context(), `UPDATE user_state SET daily_recalc_attempts=9,daily_recalc_failed_since=$2 WHERE user_id=$1`, user, firstDue); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Run(t.Context(), func(ctx context.Context) error {
+		if _, e := f.repo.LockUser(ctx, user, false); e != nil {
+			return e
+		}
+		return f.repo.SetTimezone(ctx, user, "UTC", 1, current)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Primary().QueryRow(t.Context(), `SELECT daily_recalc_attempts,daily_recalc_failed_since FROM user_state WHERE user_id=$1`, user).Scan(&attempts, &since); err != nil || attempts != 0 || since != nil {
+		t.Fatal("new source did not reset daily retry", attempts, since, err)
+	}
+}

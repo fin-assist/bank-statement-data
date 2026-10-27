@@ -29,7 +29,9 @@ func wireRecalculations(ctx context.Context, a *App, reg prometheus.Registerer, 
 		return nil, nil, errors.New("PEER_ANALYTICS_ADDR is required")
 	}
 	// The source pool already passed startup Ping. Dispatcher connections are
-	// isolated from long calculations and reserve its documented four free slots.
+	// isolated for LISTEN, claim, fanout and observation, reserving four slots.
+	// Financial payload/receipt queries below deliberately share a.DB with source
+	// transactions; their bounded dispatcher deadline turns contention into retries.
 	cfg, err := pgxpool.ParseConfig(a.Cfg.DB.PrimaryDSN)
 	if err != nil {
 		return nil, nil, errors.New("invalid outbox database configuration")

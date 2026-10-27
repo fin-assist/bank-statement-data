@@ -302,3 +302,10 @@ tombstone guard и блокировку `user_state` до вычисления �
 При чтении календарные дни строятся из точных моментов в текущем поясе. Старые DATE не преобразуются
 в выдуманные исходные instants: bounded metadata repair восстанавливает их из оригинального OFX
 с SHA/size, status/object CAS и tombstone guard — [recalculation.md](recalculation.md).
+
+Daily-only ошибки хранят `user_state.daily_recalc_attempts` (0…32767, увеличение с насыщением)
+и `daily_recalc_failed_since` (первый неисполненный срок). `Recalculations.Fail` переносит срок
+на 1,2,4…300 секунд, не меняя исходный возраст ошибки. Очередь пользовательских изменений имеет
+приоритет: пока её строки существуют, expired daily не обходит их `next_attempt_at`; это проверяет
+и поиск кандидатов, и locked admission прямого Recalculate. `Complete` и новая пользовательская
+постановка сбрасывают обе retry-колонки. PG-тесты проверяют gating, экспоненту, cap, age и reset.
