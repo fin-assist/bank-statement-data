@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/fin-assist/bank-statement-data/internal/accounting"
 	"github.com/fin-assist/bank-statement-data/internal/importing"
 )
 
@@ -191,8 +192,8 @@ func (r *Imports) schedule(ctx context.Context, user string, operations []import
 			rows.Close()
 			return importError(ctx, err)
 		}
-		month := time.Date(from.Year(), from.Month(), 1, 0, 0, 0, 0, zone)
-		last := time.Date(to.Year(), to.Month(), 1, 0, 0, 0, 0, zone)
+		month := time.Date(from.Year(), from.Month(), 1, 0, 0, 0, 0, time.UTC)
+		last := time.Date(to.Year(), to.Month(), 1, 0, 0, 0, 0, time.UTC)
 		for !month.After(last) {
 			if err := ctx.Err(); err != nil {
 				rows.Close()
@@ -216,9 +217,9 @@ func (r *Imports) schedule(ctx context.Context, user string, operations []import
 	var due any
 	if len(months) > 0 {
 		local := now.In(zone)
-		next := time.Date(local.Year(), local.Month(), local.Day(), 0, 5, 0, 0, zone)
+		next := accounting.StartOfDay(local, zone).Add(5 * time.Minute)
 		if !next.After(now) {
-			next = next.AddDate(0, 0, 1)
+			next = accounting.AddDays(accounting.StartOfDay(local, zone), 1).Add(5 * time.Minute)
 		}
 		due = next
 	}

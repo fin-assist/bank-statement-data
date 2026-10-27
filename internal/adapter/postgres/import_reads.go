@@ -52,6 +52,10 @@ func (r *Imports) LockUser(ctx context.Context, user string, create bool) (strin
 
 // Snapshot reads source identities and all remaining rows from the same transaction.
 func (r *Imports) Snapshot(ctx context.Context, user string) (importing.Snapshot, error) {
+	return r.snapshot(ctx, user, nil, nil, true)
+}
+
+func (r *Imports) snapshot(ctx context.Context, user string, from, to *time.Time, sources bool) (importing.Snapshot, error) {
 	state := importing.Snapshot{TimeZone: "Europe/Moscow", Categories: make(map[string]importing.Category)}
 	err := r.db.Writer(ctx).QueryRow(ctx, `SELECT timezone FROM user_state WHERE user_id=$1`, user).Scan(&state.TimeZone)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -85,9 +89,12 @@ func (r *Imports) Snapshot(ctx context.Context, user string) (importing.Snapshot
 	if err != nil {
 		return state, err
 	}
-	state.Operations, err = r.operations(ctx, user)
+	state.Operations, err = r.operationsRange(ctx, user, from, to)
 	if err != nil {
 		return state, err
+	}
+	if !sources {
+		return state, nil
 	}
 	state.Unread, err = r.unread(ctx, user)
 	if err != nil {
@@ -180,7 +187,13 @@ func (r *Imports) Upload(ctx context.Context, user, id string) (importing.Upload
 }
 
 func (r *Imports) operations(ctx context.Context, user string) ([]importing.Operation, error) {
-	rows, err := r.db.Writer(ctx).Query(ctx, `SELECT o.id::text,o.account_id,a.ext_id,COALESCE(s.external_id,''),o.occurred_at,o.amount_minor,o.currency,o.direction,o.description,o.bank_category_id,COALESCE(o.manual_category_id,''),o.category_id,COALESCE(o.refund_target_category_id,''),o.is_split,COALESCE(o.transfer_pair_id::text,''),o.extensions FROM operation o JOIN account a ON a.user_id=o.user_id AND a.id=o.account_id LEFT JOIN LATERAL(SELECT external_id FROM source_record WHERE user_id=o.user_id AND operation_id=o.id AND operation_occurred_at=o.occurred_at ORDER BY id LIMIT 1)s ON true WHERE o.user_id=$1 ORDER BY o.occurred_at,o.id`, user)
+	return r.operationsRange(ctx, user, nil, nil)
+}
+
+func (r *Imports) operationsRange(ctx context.Context, user string, from, to *time.Time) ([]importing.Operation, error) {
+	rows, err := r.db.Writer(ctx).Query(ctx, `SELECT o.id::text,o.account_id,a.ext_id,COALESCE(s.external_id,''),o.occurred_at,o.amount_minor,o.currency,o.direction,o.description,o.bank_category_id,COALESCE(o.manual_category_id,''),o.category_id,COALESCE(o.refund_target_category_id,''),o.is_split,COALESCE(o.transfer_pair_id::text,''),o.extensions FROM operation o JOIN account a ON a.user_id=o.user_id AND a.id=o.account_id LEFT JOIN LATERAL(SELECT external_id FROM source_record WHERE user_id=o.user_id AND operation_id=o.id AND operation_occurred_at=o.occurred_at ORDER BY id LIMIT 1)s ON true WHERE o.user_id=$1 AND (
+ (($2::timestamptz IS NULL OR o.occurred_at >= $2) AND ($3::timestamptz IS NULL OR o.occurred_at < $3))
+ OR o.transfer_pair_id IN (SELECT p.transfer_pair_id FROM operation p WHERE p.user_id=$1 AND p.direction='expense' AND p.transfer_pair_id IS NOT NULL AND ($2::timestamptz IS NULL OR p.occurred_at >= $2) AND ($3::timestamptz IS NULL OR p.occurred_at < $3))) ORDER BY o.occurred_at,o.id`, user, from, to)
 	if err != nil {
 		return nil, importError(ctx, err)
 	}
