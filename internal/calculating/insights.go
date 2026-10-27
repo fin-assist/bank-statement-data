@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/fin-assist/bank-statement-data/internal/accounting"
+	"github.com/fin-assist/bank-statement-data/internal/domain"
 	"github.com/fin-assist/bank-statement-data/internal/importing"
 )
 
@@ -91,7 +92,7 @@ func (c *calculator) regular(r Range) Metric {
 		if !valid {
 			continue
 		}
-		ref := c.reference("regular", name)
+		ref := c.reference(domain.ReferenceKindRegular, name)
 		if ref.Dismissed {
 			continue
 		}
@@ -236,7 +237,7 @@ func (c *calculator) small(r Range) Metric {
 			continue
 		}
 		used[name] = true
-		ref := c.reference("merchant", name)
+		ref := c.reference(domain.ReferenceKindMerchant, name)
 		f := c.filter(mr, "expense", "")
 		f.Selection, f.Name = "s_merchant_"+ref.ID, name
 		out.Small = append(out.Small, c.smallGroup(name, group, amount, f))

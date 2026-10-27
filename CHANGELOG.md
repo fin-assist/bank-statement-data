@@ -12,6 +12,8 @@
 
 ### Изменено
 
+- FIN-355: виды устойчивых ссылок regular/merchant вынесены в общие доменные константы калькулятора и PostgreSQL-адаптера без изменения поведения.
+
 - FIN-342: открытый Watch повторно проверяет primary tombstone перед каждым опросом и после чтения перед отправкой; частичный и завершённый Purge отзывают поток без ожидания срока разбора, без Guard в RR и без блокировок через сетевую доставку.
 
 - FIN-349: пример unit-файла стенда `deploy/systemd/bank-statement-data.service` читает общий JWKS стенда по единому пути `/etc/finassist/stage-public.jwks` (0644, каталог `/etc/finassist` 0755, DynamicUser читает напрямую, без `LoadCredential`); прежний `/etc/finassist/stand/stage-public-keys.json` больше не читается. `SERVICE_NAME=bank-statement-data` (kid/sub ключа подписи стенда) задаёт сам unit; шапка называет файлы и режимы и предупреждает, что `EnvironmentFile=` перекрывает `Environment=`. Unit-тест загружает конфигурацию из unit-файла и отклоняет env-файл, повторяющий переменные unit. Раскатка на стенде — по README, «Раскатка unit-файла на стенд (FIN-349)»: положить JWKS в `/etc/finassist/stage-public.jwks` (0644, владелец root), удалить из `/etc/finassist/bank-statement-data/env` переменные, которые старый unit задаёт сам (`ENV`, `DB_PRIMARY_DSN_FILE`, `AUTH_STAGE_SIGNING_KEY_FILE`, `AUTH_STAGE_PUBLIC_KEYS_FILE`; если значение отличается от значения unit, сначала положить нужное содержимое в источник credential unit), установить новый unit и `daemon-reload`, только затем удалить `SERVICE_NAME`, затем `migrate up` и перезапуск. Код сервиса не менялся.

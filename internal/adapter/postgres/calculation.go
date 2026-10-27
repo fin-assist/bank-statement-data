@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/fin-assist/bank-statement-data/internal/calculating"
+	"github.com/fin-assist/bank-statement-data/internal/domain"
 )
 
 // Reference persists exact-description identities. User scoping and FK cascades
@@ -21,11 +22,11 @@ func (r *Imports) Reference(ctx context.Context, user, kind, key string) (calcul
 	}
 	var query string
 	switch kind {
-	case "regular":
+	case domain.ReferenceKindRegular:
 		query = `INSERT INTO regular_payment(user_id,periodicity,description) VALUES($1,'monthly',$2)
  ON CONFLICT(user_id,periodicity,description) DO UPDATE SET description=EXCLUDED.description
  RETURNING id::text,dismissed_at IS NOT NULL`
-	case "merchant":
+	case domain.ReferenceKindMerchant:
 		query = `INSERT INTO merchant(user_id,key) VALUES($1,$2)
  ON CONFLICT(user_id,key) DO UPDATE SET key=EXCLUDED.key RETURNING id::text,false`
 	default:

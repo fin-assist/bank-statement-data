@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/fin-assist/bank-statement-data/internal/domain"
+
 	pgstore "github.com/fin-assist/go-postgres"
 	"github.com/jackc/pgx/v5"
 )
@@ -24,7 +26,7 @@ func (tx *referenceTx) QueryRow(_ context.Context, q string, args ...any) pgx.Ro
 func TestUnitCalculationReferenceValidatesOwnershipAndProjectsStableFields(t *testing.T) {
 	const user = "73ef1f95-14d5-453c-80ec-d0e2ac8c854d"
 	const id = "00000000-0000-4000-8000-000000000001"
-	for _, kind := range []string{"regular", "merchant"} {
+	for _, kind := range []string{domain.ReferenceKindRegular, domain.ReferenceKindMerchant} {
 		tx := &referenceTx{row: importScanRow{values: []any{id, true}}}
 		db := &DB{transactions: pgstore.New(unitBeginner{tx})}
 		repo := NewImports(db)
