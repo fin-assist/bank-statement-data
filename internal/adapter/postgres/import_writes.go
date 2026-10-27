@@ -245,12 +245,7 @@ func (r *Imports) schedule(ctx context.Context, user string, operations []import
 	}
 	var due any
 	if len(months) > 0 {
-		local := now.In(zone)
-		next := accounting.StartOfDay(local, zone).Add(r.dailyRecalculationOffset)
-		if !next.After(now) {
-			next = accounting.AddDays(accounting.StartOfDay(local, zone), 1).Add(r.dailyRecalculationOffset)
-		}
-		due = next
+		due = accounting.NextDailyAfter(now, zone, r.dailyRecalculationOffset)
 	}
 	_, err = r.db.Writer(ctx).Exec(ctx, `UPDATE user_state SET daily_recalc_due_at=$2 WHERE user_id=$1`, user, due)
 	return importError(ctx, err)

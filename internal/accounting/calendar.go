@@ -63,6 +63,22 @@ func AddDays(at time.Time, days int) time.Time {
 	return time.Time{}
 }
 
+// NextDailyAfter returns the first daily elapsed-offset deadline strictly after
+// now. offset must be validated in [0, 24h). Shift before choosing the civil day:
+// on a short day its deadline can fall after the next local midnight.
+func NextDailyAfter(now time.Time, zone *time.Location, offset time.Duration) time.Time {
+	start := StartOfDay(now.Add(-offset), zone)
+	for {
+		start = AddDays(start, 1)
+		next := start.Add(offset)
+		if next.After(now) {
+			return next
+		}
+		// A historical backward midnight transition can return to an earlier
+		// civil date after the following date's first start has already passed.
+	}
+}
+
 // WalkDays visits each real local date in a half-open interval of day starts.
 // Its cursor is a UTC civil date: missing local dates are skipped without repeats,
 // DST days count once, and cancellation is checked on every iteration.

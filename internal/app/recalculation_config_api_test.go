@@ -1,6 +1,7 @@
 package app_test
 
 import (
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -99,4 +100,52 @@ func TestAPIDailyOffsetConfigWiresEverySchedulingPath(t *testing.T) {
 			assertDue(tc.wantUTC)
 		})
 	}
+}
+
+func TestAPIDailyOffsetEditAcrossShortDayMidnightKeepsPendingDeadline(t *testing.T) {
+	offset := configuredRecalculationOffset(t, "23h30m")
+	var clock atomic.Int64
+	setClock := func(raw string) {
+		t.Helper()
+		at, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clock.Store(at.UnixNano())
+	}
+	setClock("2026-03-29T21:50:00Z")
+	env := apitest.StartWith(t, app.Options{Now: func() time.Time { return time.Unix(0, clock.Load()) }}, func(c *config.Config) { c.DailyRecalculationOffset = offset })
+	ctx := apitest.User(t.Context(), apiUser)
+	if _, err := settings.NewUserSettingsSyncServiceClient(env.Conn).SetUserTimezone(apitest.Caller(t.Context(), "user"), &settings.SetUserTimezoneRequest{UserId: apiUser, Timezone: "Europe/Berlin", SettingsVersion: 1}); err != nil {
+		t.Fatal(err)
+	}
+	operationsAPIImport(t, env, calculationRuleOFX())
+	assertDue := func(raw string) {
+		t.Helper()
+		want, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got time.Time
+		if err = env.App.DB.Primary().QueryRow(t.Context(), `SELECT daily_recalc_due_at FROM user_state WHERE user_id=$1`, apiUser).Scan(&got); err != nil || !got.Equal(want) {
+			t.Fatal("real edit skipped pending short-day deadline", got, want, err)
+		}
+	}
+	assertDue("2026-03-29T22:30:00Z")
+	client := pb.NewOperationsServiceClient(env.Conn)
+	feed, err := client.ListFeed(ctx, &pb.ListFeedRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := feed.Items[0]
+	setClock("2026-03-29T22:10:00Z")
+	if _, err = client.ChangeCategory(ctx, &pb.ChangeCategoryRequest{Id: item.Id, OccurredAt: item.OccurredAt, CategoryId: "cat_taxi"}); err != nil {
+		t.Fatal(err)
+	}
+	assertDue("2026-03-29T22:30:00Z")
+	setClock("2026-03-29T22:30:00Z")
+	if _, err = client.ChangeCategory(ctx, &pb.ChangeCategoryRequest{Id: item.Id, OccurredAt: item.OccurredAt, CategoryId: "cat_supermarkets"}); err != nil {
+		t.Fatal(err)
+	}
+	assertDue("2026-03-30T21:30:00Z")
 }

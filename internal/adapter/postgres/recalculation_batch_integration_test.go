@@ -168,3 +168,67 @@ func TestIntegrationDailyRecalculationUsesLocalCivilDayAndExistingGapRules(t *te
 		t.Fatal("empty history must clear daily schedule without queue rows", rows, due)
 	}
 }
+
+func TestIntegrationDailyRecalculationSequentialEnqueueKeepsNearestFutureDeadline(t *testing.T) {
+	f := importRepository(t)
+	for _, tc := range []struct {
+		name, zone string
+		offset     time.Duration
+		steps      [][2]string
+	}{
+		{"Berlin 23h30", "Europe/Berlin", 23*time.Hour + 30*time.Minute, [][2]string{
+			{"2026-03-29T21:50:00Z", "2026-03-29T22:30:00Z"},
+			{"2026-03-29T22:10:00Z", "2026-03-29T22:30:00Z"},
+			{"2026-03-29T22:30:00Z", "2026-03-30T21:30:00Z"},
+		}},
+		{"Troll 23h30", "Antarctica/Troll", 23*time.Hour + 30*time.Minute, [][2]string{
+			{"2026-03-29T21:50:00Z", "2026-03-29T23:30:00Z"},
+			{"2026-03-29T22:10:00Z", "2026-03-29T23:30:00Z"},
+			{"2026-03-29T23:30:00Z", "2026-03-30T21:30:00Z"},
+		}},
+		{"Troll 22h", "Antarctica/Troll", 22 * time.Hour, [][2]string{
+			{"2026-03-29T21:50:00Z", "2026-03-29T22:00:00Z"},
+			{"2026-03-29T22:00:00Z", "2026-03-30T20:00:00Z"},
+			{"2026-03-29T22:10:00Z", "2026-03-30T20:00:00Z"},
+			{"2026-03-30T20:00:00Z", "2026-03-31T20:00:00Z"},
+		}},
+		{"Havana gap", "America/Havana", 23*time.Hour + 30*time.Minute, [][2]string{
+			{"2012-04-02T03:50:00Z", "2012-04-02T04:30:00Z"},
+			{"2012-04-02T04:10:00Z", "2012-04-02T04:30:00Z"},
+			{"2012-04-02T04:30:00Z", "2012-04-03T03:30:00Z"},
+		}},
+		{"Apia skip", "Pacific/Apia", 23*time.Hour + 30*time.Minute, [][2]string{
+			{"2011-12-30T09:20:00Z", "2011-12-30T09:30:00Z"},
+			{"2011-12-30T09:30:00Z", "2011-12-31T09:30:00Z"},
+			{"2011-12-30T10:10:00Z", "2011-12-31T09:30:00Z"},
+			{"2011-12-31T09:30:00Z", "2012-01-01T09:30:00Z"},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			user := uuid.NewString()
+			batchCoverage(t, f, user, "2026-01-01", "2026-01-31")
+			if _, err := f.db.Primary().Exec(t.Context(), `UPDATE user_state SET timezone=$2 WHERE user_id=$1`, user, tc.zone); err != nil {
+				t.Fatal(err)
+			}
+			for _, step := range tc.steps {
+				now, err := time.Parse(time.RFC3339, step[0])
+				if err != nil {
+					t.Fatal(err)
+				}
+				want, err := time.Parse(time.RFC3339, step[1])
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err = f.db.Run(t.Context(), func(ctx context.Context) error {
+					return postgres.NewOperations(f.db, tc.offset).Enqueue(ctx, user, now)
+				}); err != nil {
+					t.Fatal(err)
+				}
+				_, due := batchScheduleState(t, f, user)
+				if due == nil || !due.Equal(want) {
+					t.Fatal("sequential enqueue postponed nearest deadline", tc.zone, step[0], due, want)
+				}
+			}
+		})
+	}
+}
