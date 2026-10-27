@@ -20,8 +20,7 @@ import (
 	"github.com/fin-assist/bank-statement-data/internal/app/apitest"
 )
 
-func TestAPIAssistantToolsRealSourcesAndExactSelections(t *testing.T)         { toolsSourceScenario(t) }
-func TestIntegrationAssistantToolsRealSourcesAndExactSelections(t *testing.T) { toolsSourceScenario(t) }
+func TestAPIAssistantToolsRealSourcesAndExactSelections(t *testing.T) { toolsSourceScenario(t) }
 
 func toolsSourceScenario(t *testing.T) {
 	var micros atomic.Int64
@@ -256,9 +255,6 @@ func toolsSourceScenario(t *testing.T) {
 }
 
 func TestAPIAssistantToolsExactCountBeyondPublicSearchLimit(t *testing.T) { toolsLargeSelection(t) }
-func TestIntegrationAssistantToolsExactCountBeyondPublicSearchLimit(t *testing.T) {
-	toolsLargeSelection(t)
-}
 func toolsLargeSelection(t *testing.T) {
 	env := apitest.StartWith(t, app.Options{Now: calculationNow})
 	from, to := calculationDate(t, "2026-09"), calculationDate(t, "2026-10").Add(-time.Second)

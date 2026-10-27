@@ -144,7 +144,10 @@ map, дроби, bool, отрицательные/overflowed значения н
 Проверки: TestUnitRecalculationSourceRevisionsPreservePendingAndReplaceWholeCalendar,
 TestUnitPublicationSourceRevisionsAreImmutableAcrossEveryPairAndFinalState,
 TestUnitPublicationRequiresClearingAckBeforePartsAndFinal,
-TestUnitRevisionDecodeRejectsNullAndPreservesExactCounters и реальные API/integration
-TestAPISourceRevisionProducerRebuildsWholeCalendarAndRepairsUnknownCoverage. Последний проходит
+TestUnitRevisionDecodeRejectsNullAndPreservesExactCounters; независимый component integration
+TestIntegrationProducerDailyRepairRebuildsAllHeadersAndGatesProofOnDurableACKs собирает
+координатор, репозитории, publisher и delivery с настоящим PostgreSQL и фейком удалённого RPC,
+проверяет durable ACK-barrier и immutable payload без app.New. API-сценарий
+TestAPISourceRevisionProducerRebuildsWholeCalendarAndRepairsUnknownCoverage проходит
 два месяца и оба режима, category, daily-triggered source repair без изменения source counters,
 удаление последней загрузки. Пояс отдельно проверяет сценарий RecalculationImportEditTimezoneDeletionAndDurableDelivery.

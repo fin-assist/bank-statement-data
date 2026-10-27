@@ -23,9 +23,6 @@ func producerRevisions(list []*common.DataRevision) map[string]int64 {
 func TestAPISourceRevisionProducerRebuildsWholeCalendarAndRepairsUnknownCoverage(t *testing.T) {
 	producerRevisionScenario(t)
 }
-func TestIntegrationSourceRevisionProducerRebuildsWholeCalendarAndRepairsUnknownCoverage(t *testing.T) {
-	producerRevisionScenario(t)
-}
 func producerRevisionScenario(t *testing.T) {
 	env, peer, _ := metricsEnv(t, false)
 	statements := pb.NewStatementsServiceClient(env.Conn)

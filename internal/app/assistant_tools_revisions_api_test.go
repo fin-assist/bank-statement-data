@@ -24,9 +24,6 @@ import (
 func TestAPIAssistantRevisionSnapshotDetectsCommitWithOlderTimestamp(t *testing.T) {
 	toolsRevisionRace(t)
 }
-func TestIntegrationAssistantRevisionSnapshotDetectsCommitWithOlderTimestamp(t *testing.T) {
-	toolsRevisionRace(t)
-}
 func toolsRevisionRace(t *testing.T) {
 	base := calculationNow()
 	var micros atomic.Int64
@@ -90,8 +87,7 @@ func toolsRevisionRace(t *testing.T) {
 	}
 }
 
-func TestAPIAssistantCurrentRevisionAlwaysUsesPrimary(t *testing.T)         { toolsRevisionReplica(t) }
-func TestIntegrationAssistantCurrentRevisionAlwaysUsesPrimary(t *testing.T) { toolsRevisionReplica(t) }
+func TestAPIAssistantCurrentRevisionAlwaysUsesPrimary(t *testing.T) { toolsRevisionReplica(t) }
 func toolsRevisionReplica(t *testing.T) {
 	lag := testdb.DSN(t)
 	cfg := migrate.DefaultConfig(lag)
@@ -114,9 +110,6 @@ func toolsRevisionReplica(t *testing.T) {
 }
 
 func TestAPIAssistantRevisionsOmitUnverifiedRawCoverage(t *testing.T) { toolsUnknownRawCoverage(t) }
-func TestIntegrationAssistantRevisionsOmitUnverifiedRawCoverage(t *testing.T) {
-	toolsUnknownRawCoverage(t)
-}
 func toolsUnknownRawCoverage(t *testing.T) {
 	env := apitest.StartWith(t, app.Options{Now: calculationNow})
 	statements := pb.NewStatementsServiceClient(env.Conn)
