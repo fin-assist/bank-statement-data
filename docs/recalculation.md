@@ -121,12 +121,18 @@ go test -timeout=120s ./internal/recalculating -run '^$' \
 блокировкой пользователя, которая защищает факты до commit. Этот vector закрепляется в State,
 передаётся во все month/quarter/year snapshots обоих режимов и сохраняется в immutable bytes
 metrics_delivery. Любое глобальное изменение ревизии заменяет весь опубликованный календарь,
-включая финансово не изменившиеся периоды. Состояние финального ACK отличается calc_version и
-recalculating, но сохраняет ровно тот же source vector. Повтор одной calc_version не переоценивает
+включая финансово не изменившиеся периоды. Только состояние финального ACK содержит source vector:
+он доказывает полноту всего набора. Clearing-состояние и состояния всех chunks опускают vector.
+Повтор одной calc_version не переоценивает
 счётчики при доставке: sender читает сохранённые bytes, а не текущее source state.
 
-Первое pending-состояние показывает прежние факты: оно сохраняет ревизии прежнего State в
-metrics_publication.state JSON (`data_revisions`). Отсутствие этого поля у legacy остаётся unknown,
+Прежние факты и их ревизии сохраняются в metrics_publication.state JSON (`data_revisions`),
+но mandatory pending/clearing-состояние в wire опускает весь vector. Это относится и к daily-only,
+у которого user-facing recalculating=false. Delivery ждёт ACK clearing перед любым chunk;
+final ждёт ACK всех частей и clearing, включая публикацию без частей. Новый ещё не доставленный
+месяц и навигация поэтому не могут получить ложное подтверждение полноты. Internal started
+отделён от user recalculating: последний зависит от пользовательской очереди, не от daily или доставки.
+Отсутствие metadata у legacy остаётся unknown,
 текущие counters в прежние снимки не подставляются. Сохранённый JSON проверяется строго: null внутри
 map, дроби, bool, отрицательные/overflowed значения не становятся известным нулём.
 
@@ -137,6 +143,7 @@ map, дроби, bool, отрицательные/overflowed значения н
 
 Проверки: TestUnitRecalculationSourceRevisionsPreservePendingAndReplaceWholeCalendar,
 TestUnitPublicationSourceRevisionsAreImmutableAcrossEveryPairAndFinalState,
+TestUnitPublicationRequiresClearingAckBeforePartsAndFinal,
 TestUnitRevisionDecodeRejectsNullAndPreservesExactCounters и реальные API/integration
 TestAPISourceRevisionProducerRebuildsWholeCalendarAndRepairsUnknownCoverage. Последний проходит
 два месяца и оба режима, timezone/category, unknown source repair, удаление последней загрузки.

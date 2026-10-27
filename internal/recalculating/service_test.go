@@ -294,7 +294,7 @@ func TestUnitDailyOnlyRecalculationDoesNotSetUserActionFlag(t *testing.T) {
 	if err := s.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if len(p.values) != 1 || p.values[0].Pending || p.values[0].Recalculating || r.startCalls != 0 {
+	if len(p.values) != 2 || !p.values[0].Pending || p.values[0].Recalculating || p.values[1].Pending || p.values[1].Recalculating || r.startCalls != 1 {
 		t.Fatal("daily update masqueraded as user action", p.values)
 	}
 }

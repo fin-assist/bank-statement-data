@@ -90,7 +90,7 @@ func (s *Service) Recalculate(ctx context.Context, user string) error {
 		if err != nil || !active {
 			return err
 		}
-		if lease.Recalculating || len(lease.Queue) == 0 {
+		if lease.Recalculating {
 			return nil
 		}
 		if lease.Version >= math.MaxInt32-2 {
@@ -101,7 +101,7 @@ func (s *Service) Recalculate(ctx context.Context, user string) error {
 			state.TimeZone = "Europe/Moscow"
 		}
 		state.CalculatedAt = s.now()
-		if err = s.publisher.Publish(ctx, Publication{User: user, Version: lease.Version + 1, State: state, Recalculating: true, Pending: true}); err != nil {
+		if err = s.publisher.Publish(ctx, Publication{User: user, Version: lease.Version + 1, State: state, Recalculating: len(lease.Queue) > 0, Pending: true}); err != nil {
 			return err
 		}
 		return s.repo.Start(ctx, lease, state)
@@ -163,7 +163,7 @@ func (s *Service) Recalculate(ctx context.Context, user string) error {
 				keys = append(keys, p.Period)
 			}
 			global.Revisions = maps.Clone(lease.Revisions)
-			if err = s.publisher.Publish(ctx, Publication{User: user, Version: lease.Version + 1, State: global, Recalculating: lease.Recalculating || len(lease.Queue) > 0, Periods: snapshots, Removed: removed(lease.Known, keys)}); err != nil {
+			if err = s.publisher.Publish(ctx, Publication{User: user, Version: lease.Version + 1, State: global, Recalculating: len(lease.Queue) > 0, Periods: snapshots, Removed: removed(lease.Known, keys)}); err != nil {
 				return err
 			}
 			return s.repo.Complete(ctx, lease, global, keys, now)

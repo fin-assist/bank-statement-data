@@ -60,6 +60,14 @@ func producerRevisionScenario(t *testing.T) {
 		if !reflect.DeepEqual(producerRevisions(peer.state.DataRevisions), want) {
 			t.Fatal("state lacks snapshot provenance", peer.state, want)
 		}
+		for _, request := range peer.requests {
+			if len(request.Periods) > 0 && len(request.State.DataRevisions) != 0 {
+				t.Fatal("chunk certified partial inventory", request.CalcVersion)
+			}
+			if request.State.Recalculating && len(request.Periods) == 0 && len(request.State.DataRevisions) != 0 {
+				t.Fatal("clearing state retained proof", request.CalcVersion)
+			}
+		}
 		for key, period := range peer.periods {
 			if !reflect.DeepEqual(producerRevisions(period.DataRevisions), want) {
 				t.Fatal("global source change failed to replace whole calendar", key, period.DataRevisions, want)

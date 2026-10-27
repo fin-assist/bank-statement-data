@@ -350,5 +350,6 @@ API/integration `AssistantRevisionsOmitUnverifiedRawCoverage`.
 FIN-369 хранит source vector в существующем metrics_publication.state JSON (data_revisions), без
 новой SQL-миграции. Legacy отсутствие остаётся unknown; source counters из user_state читаются
 под user-lock в той же транзакции, что полный календарь фактов и immutable metrics_delivery.
-Новые periodpairs обоих режимов/state/final ACK получают один source vector; pending сохраняет
-metadata прежнего состояния. Проверки и инварианты — [recalculation.md](recalculation.md).
+Новые periodpairs обоих режимов и final ACK получают один source vector; состояния chunks и
+mandatory clearing опускают metadata до финального ACK всех частей. Stored State сохраняет
+metadata прежнего состояния до Complete. Проверки и инварианты — [recalculation.md](recalculation.md).
