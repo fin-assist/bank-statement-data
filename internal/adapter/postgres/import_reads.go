@@ -121,10 +121,10 @@ func (r *Imports) snapshot(ctx context.Context, user string, from, to *time.Time
 	return state, importError(ctx, rows.Err())
 }
 
-const uploadColumns = `id::text,user_id::text,file_name,object_key,size_bytes,content_sha256,status,COALESCE(error_code,''),percent,uploaded_at,finished_at,file_deleted_at,COALESCE(operation_count,0),account_ids,statement_from,statement_to,result,statement_from_instant,statement_to_instant`
-
 func (r *Imports) uploads(ctx context.Context, user string, zone *time.Location) ([]importing.Upload, error) {
-	rows, err := r.db.Writer(ctx).Query(ctx, `SELECT `+uploadColumns+` FROM upload WHERE user_id=$1 ORDER BY uploaded_at DESC,id DESC`, user)
+	rows, err := r.db.Writer(ctx).Query(ctx, `SELECT id::text,user_id::text,file_name,object_key,size_bytes,content_sha256,status,COALESCE(error_code,''),
+ percent,uploaded_at,finished_at,file_deleted_at,COALESCE(operation_count,0),account_ids,statement_from,statement_to,
+ result,statement_from_instant,statement_to_instant FROM upload WHERE user_id=$1 ORDER BY uploaded_at DESC,id DESC`, user)
 	if err != nil {
 		return nil, importError(ctx, err)
 	}
@@ -191,7 +191,9 @@ func (r *Imports) Upload(ctx context.Context, user, id string) (importing.Upload
 	if err != nil {
 		return importing.Upload{}, errImportStorage
 	}
-	value, err := scanUpload(r.db.Writer(ctx).QueryRow(ctx, `SELECT `+uploadColumns+` FROM upload WHERE user_id=$1 AND id=$2`, user, id), zone)
+	value, err := scanUpload(r.db.Writer(ctx).QueryRow(ctx, `SELECT id::text,user_id::text,file_name,object_key,size_bytes,content_sha256,status,COALESCE(error_code,''),
+ percent,uploaded_at,finished_at,file_deleted_at,COALESCE(operation_count,0),account_ids,statement_from,statement_to,
+ result,statement_from_instant,statement_to_instant FROM upload WHERE user_id=$1 AND id=$2`, user, id), zone)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return value, importing.ErrNotFound
 	}

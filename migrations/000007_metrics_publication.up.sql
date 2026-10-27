@@ -17,11 +17,11 @@ CREATE TABLE metrics_publication (
     recalculating boolean NOT NULL DEFAULT false,
     created_at timestamptz NOT NULL DEFAULT now()
 );
-COMMENT ON TABLE metrics_publication IS 'Последнее опубликованное состояние и полный перечень периодов для восстановления пересчёта и удаления исчезнувших ключей.';
+COMMENT ON TABLE metrics_publication IS 'Контрольная точка последнего вычисленного состояния, полного перечня календарных периодов и начала пересчёта: позволяет возобновить работу и удалить периоды через removed_periods после удаления исходных фактов или смены пояса.';
 COMMENT ON COLUMN metrics_publication.user_id IS 'Владелец состояния; удаление пользователя удаляет служебные данные каскадом.';
-COMMENT ON COLUMN metrics_publication.state IS 'Полное состояние последнего вычисленного набора; финансовые суммы здесь не рассчитываются.';
-COMMENT ON COLUMN metrics_publication.period_keys IS 'Ключи всех опубликованных месяцев, кварталов и лет для removed_periods.';
-COMMENT ON COLUMN metrics_publication.recalculating IS 'Признак уже опубликованного начала незавершённого пересчёта.';
+COMMENT ON COLUMN metrics_publication.state IS 'Полное состояние последнего вычисленного набора; не означает подтверждённую доставку в analytics.';
+COMMENT ON COLUMN metrics_publication.period_keys IS 'Идентификаторы календарных периодов последнего вычисленного набора: пары Kind (month, quarter, year) и Key (YYYY-MM, YYYY-Qn, YYYY). Используются для removed_periods обоих режимов переводов.';
+COMMENT ON COLUMN metrics_publication.recalculating IS 'Признак зафиксированного начала незавершённого пересчёта; позволяет возобновить его без повторного маркера начала.';
 
 CREATE TABLE metrics_delivery (
     id uuid PRIMARY KEY,
@@ -32,7 +32,7 @@ CREATE TABLE metrics_delivery (
     created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX metrics_delivery_version_idx ON metrics_delivery(user_id,calc_version) WHERE final=false;
-COMMENT ON TABLE metrics_delivery IS 'Неизменяемые protobuf части снимков; общий outbox хранит только непрозрачную ссылку. Удаление пользователя атомарно стирает финансовые payload.';
+COMMENT ON TABLE metrics_delivery IS 'Неизменяемые protobuf payload под FK пользователя; наличие неподтверждённых частей задаёт ACK-барьер для финального состояния. Общий outbox хранит только непрозрачную ссылку; удаление пользователя атомарно стирает финансовые payload.';
 COMMENT ON COLUMN metrics_delivery.id IS 'Непрозрачный идентификатор доставки без данных пользователя.';
 COMMENT ON COLUMN metrics_delivery.user_id IS 'Владелец снимка; удаление пользователя каскадно удаляет все ожидающие payload.';
 COMMENT ON COLUMN metrics_delivery.calc_version IS 'Версия неизменяемого снимка для идемпотентности analytics.';
