@@ -274,3 +274,44 @@ tombstone guard и блокировку `user_state` до вычисления �
 | --- | --- |
 | Расчёт не создаёт пользователя и не возвращает ссылки после purge | `TestUnitCalculationServiceGuardAndFailures`, `TestIntegrationCalculationFromCommittedFixtureHistory`, `TestAPICalculationUsesOnlyCompletedPublicImportsAndHonorsPurge` |
 | UUID принадлежит user_id, сохраняется при пересчёте; upsert не снимает dismissal | `TestIntegrationCalculationReferencesRequireOwnedTransactionAndKeepDismissals`, `TestIntegrationCalculationReferencesAreStableAndTenantScoped` |
+
+## Публикация метрик и удаление (FIN-357)
+
+`metrics_publication` — контрольная точка: последнее вычисленное `calculating.State`, полный перечень
+идентификаторов календарных периодов и признак уже зафиксированного начала пересчёта. Состояние
+не означает подтверждённую доставку в analytics; маркер начала позволяет возобновить работу без его повтора.
+Каждый элемент `period_keys` —
+пара `Kind` (`month`, `quarter`, `year`) и `Key` (`YYYY-MM`, `YYYY-Qn`, `YYYY`), например
+`{"Kind":"quarter","Key":"2026-Q3"}`; один идентификатор охватывает оба режима переводов.
+Перечень сохраняется после удаления исходных фактов или смены пояса, чтобы удалить исчезнувшие периоды
+через `removed_periods`. `metrics_delivery` хранит неизменяемый `UpsertUserMetricsRequest` под непрозрачным
+UUID до подтверждения analytics; неподтверждённые части удерживают ACK-барьер финального состояния. Обе таблицы
+ссылаются на `user_state` с `ON DELETE CASCADE`; SQL-правил значений/триггеров нет.
+
+В общем outbox финансовые данные не хранятся: только protobuf `StringValue` с UUID доставки и
+такой же `event_key`. Поэтому даже поздний fanout после purge оставляет безопасную ссылку,
+которую доставщик подтверждает без RPC, когда FK-owned payload уже отсутствует.
+
+Инварианты в коде сервиса:
+
+| Правило | Где соблюдается | Проверка |
+|---|---|---|
+| Факты, версии, перечень периодов и события фиксируются одной транзакцией под user/tombstone lock | `recalculating.Service`, `postgres.Recalculations` | unit транзакций/ошибок, real-PG/API импорт/правка/пояс/удаление |
+| Версия int32 растёт, одна версия ключа не меняет содержимого | `Recalculations.Start/Complete`, immutable `metrics_delivery` | unit exhaustion/CAS, API повторная публикация |
+| Оба режима периода находятся в одной части ≤4 МиБ | `metricswire.publications` | unit pair/chunk/oversize guards |
+| Финальный false ждёт ACK всех частей предыдущей версии | `metricswire.Delivery`, `DeliveryPending` | unit и API blocked peer |
+| Финансовые payload каскадно удаляются с пользователем; поздние ссылки не воспроизводят bytes | FK, `LoadDelivery`, `Delivery` | PostgreSQL/API purge и поздняя доставка |
+| Неуспех сохраняет очередь, backoff не перетирает новую generation | `Recalculations.Fail` | unit SQL и PostgreSQL concurrency/recovery |
+
+`upload.statement_from_instant/statement_to_instant` сохраняют первичные моменты покрытия;
+`statement_range_source` различает `tags`, `operations`, `none` и прежнюю неизвестную provenance NULL.
+При чтении календарные дни строятся из точных моментов в текущем поясе. Старые DATE не преобразуются
+в выдуманные исходные instants: bounded metadata repair восстанавливает их из оригинального OFX
+с SHA/size, status/object CAS и tombstone guard — [recalculation.md](recalculation.md).
+
+Daily-only ошибки хранят `user_state.daily_recalc_attempts` (0…32767, увеличение с насыщением)
+и `daily_recalc_failed_since` (первый неисполненный срок). `Recalculations.Fail` переносит срок
+на 1,2,4…300 секунд, не меняя исходный возраст ошибки. Очередь пользовательских изменений имеет
+приоритет: пока её строки существуют, expired daily не обходит их `next_attempt_at`; это проверяет
+и поиск кандидатов, и locked admission прямого Recalculate. `Complete` и новая пользовательская
+постановка сбрасывают обе retry-колонки. PG-тесты проверяют gating, экспоненту, cap, age и reset.

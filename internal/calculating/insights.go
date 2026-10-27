@@ -52,7 +52,7 @@ func (c *calculator) regular(r Range) Metric {
 		windowKeys = append(windowKeys, key)
 	}
 	groups := make(map[string][]importing.Operation)
-	for _, op := range c.cal.ops {
+	for _, op := range c.cal.operations(Range{window[0], shiftMonths(window[len(window)-1], 1)}) {
 		_, cat, _, ok := FinancialRow(op, c.mode)
 		if ok && op.Direction == "expense" && op.Description != "" && Observation(cat) && keys[op.At.In(c.cal.zone).Format("2006-01")] {
 			groups[op.Description] = append(groups[op.Description], op)
@@ -161,14 +161,8 @@ func (c *calculator) fees(r Range) Metric {
 	var names []string
 	seen := make(map[string]bool)
 	count := 0
-	ops := append([]importing.Operation(nil), c.cal.ops...)
-	sort.Slice(ops, func(i, j int) bool {
-		if ops[i].At.Equal(ops[j].At) {
-			return ops[i].ID < ops[j].ID
-		}
-		return ops[i].At.Before(ops[j].At)
-	})
-	for _, op := range ops {
+
+	for _, op := range c.cal.operations(r) {
 		kind, cat, amount, ok := FinancialRow(op, c.mode)
 		if !ok || kind != "expense" || op.At.Before(r.From) || !op.At.Before(r.To) || !Fee(op, cat) {
 			continue
@@ -206,7 +200,7 @@ func (c *calculator) small(r Range) Metric {
 	}
 	merchants := make(map[string][]importing.Operation)
 	var eligible []importing.Operation
-	for _, op := range c.cal.ops {
+	for _, op := range c.cal.operations(mr) {
 		_, cat, _, ok := FinancialRow(op, c.mode)
 		if ok && op.Direction == "expense" && Observation(cat) && !op.At.Before(mr.From) && op.At.Before(mr.To) {
 			eligible = append(eligible, op)

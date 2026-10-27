@@ -21,6 +21,7 @@ func commandObjectOptions(t *testing.T) app.Options {
 	var cfg config.Config
 	objects.Configure(&cfg)
 	for key, value := range map[string]string{
+		"PEER_ANALYTICS_ADDR":           "passthrough:///analytics.invalid:9090",
 		"OBJECT_STORAGE_ENDPOINT":       cfg.ObjectStorage.Endpoint,
 		"OBJECT_STORAGE_BUCKET":         cfg.ObjectStorage.Bucket,
 		"OBJECT_STORAGE_KMS_KEY_ID":     cfg.ObjectStorage.KMSKeyID,

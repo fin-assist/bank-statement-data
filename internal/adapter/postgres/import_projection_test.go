@@ -33,7 +33,7 @@ func (row importScanRow) Scan(dest ...any) error {
 	return nil
 }
 func projectionRow() []any {
-	return []any{"b7a17bfd-cf78-44a3-95f7-09941c59e996", "73ef1f95-14d5-453c-80ec-d0e2ac8c854d", "exact/имя", "private-key", int64(8), make([]byte, 32), "processing", "", 0, time.Now().UTC(), nil, nil, int64(0), []int64{}, nil, nil, nil}
+	return []any{"b7a17bfd-cf78-44a3-95f7-09941c59e996", "73ef1f95-14d5-453c-80ec-d0e2ac8c854d", "exact/имя", "private-key", int64(8), make([]byte, 32), "processing", "", 0, time.Now().UTC(), nil, nil, int64(0), []int64{}, nil, nil, nil, nil, nil}
 }
 func TestUnitStoredUploadProjectionRejectsCorruptFacts(t *testing.T) {
 	zone, _ := time.LoadLocation("Europe/Berlin")
@@ -119,5 +119,27 @@ func TestUnitDateProjectionPreservesCivilLabelAtMidnightGap(t *testing.T) {
 	at := importDay(time.Date(2012, 4, 1, 0, 0, 0, 0, time.UTC), zone)
 	if at.Month() != time.April || at.Day() != 1 || at.Hour() != 1 {
 		t.Fatal("SQL date moved to previous civil day", at)
+	}
+}
+
+func TestUnitStoredUploadProjectsOriginalBoundsInCurrentTimezone(t *testing.T) {
+	row := projectionRow()
+	from := time.Date(2026, 8, 31, 21, 30, 0, 0, time.UTC)
+	to := from
+	row[17] = &from
+	row[18] = &to
+	zone, _ := time.LoadLocation("America/Havana")
+	upload, err := scanUpload(importScanRow{values: row}, zone)
+	if err != nil || upload.Period == nil || upload.Period.From.Format("2006-01-02") != "2026-08-31" || upload.Period.RawFrom == nil || !upload.Period.RawFrom.Equal(from) {
+		t.Fatal("source instant lost", upload, err)
+	}
+	row[18] = nil
+	if _, err = scanUpload(importScanRow{values: row}, zone); err == nil {
+		t.Fatal("partial original range accepted")
+	}
+	earlier := from.Add(-time.Hour)
+	row[18] = &earlier
+	if _, err = scanUpload(importScanRow{values: row}, zone); err == nil {
+		t.Fatal("reversed original range accepted")
 	}
 }

@@ -36,6 +36,7 @@ func importAssembly(t *testing.T, clocks ...func() time.Time) (*app.App, *testob
 	}
 	objects := testobjects.New(t)
 	cfg := config.Config{Service: "bank-statement-data", Env: config.EnvDev, Auth: config.AuthConfig{Mode: config.AuthInsecureDev}, DB: config.DBConfig{PrimaryDSN: dsn, MaxConns: 2}, GRPC: config.GRPCConfig{MaxRecvMsgSize: 4 << 20}, DailyRecalculationOffset: testconfig.DefaultDailyRecalculationOffset(t)}
+	cfg.Peers = map[string]string{"analytics": "passthrough:///analytics.invalid:9090"}
 	objects.Configure(&cfg)
 	opts := app.Options{ObjectClient: objects.Server.Client()}
 	if len(clocks) > 0 {

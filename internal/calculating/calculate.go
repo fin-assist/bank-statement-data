@@ -18,43 +18,76 @@ type calculator struct {
 	err  error
 }
 
-// Build computes one exact period in both modes; no saved period is read. A caller
-// persists referenced identities and both complete snapshots atomically afterwards.
-func Build(ctx context.Context, in Input) (Result, error) {
+// Prepared retains one validated coherent snapshot, calendar and chronological
+// operation index. The caller keeps the source snapshot immutable while building
+// its periods, and owns the transaction used by the reference resolver.
+type Prepared struct {
+	ctx   context.Context
+	in    Input
+	cal   calendar
+	state State
+}
+
+// Prepare validates source facts and builds their shared calendar once per batch.
+func Prepare(ctx context.Context, in Input) (*Prepared, error) {
 	if err := ctx.Err(); err != nil {
-		return Result{}, err
+		return nil, err
 	}
 	cal, err := makeCalendar(ctx, in)
 	if err != nil {
-		return Result{}, err
-	}
-	r, err := periodRange(in.At.In(cal.zone), in.Kind)
-	if err != nil {
-		return Result{}, err
+		return nil, err
 	}
 	seen := make(map[string]bool)
 	for _, op := range cal.ops {
 		if err := ctx.Err(); err != nil {
-			return Result{}, err
+			return nil, err
 		}
 		if op.ID == "" || seen[op.ID] || op.At.IsZero() || op.AmountMinor < 0 || op.Category == "" || op.Direction != "expense" && op.Direction != "income" || op.Category == importing.RefundCategory && op.RefundTarget == "" {
-			return Result{}, ErrCalculation
+			return nil, ErrCalculation
 		}
 		seen[op.ID] = true
 	}
-	out := Result{State: cal.state(in.Now)}
+	return &Prepared{ctx: ctx, in: in, cal: cal, state: cal.state(in.Now)}, nil
+}
+
+// Build computes one exact period in both modes from this immutable batch input.
+func (p *Prepared) Build(kind string, at time.Time) (Result, error) {
+	if p == nil || at.IsZero() {
+		return Result{}, ErrCalculation
+	}
+	if err := p.ctx.Err(); err != nil {
+		return Result{}, err
+	}
+	in := p.in
+	in.Kind = kind
+	in.At = at
+	r, err := periodRange(at.In(p.cal.zone), kind)
+	if err != nil {
+		return Result{}, err
+	}
+	out := Result{State: p.state}
 	for _, mode := range []string{"with", "without"} {
-		c := calculator{ctx: ctx, in: in, cal: cal, mode: mode}
-		p := c.period(r)
+		c := calculator{ctx: p.ctx, in: in, cal: p.cal, mode: mode}
+		period := c.period(r)
 		if c.err != nil {
 			return Result{}, c.err
 		}
-		out.Periods = append(out.Periods, p)
+		out.Periods = append(out.Periods, period)
 	}
-	if err := ctx.Err(); err != nil {
+	if err := p.ctx.Err(); err != nil {
 		return Result{}, err
 	}
 	return out, nil
+}
+
+// Build computes one exact period in both modes; no saved period is read. A caller
+// building a calendar uses Prepare once and Prepared.Build for each period.
+func Build(ctx context.Context, in Input) (Result, error) {
+	prepared, err := Prepare(ctx, in)
+	if err != nil {
+		return Result{}, err
+	}
+	return prepared.Build(in.Kind, in.At)
 }
 func (c *calculator) add(a, b int64) int64 {
 	n := new(big.Int).Add(big.NewInt(a), big.NewInt(b))
@@ -87,7 +120,7 @@ func (c *calculator) scale(value, mult, div int64, round bool) int64 {
 }
 func (c *calculator) sum(r Range, kind, category string) int64 {
 	var sum int64
-	for _, op := range c.cal.ops {
+	for _, op := range c.cal.operations(r) {
 		if err := c.ctx.Err(); err != nil {
 			c.err = err
 			return 0
@@ -174,7 +207,7 @@ func (c *calculator) period(r Range) Period {
 func (c *calculator) categories(r Range, kind string) Metric {
 	items := make(map[string]*CategoryAmount)
 	var total int64
-	for _, op := range c.cal.ops {
+	for _, op := range c.cal.operations(r) {
 		k, cat, amount, ok := FinancialRow(op, c.mode)
 		if !ok || k != kind || op.At.Before(r.From) || !op.At.Before(r.To) {
 			continue

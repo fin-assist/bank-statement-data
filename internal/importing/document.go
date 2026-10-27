@@ -26,6 +26,10 @@ type Period struct {
 	AccountKey string
 	From       time.Time
 	To         time.Time
+	// RawFrom/RawTo retain source instants before projection into profile days.
+	RawFrom, RawTo *time.Time
+	// Source distinguishes explicit tag coverage from operation fallback.
+	Source string
 }
 
 // Line is one source transaction or its unread metadata. An empty Reason means

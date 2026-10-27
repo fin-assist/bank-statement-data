@@ -18,6 +18,7 @@ type calendar struct {
 	now          time.Time
 	zone         *time.Location
 	ops          []importing.Operation
+	sortedOps    []importing.Operation
 }
 
 func day(at time.Time, zone *time.Location) time.Time { return accounting.StartOfDay(at, zone) }
@@ -120,7 +121,7 @@ func (c calendar) bounds(r Range) Bounds {
 	b.From = &first
 	end := nextDay(last).Add(-time.Second)
 	var latest time.Time
-	for _, op := range c.ops {
+	for _, op := range c.operations(Range{last, nextDay(last)}) {
 		if c.ctx.Err() != nil {
 			return Bounds{}
 		}
@@ -149,6 +150,14 @@ func makeCalendar(ctx context.Context, in Input) (calendar, error) {
 		return calendar{}, ErrCalculation
 	}
 	c := calendar{ctx: ctx, zone: zone, now: day(in.Now, zone), ops: in.Snapshot.Operations}
+	c.sortedOps = append([]importing.Operation(nil), c.ops...)
+	sort.Slice(c.sortedOps, func(i, j int) bool {
+		a, b := c.sortedOps[i], c.sortedOps[j]
+		if a.At.Equal(b.At) {
+			return a.ID < b.ID
+		}
+		return a.At.Before(b.At)
+	})
 	periods, err := importing.CompletedPeriods(ctx, in.Snapshot, zone)
 	if err != nil {
 		return c, err
@@ -225,3 +234,13 @@ func (c calendar) before(end time.Time) []time.Time {
 	return out
 }
 func lastMonths(months []time.Time, n int) []time.Time { return months[max(0, len(months)-n):] }
+
+// operations selects the same half-open range using the shared chronological index.
+func (c calendar) operations(r Range) []importing.Operation {
+	first := sort.Search(len(c.sortedOps), func(i int) bool { return !c.sortedOps[i].At.Before(r.From) })
+	last := sort.Search(len(c.sortedOps), func(i int) bool { return !c.sortedOps[i].At.Before(r.To) })
+	if last < first {
+		return nil
+	}
+	return c.sortedOps[first:last]
+}

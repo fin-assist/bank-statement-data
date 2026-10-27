@@ -100,16 +100,16 @@ func TestIntegrationCommandServiceMigrationsAndVersions(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	if err := runMigrate(t.Context(), []string{"version"}, &out); err != nil || out.String() != "tombstone\t1\nidempotency\t5\nservice\t6\n" {
+	if err := runMigrate(t.Context(), []string{"version"}, &out); err != nil || out.String() != "tombstone\t1\nidempotency\t5\noutbox\t2\nservice\t7\n" {
 		t.Fatalf("version=%q err=%v", out.String(), err)
 	}
-	for _, args := range [][]string{{"down", "service", "1"}, {"up"}, {"force", "service", "6"}} {
+	for _, args := range [][]string{{"down", "service", "1"}, {"up"}, {"force", "service", "7"}} {
 		if err := runMigrate(t.Context(), args, &bytes.Buffer{}); err != nil {
 			t.Fatalf("operation %v: %v", args, err)
 		}
 	}
 	out.Reset()
-	if err := runMigrate(t.Context(), []string{"version"}, &out); err != nil || out.String() != "tombstone\t1\nidempotency\t5\nservice\t6\n" {
+	if err := runMigrate(t.Context(), []string{"version"}, &out); err != nil || out.String() != "tombstone\t1\nidempotency\t5\noutbox\t2\nservice\t7\n" {
 		t.Fatalf("version=%q err=%v", out.String(), err)
 	}
 	for _, args := range [][]string{{"force", "service", "-2"}, {"down", "service", "0"}, {"version", "extra"}, {"force", "service", "not-a-number"}} {

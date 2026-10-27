@@ -57,7 +57,7 @@ var Vars = []Var{
 	{Name: "HTTP_ADDR", Command: "serve", Default: ":9091",
 		Doc: "`/metrics`, `/healthz`, `/readyz`"},
 	{Name: "PEER_<NAME>_ADDR", Command: "serve",
-		Doc: "адрес другого сервиса: `PEER_BANK_STATEMENT_DATA_ADDR` → `cfg.Peers[\"bank-statement-data\"]`. k3s: `dns:///bank-statement-data.finassist.svc.cluster.local:9090`; стенд: `dns:///127.0.0.1:9092`. `PEER_USER_ADDR` обязателен при `AUTH_MODE=verify`: ключи access JWT (`GetSigningKeys`)"},
+		Doc: "адрес другого сервиса: `PEER_BANK_STATEMENT_DATA_ADDR` → `cfg.Peers[\"bank-statement-data\"]`. k3s: `dns:///bank-statement-data.finassist.svc.cluster.local:9090`; стенд: `dns:///127.0.0.1:9092`. `PEER_ANALYTICS_ADDR` обязателен для доставки метрик; `PEER_USER_ADDR` обязателен при `AUTH_MODE=verify`: ключи access JWT (`GetSigningKeys`)"},
 	{Name: "LOG_LEVEL", Command: "serve", Default: "info",
 		Doc: "`debug` добавляет в строку вызова metadata и запрос с замаскированными токенами"},
 	{Name: "LOG_FORMAT", Command: "serve", Default: "json",

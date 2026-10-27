@@ -111,7 +111,7 @@ func TestUnitStartStagesOwnResources(t *testing.T) {
 				},
 			}
 			env, cleanup, err := start(t, ctx, "test-owned", deps, func(cfg *config.Config) {
-				if cfg.Service != "apitest" || cfg.Env != config.EnvDev || cfg.Auth.Mode != config.AuthInsecureDev || cfg.DB.MaxConns != 4 || cfg.GRPC.MaxRecvMsgSize != 4<<20 || len(cfg.Peers) != 0 {
+				if cfg.Service != "apitest" || cfg.Env != config.EnvDev || cfg.Auth.Mode != config.AuthInsecureDev || cfg.DB.MaxConns != 4 || cfg.GRPC.MaxRecvMsgSize != 4<<20 || len(cfg.Peers) != 1 || cfg.Peers["analytics"] == "" {
 					t.Fatalf("defaults: %+v", cfg)
 				}
 				cfg.Service = "custom"

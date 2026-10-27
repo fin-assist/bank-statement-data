@@ -870,6 +870,8 @@ func TestIntegrationPurgeUserRemovesEverything(t *testing.T) {
 	exec(t, conn, `INSERT INTO regular_payment (user_id, periodicity, description) VALUES ($1, 'monthly', 'x')`, a.user)
 	exec(t, conn, `INSERT INTO merchant (user_id, key) VALUES ($1, 'x')`, a.user)
 	exec(t, conn, `INSERT INTO recalc_queue (user_id, month) VALUES ($1, '2026-09-01')`, a.user)
+	exec(t, conn, `INSERT INTO metrics_publication(user_id)VALUES($1)`, a.user)
+	exec(t, conn, `INSERT INTO metrics_delivery(id,user_id,calc_version,payload,final)VALUES('01a10800-0000-7000-8000-0000000000bb',$1,1,'private financial bytes'::bytea,false)`, a.user)
 	exec(t, conn, `UPDATE operation SET transfer_pair_id = '01a10800-0000-7000-8000-0000000000aa' WHERE user_id = $1 AND id IN ($2, $3)`,
 		a.user, a.operation, newOp(t, conn, a, "income", time.Minute).id)
 

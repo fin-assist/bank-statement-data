@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -42,6 +43,8 @@ type Env struct {
 	Conn    *grpc.ClientConn
 	DSN     string             // the test database, for arranging and checking rows directly
 	Objects *testobjects.Store // owned TLS provider fixture, for explicit cloud failure scenarios
+	// Stop closes this process assembly; its test-owned database and objects remain until cleanup.
+	Stop func()
 }
 
 // Start runs the service for the test and stops it at the end. mutate, if given, adjusts
@@ -55,6 +58,9 @@ func Start(t *testing.T, mutate ...func(*config.Config)) *Env {
 func StartWith(t *testing.T, options app.Options, mutate ...func(*config.Config)) *Env {
 	t.Helper()
 	objects := testobjects.New(t)
+	if options.RecalculationClock == nil {
+		options.RecalculationClock = quietScheduler{}
+	}
 	deps := realDependencies()
 	deps.assemble = func(ctx context.Context, cfg config.Config) (*app.App, service, func(), error) {
 		objects.Configure(&cfg)
@@ -70,7 +76,9 @@ func StartWith(t *testing.T, options app.Options, mutate ...func(*config.Config)
 		t.Fatal(err)
 	}
 	env.Objects = objects
-	t.Cleanup(closeEnv)
+	var once sync.Once
+	env.Stop = func() { once.Do(closeEnv) }
+	t.Cleanup(env.Stop)
 	return env
 }
 
@@ -130,7 +138,7 @@ func start(t testing.TB, ctx context.Context, dsn string, deps dependencies, mut
 		Service: "apitest", Env: config.EnvDev,
 		Auth: config.AuthConfig{Mode: config.AuthInsecureDev},
 		DB:   config.DBConfig{PrimaryDSN: dsn, MaxConns: 4},
-		GRPC: config.GRPCConfig{MaxRecvMsgSize: 4 << 20}, Peers: map[string]string{}, DailyRecalculationOffset: testconfig.DefaultDailyRecalculationOffset(t),
+		GRPC: config.GRPCConfig{MaxRecvMsgSize: 4 << 20}, Peers: map[string]string{"analytics": "passthrough:///analytics.invalid:9090"}, DailyRecalculationOffset: testconfig.DefaultDailyRecalculationOffset(t),
 	}
 	for _, m := range mutate {
 		m(&cfg)

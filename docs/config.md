@@ -51,7 +51,7 @@
 | `GRPC_ADDR` | `:9090` | gRPC |
 | `GRPC_MAX_RECV_MSG_SIZE` | `4194304` | байт, предел размера входящего сообщения. Лимит 16 МиБ из grpc-api.md 9 относится к ответу `SearchOperations`, а не к запросам: приём не поднимать без метода с большим запросом |
 | `HTTP_ADDR` | `:9091` | `/metrics`, `/healthz`, `/readyz` |
-| `PEER_<NAME>_ADDR` | — | адрес другого сервиса: `PEER_BANK_STATEMENT_DATA_ADDR` → `cfg.Peers["bank-statement-data"]`. k3s: `dns:///bank-statement-data.finassist.svc.cluster.local:9090`; стенд: `dns:///127.0.0.1:9092`. `PEER_USER_ADDR` обязателен при `AUTH_MODE=verify`: ключи access JWT (`GetSigningKeys`) |
+| `PEER_<NAME>_ADDR` | — | адрес другого сервиса: `PEER_BANK_STATEMENT_DATA_ADDR` → `cfg.Peers["bank-statement-data"]`. k3s: `dns:///bank-statement-data.finassist.svc.cluster.local:9090`; стенд: `dns:///127.0.0.1:9092`. `PEER_ANALYTICS_ADDR` обязателен для доставки метрик; `PEER_USER_ADDR` обязателен при `AUTH_MODE=verify`: ключи access JWT (`GetSigningKeys`) |
 | `LOG_LEVEL` | `info` | `debug` добавляет в строку вызова metadata и запрос с замаскированными токенами |
 | `LOG_FORMAT` | `json` | `json` или `text` |
 | `SHUTDOWN_DELAY` | `5s` | после `NOT_SERVING` сервер ещё принимает вызовы, пока балансировщики не уберут под |
