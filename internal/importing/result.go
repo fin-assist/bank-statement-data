@@ -4,6 +4,8 @@ import (
 	"context"
 	"math"
 	"time"
+
+	"github.com/fin-assist/bank-statement-data/internal/accounting"
 )
 
 // ResultInput combines source rows with the complete committed accounting state.
@@ -119,21 +121,15 @@ func BuildResult(ctx context.Context, in ResultInput) (Result, error) {
 		case op.Category == UncategorizedCategory || op.Category == RefundCategory && op.RefundTarget == UncategorizedCategory:
 			result.UncategorizedCount++
 		}
-		// Native operations and counts are retained, but USD minor units cannot be
-		// added to RUB. MVP has no exchange-rate conversion (calc.md 1).
-		if op.Currency != "RUB" || op.PairID != "" || op.Category == OwnTransferCategory {
+		kind, _, amount, include := accounting.Classify(accounting.Fact{Direction: op.Direction, Category: op.Category, RefundTarget: op.RefundTarget, PairID: op.PairID, Currency: op.Currency, AmountMinor: op.AmountMinor}, "with")
+		if !include {
 			continue
 		}
-		var target *int64
-		amount := op.AmountMinor
-		if op.Category == RefundCategory {
-			target = &totals.ExpenseMinor
-			amount = -amount
-		} else if op.Direction == "expense" {
-			target = &totals.ExpenseMinor
-		} else {
+		target := &totals.ExpenseMinor
+		if kind == "income" {
 			target = &totals.IncomeMinor
 		}
+
 		if !addMinor(target, amount) {
 			return Result{}, errAccounting
 		}

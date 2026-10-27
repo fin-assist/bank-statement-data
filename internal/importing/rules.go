@@ -6,17 +6,19 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/fin-assist/bank-statement-data/internal/accounting"
 )
 
 const (
 	// OwnTransferCategory excludes self transfers from accounting totals.
-	OwnTransferCategory = "cat_own_transfer"
+	OwnTransferCategory = accounting.OwnTransferCategory
 	// RefundCategory denotes an income transaction which reduces an expense target.
-	RefundCategory = "cat_refund"
+	RefundCategory = accounting.RefundCategory
 	// UncategorizedCategory is also the fallback target of an unmatched refund.
-	UncategorizedCategory = "cat_uncategorized"
+	UncategorizedCategory = accounting.UncategorizedCategory
 	// TransfersCategory is the bank's ordinary transfers category.
-	TransfersCategory = "cat_transfers"
+	TransfersCategory = accounting.TransfersCategory
 )
 
 var errAccounting = errors.New("invalid accounting state")
@@ -28,6 +30,7 @@ type Category struct {
 	Expense  bool
 	Income   bool
 	BankName string
+	Icon     string
 }
 
 // Operation is a durable accounting fact, independent of public transport shape.
@@ -188,7 +191,7 @@ func ownTransfer(o Operation) bool {
 }
 
 func compatiblePair(a, b Operation) bool {
-	return a.Direction != b.Direction && a.AccountID != b.AccountID && a.AmountMinor == b.AmountMinor && a.Currency == b.Currency && distance(a.At, b.At) <= 72*time.Hour
+	return a.Direction != b.Direction && a.AccountID != b.AccountID && a.AmountMinor == b.AmountMinor && a.Currency == b.Currency && distance(a.At, b.At) <= accounting.PairWindow
 }
 
 func distance(a, b time.Time) time.Duration {
@@ -213,7 +216,7 @@ func lastExpense(ctx context.Context, previous []Operation, refund Operation, by
 			if refund.Description != "" && o.Description != "" && strings.EqualFold(o.Description, refund.Description) {
 				return i, nil
 			}
-		} else if o.AccountID == refund.AccountID && o.AmountMinor == refund.AmountMinor && refund.At.Sub(o.At) <= 60*24*time.Hour {
+		} else if o.AccountID == refund.AccountID && o.AmountMinor == refund.AmountMinor && refund.At.Sub(o.At) <= accounting.RefundWindow {
 			return i, nil
 		}
 	}

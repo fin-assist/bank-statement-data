@@ -4,6 +4,8 @@ import (
 	"context"
 	"sort"
 	"time"
+
+	"github.com/fin-assist/bank-statement-data/internal/accounting"
 )
 
 // TimeRange is a half-open interval in the profile's calendar.
@@ -119,23 +121,16 @@ func EvaluateCoverage(ctx context.Context, before, after []Period, operationTime
 		}
 		result.IncompleteMonths = append(result.IncompleteMonths, incomplete)
 	}
-	for _, feature := range []struct {
-		name  string
-		full  int
-		month int
-	}{
-		{"comparison", 1, 0}, {"monthly_chart", 0, 2}, {"typical", 2, 0},
-		{"regular_payments", 2, 0}, {"notable_spending", 3, 0}, {"small_frequent", 1, 0}, {"year_forecast", 12, 0},
-	} {
-		open := len(full) >= feature.full && len(months) >= feature.month
-		wasOpen := len(oldFull) >= feature.full && len(oldMonths) >= feature.month
-		availability := FeatureAvailability{Feature: feature.name, Open: open, OpenedNow: open && !wasOpen}
+	for _, feature := range accounting.Features() {
+		open := len(full) >= feature.FullMonths && len(months) >= feature.MonthsWithData
+		wasOpen := len(oldFull) >= feature.FullMonths && len(oldMonths) >= feature.MonthsWithData
+		availability := FeatureAvailability{Feature: feature.Name, Open: open, OpenedNow: open && !wasOpen}
 		if !open {
-			if feature.full > 0 {
-				value := feature.full
+			if feature.FullMonths > 0 {
+				value := feature.FullMonths
 				availability.RequiredFullMonths = &value
 			} else {
-				value := feature.month
+				value := feature.MonthsWithData
 				availability.RequiredMonthsWithData = &value
 			}
 		}

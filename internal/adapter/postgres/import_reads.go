@@ -60,7 +60,7 @@ func (r *Imports) Snapshot(ctx context.Context, user string) (importing.Snapshot
 	if err != nil {
 		return state, errImportStorage
 	}
-	rows, err := r.db.Writer(ctx).Query(ctx, `SELECT c.id,c.name,c.for_expense,c.for_income,COALESCE(c.bank_name,'') FROM category c
+	rows, err := r.db.Writer(ctx).Query(ctx, `SELECT c.id,c.name,c.for_expense,c.for_income,COALESCE(c.bank_name,''),c.icon FROM category c
  WHERE c.is_system OR c.is_known OR c.id IN (
  SELECT unnest(ARRAY[o.bank_category_id,o.category_id,o.manual_category_id,o.refund_target_category_id])
  FROM operation o WHERE o.user_id=$1)`, user)
@@ -69,7 +69,7 @@ func (r *Imports) Snapshot(ctx context.Context, user string) (importing.Snapshot
 	}
 	for rows.Next() {
 		var category importing.Category
-		if err := rows.Scan(&category.ID, &category.Name, &category.Expense, &category.Income, &category.BankName); err != nil {
+		if err := rows.Scan(&category.ID, &category.Name, &category.Expense, &category.Income, &category.BankName, &category.Icon); err != nil {
 			rows.Close()
 			return state, importError(ctx, err)
 		}

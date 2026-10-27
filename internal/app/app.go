@@ -22,20 +22,22 @@ import (
 	"github.com/fin-assist/go-worker"
 
 	"github.com/fin-assist/bank-statement-data/internal/adapter/postgres"
+	"github.com/fin-assist/bank-statement-data/internal/calculating"
 	"github.com/fin-assist/bank-statement-data/internal/config"
 	"github.com/fin-assist/bank-statement-data/internal/importing"
 )
 
 // App is the assembled service. Wire reads its fields to build adapters and usecases.
 type App struct {
-	Cfg     config.Config
-	Log     *slog.Logger
-	DB      *postgres.DB
-	GRPC    *server.Server
-	Clients *client.Metrics
-	Tokens  client.TokenSource
-	Jobs    []worker.Job
-	Imports *importing.Service
+	Cfg          config.Config
+	Log          *slog.Logger
+	DB           *postgres.DB
+	GRPC         *server.Server
+	Clients      *client.Metrics
+	Tokens       client.TokenSource
+	Jobs         []worker.Job
+	Imports      *importing.Service
+	Calculations *calculating.Service
 
 	closers []func()
 }

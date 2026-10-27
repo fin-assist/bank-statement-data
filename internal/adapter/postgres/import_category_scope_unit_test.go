@@ -46,7 +46,7 @@ func (tx *categoryScopeTx) Query(_ context.Context, q string, args ...any) (pgx.
 	return &perfRows{}, nil
 }
 func TestUnitSnapshotCategoryIOForwardsActorAndPreservesProjection(t *testing.T) {
-	tx := &categoryScopeTx{rows: &categoryScopeRows{values: [][]any{{"one", "Expense", true, false, "bank expense"}, {"two", "Income", false, true, ""}}}}
+	tx := &categoryScopeTx{rows: &categoryScopeRows{values: [][]any{{"one", "Expense", true, false, "bank expense", "cart"}, {"two", "Income", false, true, "", "tag"}}}}
 	db := &DB{transactions: pgstore.New(unitBeginner{tx})}
 	if err := db.Run(t.Context(), func(ctx context.Context) error {
 		got, err := NewImports(db).Snapshot(ctx, "actor-A")
@@ -56,7 +56,7 @@ func TestUnitSnapshotCategoryIOForwardsActorAndPreservesProjection(t *testing.T)
 		if len(tx.categoryArgs) != 1 || tx.categoryArgs[0] != "actor-A" || !tx.rows.closed {
 			t.Fatal("category read lost actor or connection", tx.categoryArgs)
 		}
-		if len(got.Categories) != 2 || !got.Categories["one"].Expense || got.Categories["one"].Income || got.Categories["one"].BankName != "bank expense" || !got.Categories["two"].Income || got.Categories["two"].Expense || got.Categories["two"].Name != "Income" {
+		if len(got.Categories) != 2 || !got.Categories["one"].Expense || got.Categories["one"].Income || got.Categories["one"].BankName != "bank expense" || got.Categories["one"].Icon != "cart" || !got.Categories["two"].Income || got.Categories["two"].Expense || got.Categories["two"].Name != "Income" {
 			t.Fatal("category projection changed", got.Categories)
 		}
 		return nil
@@ -67,7 +67,7 @@ func TestUnitSnapshotCategoryIOForwardsActorAndPreservesProjection(t *testing.T)
 func TestUnitSnapshotCategoryIOErrorsCloseRowsAndRefuseSnapshot(t *testing.T) {
 	failure := errors.New("private category driver text")
 	for _, phase := range []string{"query", "scan", "rows"} {
-		tx := &categoryScopeTx{rows: &categoryScopeRows{values: [][]any{{"one", "Name", true, false, "Bank"}}}}
+		tx := &categoryScopeTx{rows: &categoryScopeRows{values: [][]any{{"one", "Name", true, false, "Bank", "tag"}}}}
 		switch phase {
 		case "query":
 			tx.failure = failure
