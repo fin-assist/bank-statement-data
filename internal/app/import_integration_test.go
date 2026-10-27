@@ -21,6 +21,7 @@ import (
 	"github.com/fin-assist/bank-statement-data/internal/app"
 	"github.com/fin-assist/bank-statement-data/internal/config"
 	"github.com/fin-assist/bank-statement-data/internal/importing"
+	"github.com/fin-assist/bank-statement-data/internal/testconfig"
 	"github.com/fin-assist/bank-statement-data/internal/testdb"
 	"github.com/fin-assist/bank-statement-data/internal/testobjects"
 )
@@ -34,7 +35,7 @@ func importAssembly(t *testing.T, clocks ...func() time.Time) (*app.App, *testob
 		t.Fatal(err)
 	}
 	objects := testobjects.New(t)
-	cfg := config.Config{Service: "bank-statement-data", Env: config.EnvDev, Auth: config.AuthConfig{Mode: config.AuthInsecureDev}, DB: config.DBConfig{PrimaryDSN: dsn, MaxConns: 2}, GRPC: config.GRPCConfig{MaxRecvMsgSize: 4 << 20}, DailyRecalculationOffset: 5 * time.Minute}
+	cfg := config.Config{Service: "bank-statement-data", Env: config.EnvDev, Auth: config.AuthConfig{Mode: config.AuthInsecureDev}, DB: config.DBConfig{PrimaryDSN: dsn, MaxConns: 2}, GRPC: config.GRPCConfig{MaxRecvMsgSize: 4 << 20}, DailyRecalculationOffset: testconfig.DefaultDailyRecalculationOffset(t)}
 	objects.Configure(&cfg)
 	opts := app.Options{ObjectClient: objects.Server.Client()}
 	if len(clocks) > 0 {

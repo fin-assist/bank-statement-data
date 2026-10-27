@@ -9,6 +9,7 @@ import (
 
 	"github.com/fin-assist/bank-statement-data/internal/adapter/postgres"
 	"github.com/fin-assist/bank-statement-data/internal/importing"
+	"github.com/fin-assist/bank-statement-data/internal/testconfig"
 	"github.com/fin-assist/bank-statement-data/internal/testdb"
 )
 
@@ -127,7 +128,7 @@ func TestIntegrationReferenceBatchUsesPrefixOwnerAndOnlyActivePrimaryRows(t *tes
 		t.Fatal(err)
 	}
 	defer routed.Close()
-	got, err := postgres.NewImports(routed, 5*time.Minute).ReferencedBatch(t.Context(), keys)
+	got, err := postgres.NewImports(routed, testconfig.DefaultDailyRecalculationOffset(t)).ReferencedBatch(t.Context(), keys)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +138,7 @@ func TestIntegrationReferenceBatchUsesPrefixOwnerAndOnlyActivePrimaryRows(t *tes
 	if _, err := f.db.Primary().Exec(t.Context(), `INSERT INTO tombstone_users(user_id,deleted_at)VALUES($1,$2)`, b, f.now); err != nil {
 		t.Fatal(err)
 	}
-	retired, err := postgres.NewImports(routed, 5*time.Minute).ReferencedBatch(t.Context(), keys)
+	retired, err := postgres.NewImports(routed, testconfig.DefaultDailyRecalculationOffset(t)).ReferencedBatch(t.Context(), keys)
 	if err != nil || len(retired) != 2 || retired[keys[1]] {
 		t.Fatal("retired retained reference cannot suppress erasure", retired, err)
 	}

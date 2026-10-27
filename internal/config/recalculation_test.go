@@ -7,13 +7,14 @@ import (
 )
 
 func TestUnitDailyRecalculationOffsetEnvironmentValues(t *testing.T) {
+	wantDefault := 5 * time.Minute
 	for _, test := range []struct {
 		name, value string
 		present     bool
 		want        time.Duration
 	}{
-		{"unset default", "", false, 5 * time.Minute},
-		{"empty default", "", true, 5 * time.Minute},
+		{"unset default", "", false, wantDefault},
+		{"empty default", "", true, wantDefault},
 		{"configured ten minutes", "10m", true, 10 * time.Minute},
 		{"explicit zero without unit", "0", true, 0},
 		{"explicit zero duration", "0s", true, 0},

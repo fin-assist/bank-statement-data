@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/fin-assist/bank-statement-data/internal/adapter/postgres"
+	"github.com/fin-assist/bank-statement-data/internal/testconfig"
 )
 
 func batchCoverage(t *testing.T, f *importPG, user, from, to string) {
@@ -62,7 +63,7 @@ func TestIntegrationRecalculationBatchDeduplicatesResetsWrapsAndRollsBack(t *tes
 		t.Fatal(err)
 	}
 	foreignBefore, foreignDue := batchScheduleState(t, f, other)
-	repo := postgres.NewOperations(f.db, 5*time.Minute)
+	repo := postgres.NewOperations(f.db, testconfig.DefaultDailyRecalculationOffset(t))
 	for attempt := range 2 {
 		now := f.now.Add(time.Duration(attempt) * time.Hour)
 		if err := f.db.Run(t.Context(), func(ctx context.Context) error {
@@ -108,13 +109,13 @@ func TestIntegrationDailyRecalculationUsesLocalCivilDayAndExistingGapRules(t *te
 		name, zone, now, want string
 		offset                time.Duration
 	}{
-		{"before offset", "UTC", "2026-10-01T00:04:00Z", "2026-10-01T00:05:00Z", 5 * time.Minute},
-		{"at offset", "UTC", "2026-10-01T00:05:00Z", "2026-10-02T00:05:00Z", 5 * time.Minute},
-		{"spring DST", "Europe/Berlin", "2026-03-28T23:06:00Z", "2026-03-29T22:05:00Z", 5 * time.Minute},
-		{"fall DST", "Europe/Berlin", "2026-10-24T22:06:00Z", "2026-10-25T23:05:00Z", 5 * time.Minute},
-		{"midnight gap", "America/Havana", "2012-04-01T04:30:00Z", "2012-04-01T05:05:00Z", 5 * time.Minute},
-		{"inside first real hour", "America/Havana", "2012-04-01T05:01:00Z", "2012-04-01T05:05:00Z", 5 * time.Minute},
-		{"skipped date", "Pacific/Apia", "2011-12-30T09:59:00Z", "2011-12-30T10:05:00Z", 5 * time.Minute},
+		{"before offset", "UTC", "2026-10-01T00:04:00Z", "2026-10-01T00:05:00Z", testconfig.DefaultDailyRecalculationOffset(t)},
+		{"at offset", "UTC", "2026-10-01T00:05:00Z", "2026-10-02T00:05:00Z", testconfig.DefaultDailyRecalculationOffset(t)},
+		{"spring DST", "Europe/Berlin", "2026-03-28T23:06:00Z", "2026-03-29T22:05:00Z", testconfig.DefaultDailyRecalculationOffset(t)},
+		{"fall DST", "Europe/Berlin", "2026-10-24T22:06:00Z", "2026-10-25T23:05:00Z", testconfig.DefaultDailyRecalculationOffset(t)},
+		{"midnight gap", "America/Havana", "2012-04-01T04:30:00Z", "2012-04-01T05:05:00Z", testconfig.DefaultDailyRecalculationOffset(t)},
+		{"inside first real hour", "America/Havana", "2012-04-01T05:01:00Z", "2012-04-01T05:05:00Z", testconfig.DefaultDailyRecalculationOffset(t)},
+		{"skipped date", "Pacific/Apia", "2011-12-30T09:59:00Z", "2011-12-30T10:05:00Z", testconfig.DefaultDailyRecalculationOffset(t)},
 
 		{"custom before offset", "UTC", "2026-10-01T00:06:00Z", "2026-10-01T00:10:00Z", 10 * time.Minute},
 		{"custom exact offset", "UTC", "2026-10-01T00:10:00Z", "2026-10-02T00:10:00Z", 10 * time.Minute},
@@ -159,7 +160,7 @@ func TestIntegrationDailyRecalculationUsesLocalCivilDayAndExistingGapRules(t *te
 		t.Fatal(err)
 	}
 	if err := f.db.Run(t.Context(), func(ctx context.Context) error {
-		return postgres.NewOperations(f.db, 5*time.Minute).Enqueue(ctx, user, f.now)
+		return postgres.NewOperations(f.db, testconfig.DefaultDailyRecalculationOffset(t)).Enqueue(ctx, user, f.now)
 	}); err != nil {
 		t.Fatal(err)
 	}

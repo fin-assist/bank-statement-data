@@ -48,6 +48,7 @@ updates them in the same PR. A service made from the template rewrites the first
 | gRPC handlers (messages ↔ usecases) | `internal/adapter/grpc/<feature>/` |
 | Primary/replica routing, go-postgres.OpenPools/transaction adapter, repositories | `internal/adapter/postgres/`; rules — `docs/migrations.md`, «Запросы на pgx» |
 | Migration runner and public test harness | `github.com/fin-assist/go-migrate` / `migratetest` v0.2.0; ordered service sources — `internal/app/` |
+| Fixture configuration defaults read from canonical config declarations (no separate defaults) | `internal/testconfig/`; never wired into serve; counted in every profile |
 | Test PostgreSQL server selection (not runtime business code) | `internal/testdb/`; public migratetest creates/checks databases; counted in every profile |
 | Stand identity for verify-mode tests: key files, signed tokens, user GetSigningKeys peer | `internal/testidentity/`; never wired into serve; counted in every profile |
 | SQL migrations (embedded) and schema constraint tests | `migrations/` (`schema_test.go`); rules — `docs/migrations.md`, schema and code invariants — `docs/schema.md` |
@@ -82,7 +83,7 @@ and <job> describe future application code only, not actual empty directories in
 The service test entrypoint selects a PostgreSQL18 admin DSN (external server or testcontainer) in internal/testdb.
 Public migratetest.DSN(t, adminDSN) creates and cleans its own isolated database;
 migratetest.CheckUpDownUp(t, dsn, source) uses the supplied database without owning/dropping it.
-Keep cleanup and cancellation bounded. internal/testdb and internal/app/apitest ordinary .go files remain counted
+Keep cleanup and cancellation bounded. internal/testconfig, internal/testdb and internal/app/apitest ordinary .go files remain counted
 in all three service profiles; there is no service pgtest exclusion. See docs/testing.md.
 
 ### Stack

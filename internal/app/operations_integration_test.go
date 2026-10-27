@@ -14,6 +14,7 @@ import (
 	"github.com/fin-assist/bank-statement-data/internal/adapter/postgres"
 	"github.com/fin-assist/bank-statement-data/internal/importing"
 	"github.com/fin-assist/bank-statement-data/internal/operations"
+	"github.com/fin-assist/bank-statement-data/internal/testconfig"
 )
 
 func TestIntegrationOperationLedgerSelectionsEditsAndReferences(t *testing.T) {
@@ -248,7 +249,7 @@ func TestIntegrationOperationEditDeleteConcurrencyAndCoherentRouting(t *testing.
 		t.Fatal("deleted row resurrected", count, err)
 	}
 	// Foreign transaction ownership is still refused by the shared DB adapter.
-	if _, err = postgres.NewOperations(a.DB, 5*time.Minute).SelectionKey(ctx, apiUser, "unknown", uuid.NewString()); !errors.Is(err, operations.ErrSelection) {
+	if _, err = postgres.NewOperations(a.DB, testconfig.DefaultDailyRecalculationOffset(t)).SelectionKey(ctx, apiUser, "unknown", uuid.NewString()); !errors.Is(err, operations.ErrSelection) {
 		t.Fatal(err)
 	}
 }

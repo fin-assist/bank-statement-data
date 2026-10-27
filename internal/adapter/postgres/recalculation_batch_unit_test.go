@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/fin-assist/bank-statement-data/internal/importing"
+	"github.com/fin-assist/bank-statement-data/internal/testconfig"
 )
 
 type scheduleSQLTx struct {
@@ -43,7 +44,7 @@ func TestUnitScheduleQueuesDistinctMonthsInOneStatement(t *testing.T) {
 	db := &DB{transactions: pgstore.New(unitBeginner{tx})}
 	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	if err := db.Run(t.Context(), func(ctx context.Context) error {
-		return NewImports(db, 5*time.Minute).schedule(ctx, "actor", operations, now)
+		return NewImports(db, testconfig.DefaultDailyRecalculationOffset(t)).schedule(ctx, "actor", operations, now)
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +80,7 @@ func TestUnitScheduleEmptyHistorySkipsQueueAndBatchFailureDoesNotUpdateDue(t *te
 		}
 		db := &DB{transactions: pgstore.New(unitBeginner{tx})}
 		err := db.Run(t.Context(), func(ctx context.Context) error {
-			return NewImports(db, 5*time.Minute).schedule(ctx, "actor", operations, time.Now())
+			return NewImports(db, testconfig.DefaultDailyRecalculationOffset(t)).schedule(ctx, "actor", operations, time.Now())
 		})
 		if fail {
 			if !errors.Is(err, errImportStorage) || tx.queueCalls != 1 || tx.dueCalls != 0 {

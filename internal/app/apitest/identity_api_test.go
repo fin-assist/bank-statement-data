@@ -118,7 +118,7 @@ func TestAPIVerifyAssemblyRefusesIncompleteIdentity(t *testing.T) {
 		}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			env, closeEnv, err := start(context.Background(), dsn, realDependencies(), tt.mutate)
+			env, closeEnv, err := start(t, context.Background(), dsn, realDependencies(), tt.mutate)
 			if err == nil {
 				closeEnv()
 				t.Fatalf("started: %v", env != nil)
