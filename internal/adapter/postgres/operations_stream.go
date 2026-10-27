@@ -66,7 +66,7 @@ LEFT JOIN regular_payment r ON r.user_id=$1 AND r.periodicity='monthly' AND r.de
 LEFT JOIN small_stats s ON s.description=o.description AND s.month=to_char(o.occurred_at AT TIME ZONE $4,'YYYY-MM')
 WHERE o.user_id=$1 AND (o.transfer_pair_id IS NULL OR o.direction='expense')
  AND ($2::timestamptz IS NULL OR o.occurred_at >=$2) AND ($3::timestamptz IS NULL OR o.occurred_at <$3)
-ORDER BY o.occurred_at DESC,o.id DESC`
+ORDER BY o.occurred_at DESC,COALESCE(o.transfer_pair_id,o.id) DESC`
 
 // Stream visits one public candidate at a time. The caller stops after 10001
 // matches; even a rare text match in a large all-time ledger does not materialize it.
