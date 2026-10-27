@@ -48,7 +48,7 @@ func (s *Tools) read(ctx context.Context, user string, fn func(context.Context) 
 	return s.admission(ctx, user)
 }
 
-// Version returns committed source timestamps in one routed read transaction.
+// Version returns committed source revisions and legacy timestamps from primary.
 func (s *Tools) Version(ctx context.Context, user string) (out DataVersion, err error) {
 	if err = s.admission(ctx, user); err != nil {
 		return out, err
