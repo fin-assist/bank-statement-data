@@ -42,7 +42,7 @@ updates them in the same PR. A service made from the template rewrites the first
 | Commands `serve`, `migrate`: listeners, shutdown | `cmd/bank-statement-data/` (`serve.go`, `migrate.go`) |
 | Assembly: identity, pools, server; wiring of adapters, usecases and handlers (`wire()`), the access table (`AccessPolicy()`), migration sources | `internal/app/` (`app.go`, `wire.go`) |
 | The whole service in-process for API tests | `internal/app/apitest/` |
-| Entities, shared reference kinds and invariants (no pgx, gRPC or generated code) | `internal/domain/` |
+| Entities, account kind/display constants, daily recalc timing, shared reference kinds and invariants (no pgx, gRPC or generated code) | `internal/domain/` |
 | Usecases and the interfaces of repositories and clients they need | `internal/<feature>/`; financial calculator — `internal/calculating/`, shared definition catalog/classification and cancellable IANA calendar helpers — `internal/accounting/` |
 | Shared gRPC server, client and request context | `github.com/fin-assist/go-grpc/{server,client,reqctx}` v0.2.1; service wiring — `internal/app/`, `docs/server.md` |
 | gRPC handlers (messages ↔ usecases) | `internal/adapter/grpc/<feature>/` |

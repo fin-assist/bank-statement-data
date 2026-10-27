@@ -3,11 +3,13 @@ package postgres
 import (
 	"context"
 	"errors"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/fin-assist/bank-statement-data/internal/accounting"
+	"github.com/fin-assist/bank-statement-data/internal/domain"
 	"github.com/fin-assist/bank-statement-data/internal/importing"
 )
 
@@ -229,8 +231,15 @@ func (r *Imports) schedule(ctx context.Context, user string, operations []import
 	if err != nil {
 		return importError(ctx, err)
 	}
-	for month := range months {
-		_, err := r.db.Writer(ctx).Exec(ctx, `INSERT INTO recalc_queue(user_id,month,enqueued_at,next_attempt_at) VALUES($1,$2::date,$3,$3) ON CONFLICT(user_id,month) DO UPDATE SET generation=CASE WHEN recalc_queue.generation=32767 THEN 1 ELSE recalc_queue.generation+1 END,enqueued_at=EXCLUDED.enqueued_at,next_attempt_at=EXCLUDED.next_attempt_at,attempts=0,last_error=NULL`, user, month, now)
+	if len(months) > 0 {
+		keys := make([]string, 0, len(months))
+		for month := range months {
+			keys = append(keys, month)
+		}
+		sort.Strings(keys)
+		_, err := r.db.Writer(ctx).Exec(ctx, `INSERT INTO recalc_queue(user_id,month,enqueued_at,next_attempt_at)
+ SELECT $1,month::date,$3,$3 FROM unnest($2::text[]) AS months(month)
+ ON CONFLICT(user_id,month) DO UPDATE SET generation=CASE WHEN recalc_queue.generation=32767 THEN 1 ELSE recalc_queue.generation+1 END,enqueued_at=EXCLUDED.enqueued_at,next_attempt_at=EXCLUDED.next_attempt_at,attempts=0,last_error=NULL`, user, keys, now)
 		if err != nil {
 			return importError(ctx, err)
 		}
@@ -238,9 +247,9 @@ func (r *Imports) schedule(ctx context.Context, user string, operations []import
 	var due any
 	if len(months) > 0 {
 		local := now.In(zone)
-		next := accounting.StartOfDay(local, zone).Add(5 * time.Minute)
+		next := accounting.StartOfDay(local, zone).Add(domain.DailyRecalculationOffset)
 		if !next.After(now) {
-			next = accounting.AddDays(accounting.StartOfDay(local, zone), 1).Add(5 * time.Minute)
+			next = accounting.AddDays(accounting.StartOfDay(local, zone), 1).Add(domain.DailyRecalculationOffset)
 		}
 		due = next
 	}
