@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/fin-assist/bank-statement-data/internal/domain"
 	"github.com/fin-assist/bank-statement-data/internal/importing"
 )
 
@@ -402,7 +403,7 @@ func appendStatement(doc *importing.Document, account, period map[string]string,
 	}
 	kind := strings.ToLower(account["ACCTTYPE"])
 	if kind == "" {
-		kind = "checking"
+		kind = domain.AccountKindChecking
 	}
 	a := importing.Account{Key: key, Type: kind, OtherBank: other}
 	if !other {

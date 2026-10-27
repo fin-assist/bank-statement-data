@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/fin-assist/bank-statement-data/internal/domain"
 	"github.com/fin-assist/bank-statement-data/internal/operations"
 )
 
@@ -122,21 +123,21 @@ func finishRows(ctx context.Context, rows pgx.Rows, err error) error {
 }
 
 func displayAccount(kind string, mask *string, other bool) operations.Account {
-	name := "Счёт"
+	name := domain.AccountNameGeneric
 	switch kind {
-	case "checking":
-		name = "Текущий"
-	case "savings":
-		name = "Накопительный"
-	case "credit":
-		name = "Кредитный"
+	case domain.AccountKindChecking:
+		name = domain.AccountNameChecking
+	case domain.AccountKindSavings:
+		name = domain.AccountNameSavings
+	case domain.AccountKindCredit:
+		name = domain.AccountNameCredit
 	}
 	if other {
-		name = "Счёт другого банка"
+		name = domain.AccountNameOtherBank
 		mask = nil
 	}
 	spoken := strings.ToLower(name) + " счёт"
-	if name == "Счёт" || other {
+	if name == domain.AccountNameGeneric || other {
 		spoken = strings.ToLower(name)
 	}
 	var display *string
