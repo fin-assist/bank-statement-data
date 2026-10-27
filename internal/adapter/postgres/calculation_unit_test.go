@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/fin-assist/bank-statement-data/internal/domain"
+	"github.com/fin-assist/bank-statement-data/internal/testconfig"
 
 	pgstore "github.com/fin-assist/go-postgres"
 	"github.com/jackc/pgx/v5"
@@ -29,7 +30,7 @@ func TestUnitCalculationReferenceValidatesOwnershipAndProjectsStableFields(t *te
 	for _, kind := range []string{domain.ReferenceKindRegular, domain.ReferenceKindMerchant} {
 		tx := &referenceTx{row: importScanRow{values: []any{id, true}}}
 		db := &DB{transactions: pgstore.New(unitBeginner{tx})}
-		repo := NewImports(db)
+		repo := NewImports(db, testconfig.DefaultDailyRecalculationOffset(t))
 		if _, err := repo.Reference(t.Context(), user, kind, "Private name"); err == nil {
 			t.Fatal("outside owned transaction")
 		}

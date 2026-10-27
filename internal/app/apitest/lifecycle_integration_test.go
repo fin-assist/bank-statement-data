@@ -71,7 +71,7 @@ func TestIntegrationStartIsolatesConfigurationDatabaseAndCleanup(t *testing.T) {
 
 func TestIntegrationStartRefusesAssemblyAfterRealMigrations(t *testing.T) {
 	dsn := testdb.DSN(t)
-	env, cleanup, err := start(t.Context(), dsn, realDependencies(), func(cfg *config.Config) { cfg.Auth.Mode = config.AuthVerify })
+	env, cleanup, err := start(t, t.Context(), dsn, realDependencies(), func(cfg *config.Config) { cfg.Auth.Mode = config.AuthVerify })
 	if err == nil || !strings.HasPrefix(err.Error(), "app:") || env != nil || cleanup != nil {
 		t.Fatalf("assembly refusal: %v %v", env, err)
 	}

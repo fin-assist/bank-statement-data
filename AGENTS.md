@@ -42,18 +42,19 @@ updates them in the same PR. A service made from the template rewrites the first
 | Commands `serve`, `migrate`: listeners, shutdown | `cmd/bank-statement-data/` (`serve.go`, `migrate.go`) |
 | Assembly: identity, pools, server; wiring of adapters, usecases and handlers (`wire()`), the access table (`AccessPolicy()`), migration sources | `internal/app/` (`app.go`, `wire.go`) |
 | The whole service in-process for API tests | `internal/app/apitest/` |
-| Entities, shared reference kinds and invariants (no pgx, gRPC or generated code) | `internal/domain/` |
+| Entities, account kind/display constants, shared reference kinds and invariants (no pgx, gRPC or generated code) | `internal/domain/` |
 | Usecases and the interfaces of repositories and clients they need | `internal/<feature>/`; financial calculator — `internal/calculating/`, shared definition catalog/classification and cancellable IANA calendar helpers — `internal/accounting/` |
 | Shared gRPC server, client and request context | `github.com/fin-assist/go-grpc/{server,client,reqctx}` v0.2.1; service wiring — `internal/app/`, `docs/server.md` |
 | gRPC handlers (messages ↔ usecases) | `internal/adapter/grpc/<feature>/` |
 | Primary/replica routing, go-postgres.OpenPools/transaction adapter, repositories | `internal/adapter/postgres/`; rules — `docs/migrations.md`, «Запросы на pgx» |
 | Migration runner and public test harness | `github.com/fin-assist/go-migrate` / `migratetest` v0.2.0; ordered service sources — `internal/app/` |
+| Fixture configuration defaults read from canonical config declarations (no separate defaults) | `internal/testconfig/`; never wired into serve; counted in every profile |
 | Test PostgreSQL server selection (not runtime business code) | `internal/testdb/`; public migratetest creates/checks databases; counted in every profile |
 | Stand identity for verify-mode tests: key files, signed tokens, user GetSigningKeys peer | `internal/testidentity/`; never wired into serve; counted in every profile |
 | SQL migrations (embedded) and schema constraint tests | `migrations/` (`schema_test.go`); rules — `docs/migrations.md`, schema and code invariants — `docs/schema.md` |
 | Application-specific peer adapters, when needed | `internal/adapter/client/<peer>/`; shared dialing/token contracts — go-grpc/client |
 | Shared job lifecycle; application jobs when needed | `github.com/fin-assist/go-worker` v0.1.1; `internal/worker/<job>/` |
-| Configuration: every variable with its default and description | `internal/config/vars.go` (`Vars`); generated tables — `docs/config.md` |
+| Configuration: every variable with its default and description; daily recalc offset is explicitly passed by app to repositories | `internal/config/vars.go` (`Vars`); generated tables — `docs/config.md` |
 | Request-scoped values (request ID, caller, user, bank-bff hints) | `github.com/fin-assist/go-grpc/reqctx` |
 | Logger, metrics endpoint, readiness | `internal/logx/`, `internal/ops/` |
 | Image, local run, stand | `Dockerfile`, `compose.yaml`, `Makefile`, `deploy/systemd/` |
@@ -70,6 +71,7 @@ go-tombstone v0.1.0 supplies the first migration source and the primary-backed g
 FIN-342 wires guarded import writes, UserDeletionService.PurgeUserData and settings sync.
 Import usecases/rules/results live in internal/importing; adapters in adapter/{ofx,objectstore,statementwire,grpc/statements,postgres}.
 FIN-355 assembles App.Calculations for internal worker use: both transfer modes, pure calculation from committed facts, durable regular/merchant UUIDs and metricswire typed ingest projection; read docs/calculations.md. No calculation RPC/job/delivery is added.
+FIN-356 assembles App.Operations and registers Operations/Categories/RegularPayments RPCs; read docs/operations.md. Public reads use coherent replica/primary snapshots; search streams bounded candidates and shared recognition statistics. Writes reuse import rules under user/tombstone locks and enqueue all dependent months; FIN-357 owns worker/delivery. Generic merchant and small-observation tokens have distinct semantics.
 Read docs/import.md before changing staged admission, permanent erasure fences or two-phase purge.
 Object barrier uses a separately owned pool; remote I/O is forbidden inside data transactions.
 The dedicated bucket must never enable versioning/Object Lock/marker expiration; CheckBucket precedes listeners.
@@ -81,7 +83,7 @@ and <job> describe future application code only, not actual empty directories in
 The service test entrypoint selects a PostgreSQL18 admin DSN (external server or testcontainer) in internal/testdb.
 Public migratetest.DSN(t, adminDSN) creates and cleans its own isolated database;
 migratetest.CheckUpDownUp(t, dsn, source) uses the supplied database without owning/dropping it.
-Keep cleanup and cancellation bounded. internal/testdb and internal/app/apitest ordinary .go files remain counted
+Keep cleanup and cancellation bounded. internal/testconfig, internal/testdb and internal/app/apitest ordinary .go files remain counted
 in all three service profiles; there is no service pgtest exclusion. See docs/testing.md.
 
 ### Stack

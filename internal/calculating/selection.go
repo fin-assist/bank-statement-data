@@ -53,7 +53,9 @@ func Match(op importing.Operation, f Filter, referenceKey string, groups map[str
 		return op.Direction == "expense" && groups[op.Description] && Observation(category)
 	case f.Selection == "s_bank_fees":
 		return kind == "expense" && Fee(op, category)
-	case strings.HasPrefix(f.Selection, "s_merchant_"), strings.HasPrefix(f.Selection, "s_regular_"):
+	case strings.HasPrefix(f.Selection, "s_merchant_"):
+		return op.Description == referenceKey
+	case strings.HasPrefix(f.Selection, "s_small_merchant_"), strings.HasPrefix(f.Selection, "s_regular_"):
 		return op.Direction == "expense" && op.Description == referenceKey && Observation(category)
 	case strings.HasPrefix(f.Selection, "s_small_category_"):
 		return op.Direction == "expense" && category == referenceKey && !groups[op.Description] && Observation(category)

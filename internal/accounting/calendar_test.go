@@ -75,3 +75,45 @@ func TestUnitMonthStartPreservesCivilMonthAtMidnightGap(t *testing.T) {
 		t.Fatal("shift carried the gap hour to next month", may)
 	}
 }
+
+func TestUnitNextDailyAfterRetainsShortDayDeadlineAcrossMidnight(t *testing.T) {
+	for _, tc := range []struct {
+		name, zone, now, want string
+		offset                time.Duration
+	}{
+		{"Berlin before midnight", "Europe/Berlin", "2026-03-29T21:50:00Z", "2026-03-29T22:30:00Z", 23*time.Hour + 30*time.Minute},
+		{"Berlin after midnight", "Europe/Berlin", "2026-03-29T22:10:00Z", "2026-03-29T22:30:00Z", 23*time.Hour + 30*time.Minute},
+		{"Berlin exact due", "Europe/Berlin", "2026-03-29T22:30:00Z", "2026-03-30T21:30:00Z", 23*time.Hour + 30*time.Minute},
+		{"Troll two hour gap", "Antarctica/Troll", "2026-03-29T22:10:00Z", "2026-03-29T23:30:00Z", 23*time.Hour + 30*time.Minute},
+		{"Troll exact midnight due", "Antarctica/Troll", "2026-03-29T22:00:00Z", "2026-03-30T20:00:00Z", 22 * time.Hour},
+		{"Havana actual 01 start", "America/Havana", "2012-04-02T04:10:00Z", "2012-04-02T04:30:00Z", 23*time.Hour + 30*time.Minute},
+		{"Havana exact due resets gap hour", "America/Havana", "2012-04-02T04:30:00Z", "2012-04-03T03:30:00Z", 23*time.Hour + 30*time.Minute},
+		{"Apia before skipped date", "Pacific/Apia", "2011-12-30T09:20:00Z", "2011-12-30T09:30:00Z", 23*time.Hour + 30*time.Minute},
+		{"Apia exact due skips missing date", "Pacific/Apia", "2011-12-30T09:30:00Z", "2011-12-31T09:30:00Z", 23*time.Hour + 30*time.Minute},
+		{"Apia repeated date", "Pacific/Apia", "1892-07-04T12:00:00Z", "1892-07-05T11:36:56Z", 10 * time.Minute},
+		{"backward midnight zero", "America/St_Johns", "1988-10-30T02:00:00Z", "1988-10-31T03:30:00Z", 0},
+		{"backward midnight ten minutes", "America/St_Johns", "1988-10-30T02:00:00Z", "1988-10-31T03:40:00Z", 10 * time.Minute},
+		{"ten minutes before", "UTC", "2026-03-30T00:04:00Z", "2026-03-30T00:10:00Z", 10 * time.Minute},
+		{"ten minutes exact", "UTC", "2026-03-30T00:10:00Z", "2026-03-31T00:10:00Z", 10 * time.Minute},
+		{"zero exact", "UTC", "2026-03-30T00:00:00Z", "2026-03-31T00:00:00Z", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			zone, err := time.LoadLocation(tc.zone)
+			if err != nil {
+				t.Fatal(err)
+			}
+			now, err := time.Parse(time.RFC3339, tc.now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want, err := time.Parse(time.RFC3339, tc.want)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := NextDailyAfter(now, zone, tc.offset)
+			if !got.Equal(want) || !got.After(now) {
+				t.Fatal("nearest future elapsed deadline", got, want)
+			}
+		})
+	}
+}

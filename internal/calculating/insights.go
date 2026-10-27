@@ -45,8 +45,11 @@ func (c *calculator) regular(r Range) Metric {
 	}
 	window := lastMonths(full, accounting.RegularWindow)
 	keys := make(map[string]bool)
+	windowKeys := make([]string, 0, len(window))
 	for _, m := range window {
-		keys[m.Format("2006-01")] = true
+		key := m.Format("2006-01")
+		keys[key] = true
+		windowKeys = append(windowKeys, key)
 	}
 	groups := make(map[string][]importing.Operation)
 	for _, op := range c.cal.ops {
@@ -70,28 +73,17 @@ func (c *calculator) regular(r Range) Metric {
 		if len(group) != len(window) {
 			continue
 		}
-		perMonth := make(map[string]int)
+		var months []string
 		var amounts, days []int64
 		for _, op := range group {
-			perMonth[op.At.In(c.cal.zone).Format("2006-01")]++
+			months = append(months, op.At.In(c.cal.zone).Format("2006-01"))
 			amounts = append(amounts, op.AmountMinor)
 			days = append(days, int64(op.At.In(c.cal.zone).Day()))
 		}
-		valid := true
-		for k := range keys {
-			if perMonth[k] != 1 {
-				valid = false
-			}
-		}
-		amount := median(amounts)
-		for _, v := range amounts {
-			if !withinTolerance(v, amount) {
-				valid = false
-			}
-		}
-		if !valid {
+		if !RegularGroup(amounts, months, windowKeys) {
 			continue
 		}
+		amount := median(amounts)
 		ref := c.reference(domain.ReferenceKindRegular, name)
 		if ref.Dismissed {
 			continue
@@ -239,7 +231,7 @@ func (c *calculator) small(r Range) Metric {
 		used[name] = true
 		ref := c.reference(domain.ReferenceKindMerchant, name)
 		f := c.filter(mr, "expense", "")
-		f.Selection, f.Name = "s_merchant_"+ref.ID, name
+		f.Selection, f.Name = "s_small_merchant_"+ref.ID, name
 		out.Small = append(out.Small, c.smallGroup(name, group, amount, f))
 		total = c.add(total, amount)
 	}
@@ -294,7 +286,7 @@ func (c *calculator) smallAmount(group []importing.Operation) (int64, bool) {
 		amount = c.add(amount, op.AmountMinor)
 	}
 	// calc.md 1 and 5 define the average as integer division, including its gate.
-	return amount, amount/int64(len(group)) <= accounting.SmallMaximumAverageMinor
+	return amount, SmallGroup(int64(len(group)), amount)
 }
 func (c *calculator) smallGroup(name string, group []importing.Operation, amount int64, f Filter) Small {
 	return Small{Title: name, Count: len(group), Amount: amount, Average: amount / int64(len(group)), Yearly: c.scale(amount, 12, 1, false), Filter: f}

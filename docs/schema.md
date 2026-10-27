@@ -193,6 +193,9 @@ ID записи — `operation.id` одиночной операции или `t
 
 ## Инварианты в коде сервиса
 
+FIN-356: ручные изменения и dismiss/restore выполняются под тем же user row lock и tombstone Guard, что импорт. `SaveRules` сохраняет целостные пары/цели возвратов и ставит все месяцы операций и покрытия в очередь; `categories_changed_at` изменяется только при реальном присваивании и монотонен на микросекунду. Проверки — `TestIntegrationOperationLedgerSelectionsEditsAndReferences`, `TestIntegrationOperationPairBoundariesAndDerivedRefundScheduling`, `TestIntegrationOperationEditDeleteConcurrencyAndCoherentRouting` и соответствующие API-тесты. Схема не меняется.
+
+
 Всё, что ниже, раньше было `CHECK` в черновике схемы и теперь проверяется кодом. Как код это обеспечивает:
 
 - **Один путь записи.** Каждую таблицу пишет один репозиторий (`internal/adapter/postgres`). Значения он получает из типов домена (`internal/domain`), а не из сырых строк и чисел. Правило проверяет конструктор или метод типа — один раз и в одном месте. Ручных `INSERT`/`UPDATE` в обход репозитория нет.

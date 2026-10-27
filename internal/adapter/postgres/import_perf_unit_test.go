@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/fin-assist/bank-statement-data/internal/importing"
+	"github.com/fin-assist/bank-statement-data/internal/testconfig"
 )
 
 type perfRows struct {
@@ -80,7 +81,9 @@ func TestUnitSaveRulesUsesOneBulkStatementForTwentyThousandRows(t *testing.T) {
 	}
 	tx := &perfSQLTx{matched: size}
 	db := perfDB(tx)
-	if err := db.Run(t.Context(), func(ctx context.Context) error { return NewImports(db).SaveRules(ctx, "actor", operations, at) }); err != nil {
+	if err := db.Run(t.Context(), func(ctx context.Context) error {
+		return NewImports(db, testconfig.DefaultDailyRecalculationOffset(t)).SaveRules(ctx, "actor", operations, at)
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if tx.rulesCalls != 1 || tx.zoneCalls != 1 || len(tx.args) != 8 {
@@ -95,7 +98,7 @@ func TestUnitSaveRulesMissingOrFailedBulkDoesNotScheduleRecalculation(t *testing
 		tx := &perfSQLTx{matched: 0, failure: failure}
 		db := perfDB(tx)
 		err := db.Run(t.Context(), func(ctx context.Context) error {
-			return NewImports(db).SaveRules(ctx, "actor", []importing.Operation{{}}, time.Now())
+			return NewImports(db, testconfig.DefaultDailyRecalculationOffset(t)).SaveRules(ctx, "actor", []importing.Operation{{}}, time.Now())
 		})
 		if !errors.Is(err, errImportStorage) || tx.rulesCalls != 1 || tx.zoneCalls != 0 {
 			t.Fatalf("failed match scheduled or leaked: %v %+v", err, tx)
@@ -103,7 +106,9 @@ func TestUnitSaveRulesMissingOrFailedBulkDoesNotScheduleRecalculation(t *testing
 	}
 	tx := &perfSQLTx{}
 	db := perfDB(tx)
-	if err := db.Run(t.Context(), func(ctx context.Context) error { return NewImports(db).SaveRules(ctx, "actor", nil, time.Now()) }); err != nil || tx.rulesCalls != 0 || tx.zoneCalls != 1 {
+	if err := db.Run(t.Context(), func(ctx context.Context) error {
+		return NewImports(db, testconfig.DefaultDailyRecalculationOffset(t)).SaveRules(ctx, "actor", nil, time.Now())
+	}); err != nil || tx.rulesCalls != 0 || tx.zoneCalls != 1 {
 		t.Fatalf("empty recomputation changed scheduling: %v", err)
 	}
 }
@@ -121,7 +126,7 @@ func TestUnitReferencedBatchClosesRowsAndNeverReturnsPartialPrimaryProof(t *test
 			tx.rows.failure = failure
 		}
 		err := db.Run(t.Context(), func(ctx context.Context) error {
-			got, err := NewImports(db).ReferencedBatch(ctx, []string{"actor/key"})
+			got, err := NewImports(db, testconfig.DefaultDailyRecalculationOffset(t)).ReferencedBatch(ctx, []string{"actor/key"})
 			if phase == "success" {
 				if err != nil || !got["actor/key"] {
 					t.Fatal(got, err)
@@ -139,7 +144,7 @@ func TestUnitReferencedBatchClosesRowsAndNeverReturnsPartialPrimaryProof(t *test
 		}
 	}
 	// No pool/transaction is required when the page contains no valid candidates.
-	if got, err := NewImports(&DB{}).ReferencedBatch(t.Context(), nil); err != nil || len(got) != 0 {
+	if got, err := NewImports(&DB{}, testconfig.DefaultDailyRecalculationOffset(t)).ReferencedBatch(t.Context(), nil); err != nil || len(got) != 0 {
 		t.Fatal(got, err)
 	}
 }

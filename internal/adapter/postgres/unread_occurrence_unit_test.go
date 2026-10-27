@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/fin-assist/bank-statement-data/internal/importing"
+	"github.com/fin-assist/bank-statement-data/internal/testconfig"
 )
 
 type occurrenceRows struct {
@@ -67,7 +68,7 @@ func TestUnitStageIdentifiesUnreadFactsWithoutRenumberingPhysicalLines(t *testin
 		doc.Lines = append(doc.Lines, importing.Line{AccountKey: "account", Number: line, Reason: "no_date"})
 	}
 	if err := db.Run(t.Context(), func(ctx context.Context) error {
-		_, err := NewImports(db).Stage(ctx, "actor", "upload", doc, time.Time{})
+		_, err := NewImports(db, testconfig.DefaultDailyRecalculationOffset(t)).Stage(ctx, "actor", "upload", doc, time.Time{})
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -98,7 +99,7 @@ func TestUnitSaveUnreadTargetsOneOccurrenceAndRejectsMissingFacts(t *testing.T) 
 				tx.failure = errors.New("private driver diagnostic")
 			}
 			err := db.Run(t.Context(), func(ctx context.Context) error {
-				return NewImports(db).SaveUnread(ctx, "actor", []importing.Unread{current})
+				return NewImports(db, testconfig.DefaultDailyRecalculationOffset(t)).SaveUnread(ctx, "actor", []importing.Unread{current})
 			})
 			if phase == "success" {
 				if err != nil || len(tx.updates) != 1 || tx.updates[0][0] != "actor" || tx.updates[0][2] != 7 || tx.updates[0][3] != 2 || tx.updates[0][4] != "repair" || tx.updates[0][5] != "read" {
@@ -119,7 +120,7 @@ func TestUnitStoredUnreadRejectsInvalidOccurrenceAndClosesRows(t *testing.T) {
 		tx := &occurrenceTx{rows: &occurrenceRows{values: [][]any{{"upload", "file", 7, occurrence, nil, "no_date", nil, "fitid", "", ""}}}}
 		db := occurrenceDB(tx)
 		if err := db.Run(t.Context(), func(ctx context.Context) error {
-			rows, err := NewImports(db).unread(ctx, "actor")
+			rows, err := NewImports(db, testconfig.DefaultDailyRecalculationOffset(t)).unread(ctx, "actor")
 			if occurrence == 0 {
 				if rows != nil || !errors.Is(err, errImportStorage) {
 					t.Fatal(rows, err)

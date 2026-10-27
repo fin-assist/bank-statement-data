@@ -14,8 +14,8 @@ import (
 	"github.com/fin-assist/bank-statement-data/internal/config"
 )
 
-// The template registers no service of its own, so the API test of the template is the
-// assembly itself: it starts, is healthy and refuses what it does not serve.
+// The whole service remains healthy and refuses unknown methods even after
+// registering its business services.
 func TestAPIServiceStartsAndServes(t *testing.T) {
 	env := Start(t)
 	resp, err := healthpb.NewHealthClient(env.Conn).Check(t.Context(), &healthpb.HealthCheckRequest{})
@@ -46,7 +46,7 @@ func TestAPIDevReflectionUsesConfiguredWholeAssembly(t *testing.T) {
 	for _, service := range response.GetListServicesResponse().GetService() {
 		services[service.GetName()] = true
 	}
-	if len(services) != 6 || !services["grpc.health.v1.Health"] || !services["grpc.reflection.v1.ServerReflection"] || !services["grpc.reflection.v1alpha.ServerReflection"] {
+	if len(services) != 9 || !services["finassist.statementdata.v1.OperationsService"] || !services["finassist.statementdata.v1.CategoriesService"] || !services["finassist.statementdata.v1.RegularPaymentsService"] || !services["grpc.health.v1.Health"] || !services["grpc.reflection.v1.ServerReflection"] || !services["grpc.reflection.v1alpha.ServerReflection"] {
 		t.Fatalf("unexpected operational services: %v", services)
 	}
 	_, err = healthpb.NewHealthClient(env.Conn).Check(Caller(t.Context(), "assistant"), &healthpb.HealthCheckRequest{Service: "not-registered"})

@@ -8,6 +8,8 @@ import (
 
 	pgstore "github.com/fin-assist/go-postgres"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/fin-assist/bank-statement-data/internal/testconfig"
 )
 
 type categoryScopeRows struct {
@@ -49,7 +51,7 @@ func TestUnitSnapshotCategoryIOForwardsActorAndPreservesProjection(t *testing.T)
 	tx := &categoryScopeTx{rows: &categoryScopeRows{values: [][]any{{"one", "Expense", true, false, "bank expense", "cart"}, {"two", "Income", false, true, "", "tag"}}}}
 	db := &DB{transactions: pgstore.New(unitBeginner{tx})}
 	if err := db.Run(t.Context(), func(ctx context.Context) error {
-		got, err := NewImports(db).Snapshot(ctx, "actor-A")
+		got, err := NewImports(db, testconfig.DefaultDailyRecalculationOffset(t)).Snapshot(ctx, "actor-A")
 		if err != nil {
 			return err
 		}
@@ -78,7 +80,7 @@ func TestUnitSnapshotCategoryIOErrorsCloseRowsAndRefuseSnapshot(t *testing.T) {
 		}
 		db := &DB{transactions: pgstore.New(unitBeginner{tx})}
 		if err := db.Run(t.Context(), func(ctx context.Context) error {
-			_, err := NewImports(db).Snapshot(ctx, "actor-A")
+			_, err := NewImports(db, testconfig.DefaultDailyRecalculationOffset(t)).Snapshot(ctx, "actor-A")
 			if !errors.Is(err, errImportStorage) {
 				t.Fatalf("%s: %v", phase, err)
 			}

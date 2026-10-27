@@ -19,10 +19,8 @@ import (
 )
 
 // AUTH_MODE=verify on the stand: the whole assembly starts with go-identity (stand key
-// files, the user peer) and go-tombstone after real migrations, serves health and still
-// refuses what it does not serve. The service has no RPC yet, so the token and tombstone
-// refusals of a user call are covered by TestIntegrationVerifiedIdentityAndTombstoneAdmission
-// on the same assembly parts; a user RPC brings them here.
+// files, the user peer) and go-tombstone after real migrations. Both import and
+// operations RPCs use verified identity, caller policy and primary deletion admission.
 func TestAPIStageVerifyAssemblyServes(t *testing.T) {
 	stand := testidentity.New(t).ServeUser()
 	env := Start(t, func(cfg *config.Config) {
@@ -48,8 +46,9 @@ func TestAPIStageVerifyAssemblyServes(t *testing.T) {
 		t.Fatalf("health: %v %v", resp, err)
 	}
 	ctx := testidentity.Outgoing(t.Context(), stand.ServiceToken("bank-bff"), stand.UserToken("3f0e9a52-7f7b-4c9b-9b8e-0d1f5d0c2a11"))
-	if err := env.Conn.Invoke(ctx, "/finassist.statementdata.v1.OperationsService/GetOperation", &healthpb.HealthCheckRequest{}, &healthpb.HealthCheckResponse{}); status.Code(err) != codes.Unimplemented {
-		t.Fatalf("unserved method: %v", err)
+	operations := pb.NewOperationsServiceClient(env.Conn)
+	if feed, err := operations.ListFeed(ctx, &pb.ListFeedRequest{}); err != nil || feed.TimeZone != "Europe/Moscow" || len(feed.Items) != 0 {
+		t.Fatalf("verified real operations: %v %v", feed, err)
 	}
 	client := pb.NewStatementsServiceClient(env.Conn)
 	if c, err := client.GetImportConfig(ctx, &pb.GetImportConfigRequest{}); err != nil || c.TimeZone != "Europe/Moscow" {
@@ -61,6 +60,14 @@ func TestAPIStageVerifyAssemblyServes(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := client.GetImportConfig(testidentity.Outgoing(t.Context(), tc.service, tc.user), &pb.GetImportConfigRequest{})
+			_, operationErr := operations.ListFeed(testidentity.Outgoing(t.Context(), tc.service, tc.user), &pb.ListFeedRequest{})
+			if tc.reason == "PERMISSION_DENIED" {
+				if status.Code(operationErr) != codes.PermissionDenied {
+					t.Fatalf("operations foreign caller: %v", operationErr)
+				}
+			} else if Reason(operationErr) != tc.reason {
+				t.Fatalf("operations bad identity: %v", operationErr)
+			}
 			if tc.reason == "PERMISSION_DENIED" {
 				if status.Code(err) != codes.PermissionDenied {
 					t.Fatalf("foreign caller: %v", err)
@@ -77,6 +84,9 @@ func TestAPIStageVerifyAssemblyServes(t *testing.T) {
 	defer func() { _ = db.Close(context.Background()) }()
 	if _, err = db.Exec(t.Context(), `INSERT INTO tombstone_users(user_id,deleted_at)VALUES($1,now())`, "3f0e9a52-7f7b-4c9b-9b8e-0d1f5d0c2a11"); err != nil {
 		t.Fatal(err)
+	}
+	if _, err = operations.ListFeed(ctx, &pb.ListFeedRequest{}); Reason(err) != "TOKEN_REVOKED" {
+		t.Fatalf("deleted verified operations: %v", err)
 	}
 	if _, err = client.GetImportConfig(ctx, &pb.GetImportConfigRequest{}); Reason(err) != "TOKEN_REVOKED" {
 		t.Fatalf("deleted verified import: %v", err)
@@ -108,7 +118,7 @@ func TestAPIVerifyAssemblyRefusesIncompleteIdentity(t *testing.T) {
 		}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			env, closeEnv, err := start(context.Background(), dsn, realDependencies(), tt.mutate)
+			env, closeEnv, err := start(t, context.Background(), dsn, realDependencies(), tt.mutate)
 			if err == nil {
 				closeEnv()
 				t.Fatalf("started: %v", env != nil)

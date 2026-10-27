@@ -29,10 +29,11 @@ type Options = pgstore.PoolOptions
 // DB holds the pool on the primary (-rw) and the pool on the replicas (-ro). On the stand
 // both DSNs point to one PostgreSQL; with an empty replica DSN one pool serves both.
 type DB struct {
-	pools        *pgstore.Pools
-	primary      *pgxpool.Pool
-	replica      *pgxpool.Pool
-	transactions *pgstore.Manager
+	pools            *pgstore.Pools
+	primary          *pgxpool.Pool
+	replica          *pgxpool.Pool
+	transactions     *pgstore.Manager
+	readTransactions *pgstore.Manager
 }
 
 // Open creates the pools and checks that the primary answers.
@@ -41,7 +42,7 @@ func Open(ctx context.Context, o Options) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &DB{pools: pools, primary: pools.Primary(), replica: pools.Replica(), transactions: pgstore.New(pools.Primary())}, nil
+	return &DB{pools: pools, primary: pools.Primary(), replica: pools.Replica(), transactions: pgstore.New(pools.Primary()), readTransactions: pgstore.New(pools.Replica())}, nil
 }
 
 // Close closes the pools owned by the shared lifecycle.
@@ -73,7 +74,23 @@ func (db *DB) RunMapped(ctx context.Context, opts pgx.TxOptions, mapper pgstore.
 }
 
 // Tx supplies this database's transaction to repositories, idempotency and outbox.
-func (db *DB) Tx(ctx context.Context) (pgx.Tx, bool) { return db.transactions.Tx(ctx) }
+func (db *DB) Tx(ctx context.Context) (pgx.Tx, bool) {
+	if tx, ok := db.transactions.Tx(ctx); ok {
+		return tx, true
+	}
+	if db.readTransactions != nil {
+		return db.readTransactions.Tx(ctx)
+	}
+	return nil, false
+}
+
+// ReadOperations routes one coherent read snapshot according to trusted primary hints.
+func (db *DB) ReadOperations(ctx context.Context, fn func(context.Context) error) error {
+	if reqctx.ReadPrimary(ctx) {
+		return db.Read(ctx, fn)
+	}
+	return db.readTransactions.RunWith(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, fn)
+}
 
 // Tx returns the transaction carried by ctx. The owner alone completes it.
 func Tx(ctx context.Context) (pgx.Tx, bool) { return pgstore.Tx(ctx) }

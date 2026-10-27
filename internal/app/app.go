@@ -25,6 +25,7 @@ import (
 	"github.com/fin-assist/bank-statement-data/internal/calculating"
 	"github.com/fin-assist/bank-statement-data/internal/config"
 	"github.com/fin-assist/bank-statement-data/internal/importing"
+	"github.com/fin-assist/bank-statement-data/internal/operations"
 )
 
 // App is the assembled service. Wire reads its fields to build adapters and usecases.
@@ -38,6 +39,7 @@ type App struct {
 	Jobs         []worker.Job
 	Imports      *importing.Service
 	Calculations *calculating.Service
+	Operations   *operations.Service
 
 	closers []func()
 }
@@ -54,6 +56,9 @@ func New(ctx context.Context, cfg config.Config, log *slog.Logger, reg prometheu
 }
 
 func assemble(ctx context.Context, cfg config.Config, log *slog.Logger, reg prometheus.Registerer, openDB func(context.Context, postgres.Options) (*postgres.DB, error), options ...Options) (*App, error) {
+	if err := config.ValidateDailyRecalculationOffset(cfg.DailyRecalculationOffset); err != nil {
+		return nil, err
+	}
 	// Client metrics come first: the identity connection to user reports into them too.
 	clients, err := client.NewMetrics(reg)
 	if err != nil {

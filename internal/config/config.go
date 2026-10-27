@@ -52,6 +52,8 @@ type Config struct {
 	ShutdownDelay time.Duration
 	// ShutdownTimeout bounds the graceful stop; calls still running after it are cut.
 	ShutdownTimeout time.Duration
+	// DailyRecalculationOffset is elapsed time after the user's first real day start.
+	DailyRecalculationOffset time.Duration
 }
 
 // LogConfig configures slog.
@@ -146,10 +148,11 @@ func load(getenv func(string) string, readFile func(string) ([]byte, error), env
 			ServiceTokenFile: r.str("SERVICE_TOKEN_FILE"),
 			Identity:         r.identity(),
 		},
-		Peers:           map[string]string{},
-		ObjectStorage:   r.objectStorage(),
-		ShutdownDelay:   r.duration("SHUTDOWN_DELAY"),
-		ShutdownTimeout: r.duration("SHUTDOWN_TIMEOUT"),
+		Peers:                    map[string]string{},
+		ObjectStorage:            r.objectStorage(),
+		ShutdownDelay:            r.duration("SHUTDOWN_DELAY"),
+		ShutdownTimeout:          r.duration("SHUTDOWN_TIMEOUT"),
+		DailyRecalculationOffset: r.duration("DAILY_RECALCULATION_OFFSET"),
 	}
 	c.GRPC.Reflection = c.Env == EnvDev
 
@@ -197,7 +200,19 @@ func (c Config) validate() []error {
 		errs = append(errs, fmt.Errorf("AUTH_MODE=%q, want verify or insecure-dev", c.Auth.Mode))
 	}
 	errs = append(errs, c.validateIdentity()...)
+	if err := ValidateDailyRecalculationOffset(c.DailyRecalculationOffset); err != nil {
+		errs = append(errs, err)
+	}
 	return append(errs, c.validateObjectStorage()...)
+}
+
+// ValidateDailyRecalculationOffset shares the allowed range between environment
+// parsing and application assembly; zero explicitly means the beginning of day.
+func ValidateDailyRecalculationOffset(offset time.Duration) error {
+	if offset < 0 || offset >= 24*time.Hour {
+		return errors.New("DAILY_RECALCULATION_OFFSET must be non-negative and less than 24h")
+	}
+	return nil
 }
 
 // onRead, when set by a test, sees every variable a load reads.

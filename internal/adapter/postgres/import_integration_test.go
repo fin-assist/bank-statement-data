@@ -15,6 +15,7 @@ import (
 	"github.com/fin-assist/bank-statement-data/internal/adapter/postgres"
 	"github.com/fin-assist/bank-statement-data/internal/app"
 	"github.com/fin-assist/bank-statement-data/internal/importing"
+	"github.com/fin-assist/bank-statement-data/internal/testconfig"
 	"github.com/fin-assist/bank-statement-data/internal/testdb"
 )
 
@@ -38,7 +39,7 @@ func importRepository(t *testing.T) *importPG {
 		t.Fatal(err)
 	}
 	t.Cleanup(db.Close)
-	return &importPG{db: db, repo: postgres.NewImports(db), dsn: dsn, now: time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)}
+	return &importPG{db: db, repo: postgres.NewImports(db, testconfig.DefaultDailyRecalculationOffset(t)), dsn: dsn, now: time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)}
 }
 func (f *importPG) row(user, id string) importing.Upload {
 	return importing.Upload{ID: id, UserID: user, FileName: "exact.ofx", Status: "staging", ObjectKey: user + "/" + id, SizeBytes: 1, Digest: sha256.Sum256([]byte("x")), UploadedAt: f.now}

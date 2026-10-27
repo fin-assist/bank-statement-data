@@ -13,6 +13,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/fin-assist/bank-statement-data/internal/domain"
 	"github.com/fin-assist/bank-statement-data/internal/importing"
 )
 
@@ -120,20 +121,20 @@ func FromResult(p *statementdatav1.ImportResult) (importing.Result, error) {
 		if a == nil {
 			return importing.Result{}, errProjection
 		}
-		if a.IsOtherBank && (a.TypeName != "Счёт другого банка" || a.Mask != nil) {
+		if a.IsOtherBank && (a.TypeName != domain.AccountNameOtherBank || a.Mask != nil) {
 			return importing.Result{}, errProjection
 		}
 		account := importing.Account{OtherBank: a.IsOtherBank, Type: "unknown"}
 		switch a.TypeName {
-		case "Текущий":
-			account.Type = "checking"
-		case "Накопительный":
-			account.Type = "savings"
-		case "Счёт другого банка":
+		case domain.AccountNameChecking:
+			account.Type = domain.AccountKindChecking
+		case domain.AccountNameSavings:
+			account.Type = domain.AccountKindSavings
+		case domain.AccountNameOtherBank:
 			if !a.IsOtherBank {
 				return importing.Result{}, errProjection
 			}
-		case "Счёт":
+		case domain.AccountNameGeneric:
 		default:
 			return importing.Result{}, errProjection
 		}
@@ -177,16 +178,16 @@ func FromResult(p *statementdatav1.ImportResult) (importing.Result, error) {
 }
 
 func toAccount(a importing.Account) (*statementdatav1.ImportAccount, error) {
-	p := &statementdatav1.ImportAccount{IsOtherBank: a.OtherBank, TypeName: "Счёт"}
+	p := &statementdatav1.ImportAccount{IsOtherBank: a.OtherBank, TypeName: domain.AccountNameGeneric}
 	if a.OtherBank {
-		p.TypeName = "Счёт другого банка"
+		p.TypeName = domain.AccountNameOtherBank
 		return p, nil
 	}
 	switch a.Type {
-	case "checking":
-		p.TypeName = "Текущий"
-	case "savings":
-		p.TypeName = "Накопительный"
+	case domain.AccountKindChecking:
+		p.TypeName = domain.AccountNameChecking
+	case domain.AccountKindSavings:
+		p.TypeName = domain.AccountNameSavings
 	}
 	if a.Mask != nil {
 		if !utf8.ValidString(*a.Mask) || utf8.RuneCountInString(*a.Mask) < 1 || utf8.RuneCountInString(*a.Mask) > 4 {

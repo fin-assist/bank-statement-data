@@ -110,7 +110,7 @@ func TestUnitStartStagesOwnResources(t *testing.T) {
 					return nil, func() error { events = append(events, "close-client"); return failure }, nil
 				},
 			}
-			env, cleanup, err := start(ctx, "test-owned", deps, func(cfg *config.Config) {
+			env, cleanup, err := start(t, ctx, "test-owned", deps, func(cfg *config.Config) {
 				if cfg.Service != "apitest" || cfg.Env != config.EnvDev || cfg.Auth.Mode != config.AuthInsecureDev || cfg.DB.MaxConns != 4 || cfg.GRPC.MaxRecvMsgSize != 4<<20 || len(cfg.Peers) != 0 {
 					t.Fatalf("defaults: %+v", cfg)
 				}

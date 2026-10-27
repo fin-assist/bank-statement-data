@@ -105,8 +105,8 @@ func calculationSelection(t *testing.T, a *app.App, user string, p calculating.P
 		if err := a.DB.Primary().QueryRow(t.Context(), `SELECT description FROM regular_payment WHERE user_id=$1 AND id=$2`, user, id).Scan(&key); err != nil {
 			t.Fatal(err)
 		}
-	case strings.HasPrefix(f.Selection, "s_merchant_"):
-		id := strings.TrimPrefix(f.Selection, "s_merchant_")
+	case strings.HasPrefix(f.Selection, "s_small_merchant_"):
+		id := strings.TrimPrefix(f.Selection, "s_small_merchant_")
 		if parsed, err := uuid.Parse(id); err != nil || parsed == uuid.Nil {
 			t.Fatal("merchant selection is not an opaque UUID")
 		}

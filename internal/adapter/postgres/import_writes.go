@@ -3,10 +3,12 @@ package postgres
 import (
 	"context"
 	"errors"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/fin-assist/bank-statement-data/internal/accounting"
 	"github.com/fin-assist/bank-statement-data/internal/importing"
 )
 
@@ -181,6 +183,27 @@ func (r *Imports) schedule(ctx context.Context, user string, operations []import
 	for _, op := range operations {
 		months[op.At.In(zone).Format("2006-01")+"-01"] = true
 	}
+	// Dismissal changes recognition only. Its caller can enqueue by distinct civil
+	// months without materializing operations or rewriting their accounting facts.
+	if operations == nil {
+		stored, err := r.db.Writer(ctx).Query(ctx, `SELECT DISTINCT to_char(occurred_at AT TIME ZONE $2,'YYYY-MM')||'-01' FROM operation WHERE user_id=$1`, user, name)
+		if err != nil {
+			return importError(ctx, err)
+		}
+		for stored.Next() {
+			var month string
+			if err = stored.Scan(&month); err != nil {
+				stored.Close()
+				return importError(ctx, err)
+			}
+			months[month] = true
+		}
+		err = stored.Err()
+		stored.Close()
+		if err != nil {
+			return importError(ctx, err)
+		}
+	}
 	rows, err := r.db.Writer(ctx).Query(ctx, `SELECT statement_from,statement_to FROM upload WHERE user_id=$1 AND status='done' AND statement_from IS NOT NULL AND statement_to IS NOT NULL`, user)
 	if err != nil {
 		return importError(ctx, err)
@@ -191,8 +214,8 @@ func (r *Imports) schedule(ctx context.Context, user string, operations []import
 			rows.Close()
 			return importError(ctx, err)
 		}
-		month := time.Date(from.Year(), from.Month(), 1, 0, 0, 0, 0, zone)
-		last := time.Date(to.Year(), to.Month(), 1, 0, 0, 0, 0, zone)
+		month := time.Date(from.Year(), from.Month(), 1, 0, 0, 0, 0, time.UTC)
+		last := time.Date(to.Year(), to.Month(), 1, 0, 0, 0, 0, time.UTC)
 		for !month.After(last) {
 			if err := ctx.Err(); err != nil {
 				rows.Close()
@@ -207,20 +230,22 @@ func (r *Imports) schedule(ctx context.Context, user string, operations []import
 	if err != nil {
 		return importError(ctx, err)
 	}
-	for month := range months {
-		_, err := r.db.Writer(ctx).Exec(ctx, `INSERT INTO recalc_queue(user_id,month,enqueued_at,next_attempt_at) VALUES($1,$2::date,$3,$3) ON CONFLICT(user_id,month) DO UPDATE SET generation=CASE WHEN recalc_queue.generation=32767 THEN 1 ELSE recalc_queue.generation+1 END,enqueued_at=EXCLUDED.enqueued_at,next_attempt_at=EXCLUDED.next_attempt_at,attempts=0,last_error=NULL`, user, month, now)
+	if len(months) > 0 {
+		keys := make([]string, 0, len(months))
+		for month := range months {
+			keys = append(keys, month)
+		}
+		sort.Strings(keys)
+		_, err := r.db.Writer(ctx).Exec(ctx, `INSERT INTO recalc_queue(user_id,month,enqueued_at,next_attempt_at)
+ SELECT $1,month::date,$3,$3 FROM unnest($2::text[]) AS months(month)
+ ON CONFLICT(user_id,month) DO UPDATE SET generation=CASE WHEN recalc_queue.generation=32767 THEN 1 ELSE recalc_queue.generation+1 END,enqueued_at=EXCLUDED.enqueued_at,next_attempt_at=EXCLUDED.next_attempt_at,attempts=0,last_error=NULL`, user, keys, now)
 		if err != nil {
 			return importError(ctx, err)
 		}
 	}
 	var due any
 	if len(months) > 0 {
-		local := now.In(zone)
-		next := time.Date(local.Year(), local.Month(), local.Day(), 0, 5, 0, 0, zone)
-		if !next.After(now) {
-			next = next.AddDate(0, 0, 1)
-		}
-		due = next
+		due = accounting.NextDailyAfter(now, zone, r.dailyRecalculationOffset)
 	}
 	_, err = r.db.Writer(ctx).Exec(ctx, `UPDATE user_state SET daily_recalc_due_at=$2 WHERE user_id=$1`, user, due)
 	return importError(ctx, err)

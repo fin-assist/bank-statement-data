@@ -43,6 +43,7 @@
 | `DB_PRIMARY_DSN` / `_FILE` | — (обязательна) | DSN primary (`-rw`) |
 | `DB_REPLICA_DSN` / `_FILE` | — | DSN реплик (`-ro`); пусто — чтение тоже с primary. На стенде оба указывают на один PostgreSQL |
 | `DB_MAX_CONNS` | `10` | размер каждого пула |
+| `DAILY_RECALCULATION_OFFSET` | `5m` | elapsed-сдвиг ежедневного пересчёта от первого реального начала локальных суток пользователя (`StartOfDay`), `0 <= offset < 24h`; формат `time.ParseDuration`. `0` — начало суток, `5m` — обычно 00:05. Это длительность от начала суток, а не фиксированное местное время; календарная логика и DST сохраняются |
 | `OBJECT_STORAGE_ENDPOINT` | `https://storage.yandexcloud.net` | HTTPS endpoint S3 без credentials, query и fragment; сервис не обращается к банку |
 | `OBJECT_STORAGE_BUCKET` | — (обязательна) | отдельный приватный бакет выписок: версионирование никогда не включалось, без Object Lock и активного удаления по lifecycle |
 | `OBJECT_STORAGE_KMS_KEY_ID` | — (обязательна) | ключ SSE-KMS; каждый PUT файла и пустого маркера требует aws:kms |

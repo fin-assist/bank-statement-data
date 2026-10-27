@@ -31,6 +31,7 @@ import (
 
 	"github.com/fin-assist/bank-statement-data/internal/app"
 	"github.com/fin-assist/bank-statement-data/internal/config"
+	"github.com/fin-assist/bank-statement-data/internal/testconfig"
 	"github.com/fin-assist/bank-statement-data/internal/testdb"
 	"github.com/fin-assist/bank-statement-data/internal/testobjects"
 )
@@ -64,7 +65,7 @@ func StartWith(t *testing.T, options app.Options, mutate ...func(*config.Config)
 		}
 		return a, a.GRPC, a.Close, nil
 	}
-	env, closeEnv, err := start(context.Background(), testdb.DSN(t), deps, mutate...)
+	env, closeEnv, err := start(t, context.Background(), testdb.DSN(t), deps, mutate...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +122,7 @@ func realDependencies() dependencies {
 	}
 }
 
-func start(ctx context.Context, dsn string, deps dependencies, mutate ...func(*config.Config)) (*Env, func(), error) {
+func start(t testing.TB, ctx context.Context, dsn string, deps dependencies, mutate ...func(*config.Config)) (*Env, func(), error) {
 	if err := deps.migrate(ctx, dsn); err != nil {
 		return nil, nil, fmt.Errorf("migrate: %w", err)
 	}
@@ -129,7 +130,7 @@ func start(ctx context.Context, dsn string, deps dependencies, mutate ...func(*c
 		Service: "apitest", Env: config.EnvDev,
 		Auth: config.AuthConfig{Mode: config.AuthInsecureDev},
 		DB:   config.DBConfig{PrimaryDSN: dsn, MaxConns: 4},
-		GRPC: config.GRPCConfig{MaxRecvMsgSize: 4 << 20}, Peers: map[string]string{},
+		GRPC: config.GRPCConfig{MaxRecvMsgSize: 4 << 20}, Peers: map[string]string{}, DailyRecalculationOffset: testconfig.DefaultDailyRecalculationOffset(t),
 	}
 	for _, m := range mutate {
 		m(&cfg)

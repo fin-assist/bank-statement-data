@@ -21,6 +21,7 @@ import (
 	"github.com/fin-assist/bank-statement-data/internal/app"
 	"github.com/fin-assist/bank-statement-data/internal/config"
 	"github.com/fin-assist/bank-statement-data/internal/importing"
+	"github.com/fin-assist/bank-statement-data/internal/testconfig"
 	"github.com/fin-assist/bank-statement-data/internal/testdb"
 	"github.com/fin-assist/bank-statement-data/internal/testobjects"
 )
@@ -34,7 +35,7 @@ func importAssembly(t *testing.T, clocks ...func() time.Time) (*app.App, *testob
 		t.Fatal(err)
 	}
 	objects := testobjects.New(t)
-	cfg := config.Config{Service: "bank-statement-data", Env: config.EnvDev, Auth: config.AuthConfig{Mode: config.AuthInsecureDev}, DB: config.DBConfig{PrimaryDSN: dsn, MaxConns: 2}, GRPC: config.GRPCConfig{MaxRecvMsgSize: 4 << 20}}
+	cfg := config.Config{Service: "bank-statement-data", Env: config.EnvDev, Auth: config.AuthConfig{Mode: config.AuthInsecureDev}, DB: config.DBConfig{PrimaryDSN: dsn, MaxConns: 2}, GRPC: config.GRPCConfig{MaxRecvMsgSize: 4 << 20}, DailyRecalculationOffset: testconfig.DefaultDailyRecalculationOffset(t)}
 	objects.Configure(&cfg)
 	opts := app.Options{ObjectClient: objects.Server.Client()}
 	if len(clocks) > 0 {
@@ -52,7 +53,7 @@ func importSnapshot(t *testing.T, a *app.App, user string) importing.Snapshot {
 	var state importing.Snapshot
 	err := a.DB.Read(t.Context(), func(ctx context.Context) error {
 		var err error
-		state, err = postgres.NewImports(a.DB).Snapshot(ctx, user)
+		state, err = postgres.NewImports(a.DB, a.Cfg.DailyRecalculationOffset).Snapshot(ctx, user)
 		return err
 	})
 	if err != nil {
@@ -158,7 +159,7 @@ func TestIntegrationImportCancellationFailureAndEmpty(t *testing.T) {
 	// result on reconnect rather than a successful RPC with an invented summary.
 	id := uuid.NewString()
 	now := time.Now().Add(-4 * time.Minute)
-	repo := postgres.NewImports(a.DB)
+	repo := postgres.NewImports(a.DB, a.Cfg.DailyRecalculationOffset)
 	err = a.DB.Run(t.Context(), func(ctx context.Context) error {
 		if err := repo.InsertUpload(ctx, importing.Upload{ID: id, UserID: apiUser, FileName: "stale", ObjectKey: apiUser + "/" + id, SizeBytes: 1, Status: "staging", UploadedAt: now}); err != nil {
 			return err

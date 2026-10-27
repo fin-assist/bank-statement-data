@@ -8,6 +8,7 @@ import (
 
 	"github.com/fin-assist/bank-statement-data/internal/adapter/postgres"
 	"github.com/fin-assist/bank-statement-data/internal/importing"
+	"github.com/fin-assist/bank-statement-data/internal/testconfig"
 	"github.com/fin-assist/bank-statement-data/internal/testdb"
 )
 
@@ -67,7 +68,7 @@ func TestIntegrationSnapshotCategoryScopeKeepsStaticAndAllOwnReferencesOnly(t *t
 		t.Fatal(err)
 	}
 	defer routed.Close()
-	repo := postgres.NewImports(routed)
+	repo := postgres.NewImports(routed, testconfig.DefaultDailyRecalculationOffset(t))
 	check := func(user string, want []string, forbidden []string) {
 		t.Helper()
 		var state importing.Snapshot
