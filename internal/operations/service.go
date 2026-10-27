@@ -26,6 +26,7 @@ type Repository interface {
 	SetDismissed(context.Context, string, string, bool, time.Time) (bool, error)
 	Stream(context.Context, string, StreamOptions, func(Row) error) error
 	SelectionKey(context.Context, string, string, string) (string, error)
+	Enqueue(context.Context, string, time.Time) error
 }
 
 // Transactions owns primary writes and coherent replica/primary public reads.
@@ -112,11 +113,7 @@ func (s *Service) Dismiss(ctx context.Context, user, id string, dismiss bool) er
 		if err != nil || !changed {
 			return err
 		}
-		state, err := s.repo.Snapshot(ctx, user, nil, nil)
-		if err != nil {
-			return err
-		}
-		if err = s.repo.SaveRules(ctx, user, state.Operations, s.now()); err != nil {
+		if err = s.repo.Enqueue(ctx, user, s.now()); err != nil {
 			return err
 		}
 		return s.repo.Changed(ctx, user, s.now())
@@ -149,7 +146,8 @@ func (s *Service) Change(ctx context.Context, user, id, category string, at time
 			return ErrNotFound
 		}
 		pair := len(selected) == 2
-		if !chosen.Assignable || !pair && !(state.Operations[selected[0]].Direction == "expense" && chosen.Expense || state.Operations[selected[0]].Direction == "income" && chosen.Income) {
+		assignable := pair || state.Operations[selected[0]].Direction == "expense" && chosen.Expense || state.Operations[selected[0]].Direction == "income" && chosen.Income
+		if !chosen.Assignable || !assignable {
 			return ErrCategory
 		}
 		original := append([]importing.Operation(nil), state.Operations...)

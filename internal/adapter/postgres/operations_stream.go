@@ -6,11 +6,12 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/fin-assist/bank-statement-data/internal/accounting"
 	"github.com/fin-assist/bank-statement-data/internal/domain"
 	"github.com/fin-assist/bank-statement-data/internal/importing"
 	"github.com/fin-assist/bank-statement-data/internal/operations"
-	"github.com/jackc/pgx/v5"
 )
 
 // SelectionKey resolves exactly one opaque identity, never a whole user's dictionary.
@@ -37,7 +38,7 @@ func (r *Operations) SelectionKey(ctx context.Context, user, kind, id string) (s
 // after count <= the requested window length is established; financial gates stay in shared Go rules.
 const operationStreamSQL = `WITH eligible AS MATERIALIZED (
  SELECT description,occurred_at,amount_minor,to_char(occurred_at AT TIME ZONE $4,'YYYY-MM') AS month
- FROM operation WHERE user_id=$1 AND direction='expense' AND currency='RUB'
+ FROM operation WHERE user_id=$1 AND (cardinality($5::text[])>0 OR $10) AND direction='expense' AND currency='RUB'
  AND transfer_pair_id IS NULL AND category_id NOT IN($8,$9)
  AND ((cardinality($5::text[])>0 AND to_char(occurred_at AT TIME ZONE $4,'YYYY-MM')=ANY($5::text[]))
  OR ($10 AND ($6::timestamptz IS NULL OR occurred_at >= $6) AND ($7::timestamptz IS NULL OR occurred_at < $7)))

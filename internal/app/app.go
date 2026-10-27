@@ -25,6 +25,7 @@ import (
 	"github.com/fin-assist/bank-statement-data/internal/calculating"
 	"github.com/fin-assist/bank-statement-data/internal/config"
 	"github.com/fin-assist/bank-statement-data/internal/importing"
+	"github.com/fin-assist/bank-statement-data/internal/operations"
 )
 
 // App is the assembled service. Wire reads its fields to build adapters and usecases.
@@ -38,6 +39,7 @@ type App struct {
 	Jobs         []worker.Job
 	Imports      *importing.Service
 	Calculations *calculating.Service
+	Operations   *operations.Service
 
 	closers []func()
 }

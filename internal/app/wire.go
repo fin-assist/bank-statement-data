@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 
+	operationsgrpc "github.com/fin-assist/bank-statement-data/internal/adapter/grpc/operations"
 	statementsgrpc "github.com/fin-assist/bank-statement-data/internal/adapter/grpc/statements"
 	keyadapter "github.com/fin-assist/bank-statement-data/internal/adapter/idempotency"
 	"github.com/fin-assist/bank-statement-data/internal/adapter/objectstore"
@@ -23,6 +24,7 @@ import (
 	"github.com/fin-assist/bank-statement-data/internal/adapter/postgres"
 	"github.com/fin-assist/bank-statement-data/internal/calculating"
 	"github.com/fin-assist/bank-statement-data/internal/importing"
+	"github.com/fin-assist/bank-statement-data/internal/operations"
 	"github.com/fin-assist/bank-statement-data/migrations"
 )
 
@@ -30,6 +32,9 @@ import (
 func AccessPolicy() server.Policy {
 	return server.Policy{
 		"/finassist.statementdata.v1.StatementsService/*":      {Callers: []string{"bank-bff"}, Model: server.ModelUser},
+		"/finassist.statementdata.v1.OperationsService/*":      {Callers: []string{"bank-bff"}, Model: server.ModelUser},
+		"/finassist.statementdata.v1.CategoriesService/*":      {Callers: []string{"bank-bff"}, Model: server.ModelUser},
+		"/finassist.statementdata.v1.RegularPaymentsService/*": {Callers: []string{"bank-bff"}, Model: server.ModelUser},
 		"/finassist.usersettings.v1.UserSettingsSyncService/*": {Callers: []string{"user"}, Model: server.ModelSystem},
 		"/finassist.userdeletion.v1.UserDeletionService/*":     {Callers: []string{"user"}, Model: server.ModelSystem},
 	}
@@ -129,5 +134,12 @@ func wire(ctx context.Context, a *App, reg prometheus.Registerer, openDB func(co
 		return fail(err)
 	}
 	a.Imports = service
+	a.Operations, err = operations.New(a.DB, postgres.NewOperations(a.DB), deleted, now, func() (string, error) { id, err := uuid.NewV7(); return id.String(), err })
+	if err != nil {
+		return fail(err)
+	}
+	if err = operationsgrpc.Register(a.GRPC.GRPC(), a.Operations); err != nil {
+		return fail(err)
+	}
 	return []worker.Job{{Name: "statement-import", Run: service.Run}, {Name: "statement-files", Run: service.RunCleanup}, cleanup}, closeAll, nil
 }

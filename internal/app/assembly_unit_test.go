@@ -51,17 +51,17 @@ func TestUnitAssemblyWiresImportAndIndependentBarrierPool(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer a.Close()
-	if calls != 2 || a.DB != db || a.Log != log || a.Cfg.Service != cfg.Service || a.Clients == nil || a.Tokens == nil || len(a.Jobs) != 3 || a.Imports == nil {
+	if calls != 2 || a.DB != db || a.Log != log || a.Cfg.Service != cfg.Service || a.Clients == nil || a.Tokens == nil || len(a.Jobs) != 3 || a.Imports == nil || a.Operations == nil {
 		t.Fatal("incomplete or unexpectedly populated assembly")
 	}
 	if err := a.GRPC.Check(); err != nil {
 		t.Fatal(err)
 	}
-	if info := a.GRPC.GRPC().GetServiceInfo(); len(info) != 4 || info["finassist.statementdata.v1.StatementsService"].Methods == nil {
+	if info := a.GRPC.GRPC().GetServiceInfo(); len(info) != 7 || info["finassist.statementdata.v1.StatementsService"].Methods == nil {
 		t.Fatalf("missing import RPCs: %v", info)
 	}
 	sources := MigrationSources()
-	if len(AccessPolicy()) != 3 || len(sources) != 3 || sources[0].Table != tombstone.MigrationsTable || sources[0].Name != tombstone.MigrationsName || sources[2].Table != "schema_migrations" {
+	if len(AccessPolicy()) != 6 || len(sources) != 3 || sources[0].Table != tombstone.MigrationsTable || sources[0].Name != tombstone.MigrationsName || sources[2].Table != "schema_migrations" {
 		t.Fatal("scaffold policy or migration sources changed: the tombstone source must precede the service")
 	}
 }

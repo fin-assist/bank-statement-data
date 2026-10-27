@@ -70,6 +70,7 @@ go-tombstone v0.1.0 supplies the first migration source and the primary-backed g
 FIN-342 wires guarded import writes, UserDeletionService.PurgeUserData and settings sync.
 Import usecases/rules/results live in internal/importing; adapters in adapter/{ofx,objectstore,statementwire,grpc/statements,postgres}.
 FIN-355 assembles App.Calculations for internal worker use: both transfer modes, pure calculation from committed facts, durable regular/merchant UUIDs and metricswire typed ingest projection; read docs/calculations.md. No calculation RPC/job/delivery is added.
+FIN-356 assembles App.Operations and registers Operations/Categories/RegularPayments RPCs; read docs/operations.md. Public reads use coherent replica/primary snapshots; search streams bounded candidates and shared recognition statistics. Writes reuse import rules under user/tombstone locks and enqueue all dependent months; FIN-357 owns worker/delivery. Generic merchant and small-observation tokens have distinct semantics.
 Read docs/import.md before changing staged admission, permanent erasure fences or two-phase purge.
 Object barrier uses a separately owned pool; remote I/O is forbidden inside data transactions.
 The dedicated bucket must never enable versioning/Object Lock/marker expiration; CheckBucket precedes listeners.

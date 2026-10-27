@@ -182,6 +182,27 @@ func (r *Imports) schedule(ctx context.Context, user string, operations []import
 	for _, op := range operations {
 		months[op.At.In(zone).Format("2006-01")+"-01"] = true
 	}
+	// Dismissal changes recognition only. Its caller can enqueue by distinct civil
+	// months without materializing operations or rewriting their accounting facts.
+	if operations == nil {
+		stored, err := r.db.Writer(ctx).Query(ctx, `SELECT DISTINCT to_char(occurred_at AT TIME ZONE $2,'YYYY-MM')||'-01' FROM operation WHERE user_id=$1`, user, name)
+		if err != nil {
+			return importError(ctx, err)
+		}
+		for stored.Next() {
+			var month string
+			if err = stored.Scan(&month); err != nil {
+				stored.Close()
+				return importError(ctx, err)
+			}
+			months[month] = true
+		}
+		err = stored.Err()
+		stored.Close()
+		if err != nil {
+			return importError(ctx, err)
+		}
+	}
 	rows, err := r.db.Writer(ctx).Query(ctx, `SELECT statement_from,statement_to FROM upload WHERE user_id=$1 AND status='done' AND statement_from IS NOT NULL AND statement_to IS NOT NULL`, user)
 	if err != nil {
 		return importError(ctx, err)

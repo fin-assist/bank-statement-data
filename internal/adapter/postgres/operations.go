@@ -6,8 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fin-assist/bank-statement-data/internal/operations"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/fin-assist/bank-statement-data/internal/operations"
 )
 
 // Operations stores public display metadata beside the shared import accounting facts.
@@ -15,6 +16,14 @@ type Operations struct{ *Imports }
 
 // NewOperations shares the same pools and transaction owner as imports.
 func NewOperations(db *DB) *Operations { return &Operations{NewImports(db)} }
+
+// Enqueue marks existing civil months without loading the user's operation history.
+func (r *Operations) Enqueue(ctx context.Context, user string, now time.Time) error {
+	if _, err := r.transaction(ctx); err != nil {
+		return err
+	}
+	return r.schedule(ctx, user, nil, now)
+}
 
 // Metadata gets global bounds by an aggregate, independently from the requested window.
 func (r *Operations) Metadata(ctx context.Context, user string) (out operations.Metadata, err error) {
@@ -81,8 +90,12 @@ func (r *Operations) Snapshot(ctx context.Context, user string, from, to *time.T
 		return out, err
 	}
 	rows, err = r.db.Writer(ctx).Query(ctx, `SELECT c.id,c.name,c.for_expense,c.for_income,COALESCE(c.bank_name,''),c.icon,c.is_system,c.assignable,c.note
- FROM category c LEFT JOIN LATERAL (SELECT min(o.created_at) AS first_seen FROM operation o WHERE o.user_id=$1 AND c.id IN(o.bank_category_id,o.category_id,o.manual_category_id,o.refund_target_category_id)) u ON true
- WHERE c.is_system OR c.is_known OR u.first_seen IS NOT NULL ORDER BY c.sort_order NULLS LAST,u.first_seen,c.id`, user)
+ FROM category c LEFT JOIN (
+ SELECT o.bank_category_id AS id,min(s.id) AS first_record FROM source_record s
+ JOIN operation o ON o.user_id=s.user_id AND o.occurred_at=s.operation_occurred_at AND o.id=s.operation_id
+ WHERE s.user_id=$1 GROUP BY o.bank_category_id
+ )u ON u.id=c.id
+ WHERE c.is_system OR u.id IS NOT NULL ORDER BY c.sort_order NULLS LAST,u.first_record,c.id`, user)
 	if err != nil {
 		return out, importError(ctx, err)
 	}

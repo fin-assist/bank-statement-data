@@ -226,6 +226,14 @@ func (m *memory) LockUser(context.Context, string, bool) (string, error) {
 	}
 	return m.state.TimeZone, nil
 }
+func (m *memory) Enqueue(context.Context, string, time.Time) error {
+	m.saves++
+	if m.fail == "save" {
+		return errStorage
+	}
+	return nil
+}
+
 func (m *memory) SaveRules(_ context.Context, _ string, ops []importing.Operation, _ time.Time) error {
 	m.saves++
 	if m.fail == "save" {
@@ -540,7 +548,7 @@ func TestUnitChangeAndDismissFailures(t *testing.T) {
 	if !errors.Is(e, ErrNotFound) {
 		t.Fatal(e)
 	}
-	for _, failure := range []string{"write", "guard", "lock", "dismiss", "snapshot", "save", "changed"} {
+	for _, failure := range []string{"write", "guard", "lock", "dismiss", "save", "changed"} {
 		t.Run("dismiss_"+failure, func(t *testing.T) {
 			m := fixture()
 			m.fail = failure

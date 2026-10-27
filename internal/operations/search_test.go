@@ -189,7 +189,7 @@ func TestUnitQueryAmountAndSelectionPredicateBoundaries(t *testing.T) {
 		q    string
 		want int64
 		ok   bool
-	}{{"0", 0, true}, {"1 520", 152000, true}, {"1\u00a0520,50", 152050, true}, {"1.5", 150, true}, {".5", 50, true}, {"", 0, false}, {"1.001", 0, false}, {"1.2.3", 0, false}, {"-1", 0, false}, {"1e3", 0, false}, {"92233720368547758.07", math.MaxInt64, true}, {"92233720368547758.08", 0, false}} {
+	}{{"000000000000000000000000000000000000001520.50", 152050, true}, {"0", 0, true}, {"1 520", 152000, true}, {"1\u00a0520,50", 152050, true}, {"1.5", 150, true}, {".5", 50, true}, {"", 0, false}, {"1.001", 0, false}, {"1.2.3", 0, false}, {"-1", 0, false}, {"1e3", 0, false}, {"92233720368547758.07", math.MaxInt64, true}, {"92233720368547758.08", 0, false}} {
 		got, ok := queryAmount(test.q)
 		if got != test.want || ok != test.ok {
 			t.Fatalf("%q %d %v want %d %v", test.q, got, ok, test.want, test.ok)
