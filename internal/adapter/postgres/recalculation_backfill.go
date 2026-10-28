@@ -32,10 +32,13 @@ func (r *Recalculations) CatalogReady(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, importError(ctx, err)
 	}
+	if version < 1 {
+		return false, errImportStorage
+	}
 	if version != accounting.CatalogVersion() {
 		return false, nil
 	}
-	if version < 1 || (version == accounting.CatalogVersion() && fingerprint != accounting.CatalogFingerprint()) {
+	if fingerprint != accounting.CatalogFingerprint() {
 		return false, errImportStorage
 	}
 	return true, nil
