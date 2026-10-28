@@ -12,7 +12,7 @@ CREATE TABLE metrics_backfill (
     finished_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now()
 );
-COMMENT ON TABLE metrics_backfill IS 'Административная контрольная точка ограниченного исторического прохода текущего выпуска реестра; определений метрик и версий отдельных пользователей здесь нет.';
+COMMENT ON TABLE metrics_backfill IS 'Хранит, для каких пользователей сервис уже создал задания на пересчёт прошлых месяцев. После перезапуска сервис продолжает с того места, где остановился.';
 COMMENT ON COLUMN metrics_backfill.catalog_version IS 'Поколение текущего выпуска реестра для защиты от обратного пересчёта старой репликой.';
 COMMENT ON COLUMN metrics_backfill.fingerprint IS 'Отпечаток реестра выпуска; одинаковое поколение с другим содержимым отклоняется.';
 COMMENT ON COLUMN metrics_backfill.cursor IS 'Последний просканированный идентификатор пользователя для возобновления прохода после рестарта; NULL до первого пакета и после завершения.';
