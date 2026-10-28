@@ -78,7 +78,7 @@ func (t *recalcTx) Query(_ context.Context, q string, _ ...any) (pgx.Rows, error
 		return nil, t.queryErr
 	}
 	if strings.Contains(q, "to_char(month") {
-		return &recalcRows{values: [][]any{{"2026-09-01", int16(4), time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)}}}, nil
+		return &recalcRows{values: [][]any{{"2026-09-01", int16(4), time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), true}}}, nil
 	}
 	return &recalcRows{values: [][]any{{"u"}}}, nil
 }
@@ -103,6 +103,8 @@ func (r *recalcRows) Scan(args ...any) error {
 		switch value := v.(type) {
 		case string:
 			*args[i].(*string) = value
+		case bool:
+			*args[i].(*bool) = value
 		case int16:
 			*args[i].(*int16) = value
 		case time.Time:

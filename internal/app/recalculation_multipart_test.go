@@ -88,7 +88,7 @@ func largePublication() recalculating.Publication {
 			}
 			total := int64(len(categories))
 			filter := calculating.Filter{Range: calculating.Range{From: start, To: finish}, Mode: mode, Kind: "expense"}
-			value.Periods = append(value.Periods, calculating.Period{Kind: "month", Key: start.Format("2006-01"), Mode: mode, Range: filter.Range, Bounds: calculating.Bounds{Coverage: "complete", From: &start, To: &boundEnd}, CalculatedAt: now, Metrics: map[string]calculating.Metric{"tiles.expense": {Status: "ready", Value: &total, Filter: &filter}, "expense_categories": {Status: "ready", Categories: categories}}})
+			value.Periods = append(value.Periods, calculating.Period{Kind: "month", Key: start.Format("2006-01"), Mode: mode, Range: filter.Range, Bounds: calculating.Bounds{Coverage: "complete", From: &start, To: &boundEnd}, CalculatedAt: now, Metrics: map[string]calculating.Metric{"tiles.expense": {DefinitionVersion: 1, Status: "ready", Value: &total, Filter: &filter}, "expense_categories": {DefinitionVersion: 1, Status: "ready", Categories: categories}}})
 		}
 	}
 	return value

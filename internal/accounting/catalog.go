@@ -1,10 +1,9 @@
-// Package accounting owns the initial, shared financial definition catalog.
+// Package accounting owns the shared, versioned financial definition catalog.
 package accounting
 
 import "time"
 
 const (
-	DefinitionVersion              = 1
 	PairWindow                     = 72 * time.Hour
 	RefundWindow                   = 60 * 24 * time.Hour
 	RegularWindow                  = 3
@@ -46,10 +45,15 @@ func Threshold(name string) Feature {
 
 // FeeWord matches whole, normalized words only; callers split on non-letters.
 func FeeWord(word string) bool {
-	switch word {
-	case "комиссия", "комиссии", "комиссию", "комиссией", "комиссий", "комиссиям", "комиссиями", "комиссиях",
-		"процент", "процента", "проценту", "процентом", "проценте", "проценты", "процентов", "процентам", "процентами", "процентах":
-		return true
+	for _, form := range feeWords() {
+		if word == form {
+			return true
+		}
 	}
 	return false
+}
+
+func feeWords() []string {
+	return []string{"комиссия", "комиссии", "комиссию", "комиссией", "комиссий", "комиссиям", "комиссиями", "комиссиях",
+		"процент", "процента", "проценту", "процентом", "проценте", "проценты", "процентов", "процентам", "процентами", "процентах"}
 }

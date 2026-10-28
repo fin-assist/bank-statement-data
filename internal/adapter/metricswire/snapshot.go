@@ -9,7 +9,6 @@ import (
 	common "github.com/fin-assist/contracts/gen/go/finassist/common/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/fin-assist/bank-statement-data/internal/accounting"
 	"github.com/fin-assist/bank-statement-data/internal/calculating"
 	"github.com/fin-assist/bank-statement-data/internal/sourcerevision"
 )
@@ -172,7 +171,11 @@ func Encode(result calculating.Result) (*pb.UserDataState, []*pb.PeriodSnapshot,
 		}
 		sort.Strings(ids)
 		for _, id := range ids {
-			wire.Metrics = append(wire.Metrics, &pb.MetricSnapshot{MetricId: id, DefinitionVersion: accounting.DefinitionVersion, Metric: e.metric(id, p.Metrics[id])})
+			metric := p.Metrics[id]
+			if metric.DefinitionVersion < 1 {
+				return nil, nil, calculating.ErrCalculation
+			}
+			wire.Metrics = append(wire.Metrics, &pb.MetricSnapshot{MetricId: id, DefinitionVersion: metric.DefinitionVersion, Metric: e.metric(id, metric)})
 		}
 		out = append(out, wire)
 	}

@@ -202,6 +202,15 @@ func (c *calculator) period(r Range) Period {
 		m["insights.bank_fees"] = c.fees(r)
 		m["insights.small_frequent"] = c.small(r)
 	}
+	for id, metric := range m {
+		definition, ok := accounting.DefinitionFor(id)
+		if !ok || definition.Version < 1 {
+			c.err = ErrCalculation
+			return p
+		}
+		metric.DefinitionVersion = definition.Version
+		m[id] = metric
+	}
 	return p
 }
 func (c *calculator) categories(r Range, kind string) Metric {

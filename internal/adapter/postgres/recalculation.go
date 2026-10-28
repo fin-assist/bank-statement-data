@@ -69,13 +69,13 @@ func (r *Recalculations) Lock(ctx context.Context, user string, now time.Time) (
 	if err != nil {
 		return out, false, importError(ctx, err)
 	}
-	rows, err := r.db.Writer(ctx).Query(ctx, `SELECT to_char(month,'YYYY-MM-DD'),generation,enqueued_at FROM recalc_queue WHERE user_id=$1 AND next_attempt_at<=$2 ORDER BY month`, user, now)
+	rows, err := r.db.Writer(ctx).Query(ctx, `SELECT to_char(month,'YYYY-MM-DD'),generation,enqueued_at,registry_only FROM recalc_queue WHERE user_id=$1 AND next_attempt_at<=$2 ORDER BY month`, user, now)
 	if err != nil {
 		return out, false, importError(ctx, err)
 	}
 	for rows.Next() {
 		var q recalculating.QueueRow
-		if err = rows.Scan(&q.Month, &q.Generation, &q.EnqueuedAt); err != nil {
+		if err = rows.Scan(&q.Month, &q.Generation, &q.EnqueuedAt, &q.RegistryOnly); err != nil {
 			break
 		}
 		out.Queue = append(out.Queue, q)
@@ -95,13 +95,20 @@ func (r *Recalculations) Lock(ctx context.Context, user string, now time.Time) (
 			return out, false, nil
 		}
 	}
+	// A registry row can be due before a failed source-change row. This full
+	// calendar calculation consumes both, so retain the user-action flag even
+	// when that source row's retry time is later than the due lease rows.
+	err = r.db.Writer(ctx).QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM recalc_queue WHERE user_id=$1 AND NOT registry_only)`, user).Scan(&out.UserAction)
+	if err != nil {
+		return out, false, importError(ctx, err)
+	}
 	version, err := NewToolFacts(r.db).Version(ctx, user)
 	if err != nil {
 		return out, false, err
 	}
 	out.Revisions = version.Revisions
 	var state, keys []byte
-	err = r.db.Writer(ctx).QueryRow(ctx, `SELECT state,period_keys,recalculating FROM metrics_publication WHERE user_id=$1`, user).Scan(&state, &keys, &out.Recalculating)
+	err = r.db.Writer(ctx).QueryRow(ctx, `SELECT state,period_keys,recalculating,pending_user_action FROM metrics_publication WHERE user_id=$1`, user).Scan(&state, &keys, &out.Recalculating, &out.PendingUserAction)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return out, true, nil
 	}
@@ -136,8 +143,8 @@ func (r *Recalculations) Start(ctx context.Context, lease recalculating.Lease, s
 	if err != nil {
 		return errImportStorage
 	}
-	_, err = r.db.Writer(ctx).Exec(ctx, `INSERT INTO metrics_publication(user_id,state,recalculating) VALUES($1,$2,true)
- ON CONFLICT(user_id)DO UPDATE SET state=EXCLUDED.state,recalculating=true`, lease.User, data)
+	_, err = r.db.Writer(ctx).Exec(ctx, `INSERT INTO metrics_publication(user_id,state,recalculating,pending_user_action) VALUES($1,$2,true,$3)
+ ON CONFLICT(user_id)DO UPDATE SET state=EXCLUDED.state,recalculating=true,pending_user_action=EXCLUDED.pending_user_action`, lease.User, data, lease.UserAction)
 	if err != nil {
 		return importError(ctx, err)
 	}
@@ -175,8 +182,8 @@ func (r *Recalculations) Complete(ctx context.Context, lease recalculating.Lease
 	if err != nil {
 		return errImportStorage
 	}
-	_, err = r.db.Writer(ctx).Exec(ctx, `INSERT INTO metrics_publication(user_id,state,period_keys,recalculating)VALUES($1,$2,$3,false)
- ON CONFLICT(user_id)DO UPDATE SET state=EXCLUDED.state,period_keys=EXCLUDED.period_keys,recalculating=false`, lease.User, data, encoded)
+	_, err = r.db.Writer(ctx).Exec(ctx, `INSERT INTO metrics_publication(user_id,state,period_keys,recalculating,pending_user_action)VALUES($1,$2,$3,false,false)
+ ON CONFLICT(user_id)DO UPDATE SET state=EXCLUDED.state,period_keys=EXCLUDED.period_keys,recalculating=false,pending_user_action=false`, lease.User, data, encoded)
 	if err != nil {
 		return importError(ctx, err)
 	}

@@ -83,19 +83,20 @@ type Small struct {
 
 // Metric contains one fully evaluated definition. Exactly one details family is used.
 type Metric struct {
-	Status     string
-	Lock       *Lock
-	Basis      *Basis
-	Filter     *Filter
-	Value      *int64
-	Range      *Range
-	Share      *float64
-	Categories []CategoryAmount
-	Points     []Point
-	Payments   []Payment
-	Notable    []Notable
-	Small      []Small
-	FeeKinds   *string
+	DefinitionVersion int32
+	Status            string
+	Lock              *Lock
+	Basis             *Basis
+	Filter            *Filter
+	Value             *int64
+	Range             *Range
+	Share             *float64
+	Categories        []CategoryAmount
+	Points            []Point
+	Payments          []Payment
+	Notable           []Notable
+	Small             []Small
+	FeeKinds          *string
 }
 
 // Period is a complete replacement snapshot in one transfer mode.
