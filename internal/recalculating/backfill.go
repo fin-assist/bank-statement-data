@@ -12,6 +12,16 @@ import (
 func (s *Service) PlanBackfill(parent context.Context) error {
 	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	defer cancel()
+	// Commit the generation fence before visiting users. A busy user's rollback
+	// must not let an older binary publish after this binary started the release.
+	var done bool
+	if err := s.tx.Run(ctx, func(ctx context.Context) error {
+		var err error
+		_, done, err = s.repo.BeginBackfill(ctx, s.now())
+		return err
+	}); err != nil || done {
+		return err
+	}
 	err := s.tx.Run(ctx, func(ctx context.Context) error {
 		cursor, done, err := s.repo.BeginBackfill(ctx, s.now())
 		if err != nil || done {
