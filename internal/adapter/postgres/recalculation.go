@@ -69,13 +69,13 @@ func (r *Recalculations) Lock(ctx context.Context, user string, now time.Time) (
 	if err != nil {
 		return out, false, importError(ctx, err)
 	}
-	rows, err := r.db.Writer(ctx).Query(ctx, `SELECT to_char(month,'YYYY-MM-DD'),generation,enqueued_at FROM recalc_queue WHERE user_id=$1 AND next_attempt_at<=$2 ORDER BY month`, user, now)
+	rows, err := r.db.Writer(ctx).Query(ctx, `SELECT to_char(month,'YYYY-MM-DD'),generation,enqueued_at,registry_only FROM recalc_queue WHERE user_id=$1 AND next_attempt_at<=$2 ORDER BY month`, user, now)
 	if err != nil {
 		return out, false, importError(ctx, err)
 	}
 	for rows.Next() {
 		var q recalculating.QueueRow
-		if err = rows.Scan(&q.Month, &q.Generation, &q.EnqueuedAt); err != nil {
+		if err = rows.Scan(&q.Month, &q.Generation, &q.EnqueuedAt, &q.RegistryOnly); err != nil {
 			break
 		}
 		out.Queue = append(out.Queue, q)
