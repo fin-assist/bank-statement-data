@@ -363,3 +363,42 @@ func TestUnitCatalogAdmissionStopsBeforeTombstoneAndFinancialReads(t *testing.T)
 		}
 	}
 }
+
+func TestUnitUserChangePromotesSilentRegistryPendingBeforeCoverageRecovery(t *testing.T) {
+	s, r, p := fixture(t)
+	r.lease.Queue = []QueueRow{{RegistryOnly: true}}
+	s.coverage = coverageFake{}
+	if err := s.Recalculate(t.Context(), "u"); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.values) != 1 || !p.values[0].Pending || p.values[0].Recalculating || !r.lease.Recalculating || r.lease.PendingUserAction || r.completeCalls != 0 {
+		t.Fatal("registry work did not persist a silent resumable pending state", p.values, r.lease.Recalculating)
+	}
+	// A committed source edit changes the durable queue cause while the legacy
+	// coverage repair is still incomplete. It must immediately make the pending
+	// public state visible, without requiring recovery to succeed first.
+	r.lease.Queue[0].RegistryOnly = false
+	r.lease.UserAction = true
+	if err := s.Recalculate(t.Context(), "u"); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.values) != 2 || !p.values[1].Pending || !p.values[1].Recalculating || p.values[1].Version <= p.values[0].Version || r.startCalls != 2 || !r.lease.PendingUserAction || r.completeCalls != 0 {
+		t.Fatal("user change remained hidden behind registry-only pending state until coverage recovery", p.values, r.startCalls, r.completeCalls)
+	}
+	// Repeated recovery attempts and a new service process reuse the durable
+	// announcement. They do not create a new version/outbox row every tick.
+	if err := s.Recalculate(t.Context(), "u"); err != nil || len(p.values) != 2 || r.startCalls != 2 {
+		t.Fatal("announced user work generated duplicate pending publications", err, p.values, r.startCalls)
+	}
+	restarted, err := New(&txFake{}, r, guardFake{live: true}, p, s.now, coverageFake{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = restarted.Recalculate(t.Context(), "u"); err != nil || len(p.values) != 2 || r.startCalls != 2 {
+		t.Fatal("new service forgot the durable public pending cause", err, p.values, r.startCalls)
+	}
+	restarted.coverage = coverageFake{ready: true}
+	if err = restarted.Recalculate(t.Context(), "u"); err != nil || len(p.values) != 3 || p.values[2].Pending || !p.values[2].Recalculating || r.completeCalls != 1 || r.lease.PendingUserAction {
+		t.Fatal("recovered replacement lost the user cause or did not retire its durable announcement", err, p.values, r.completeCalls)
+	}
+}

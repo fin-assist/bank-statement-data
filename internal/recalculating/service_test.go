@@ -73,11 +73,12 @@ func (f *repoFake) Snapshot(context.Context, string) (importing.Snapshot, error)
 func (f *repoFake) Reference(context.Context, string, string, string) (calculating.Reference, error) {
 	return calculating.Reference{ID: "00000000-0000-4000-8000-000000000001"}, f.referenceErr
 }
-func (f *repoFake) Start(_ context.Context, _ Lease, state calculating.State) error {
+func (f *repoFake) Start(_ context.Context, lease Lease, state calculating.State) error {
 	f.startCalls++
 	if f.startErr == nil {
 		f.lease.Version++
-		f.lease.Recalculating = f.lease.UserAction || userAction(f.lease.Queue)
+		f.lease.Recalculating = true
+		f.lease.PendingUserAction = lease.UserAction
 		f.lease.State = state
 	}
 	return f.startErr
@@ -89,6 +90,7 @@ func (f *repoFake) Complete(_ context.Context, _ Lease, state calculating.State,
 		f.lease.State = state
 		f.lease.Known = keys
 		f.lease.Recalculating = false
+		f.lease.PendingUserAction = false
 		f.active = false
 	}
 	return f.completeErr
@@ -163,6 +165,7 @@ func TestUnitRecalculationEmptyCoverageRemovesAllOldPeriods(t *testing.T) {
 func TestUnitRecalculationResumesCommittedPendingState(t *testing.T) {
 	s, r, p := fixture(t)
 	r.lease.Recalculating = true
+	r.lease.PendingUserAction = true
 	r.lease.Version = 10
 	if err := s.Recalculate(t.Context(), "u"); err != nil {
 		t.Fatal(err)
@@ -235,6 +238,7 @@ func TestUnitRecalculationRefusesDeletedBusyExhaustedAndCancellation(t *testing.
 				wantErr = true
 			case "exhausted-resume":
 				r.lease.Recalculating = true
+				r.lease.PendingUserAction = true
 				r.lease.Version = math.MaxInt32 - 1
 				wantErr = true
 			case "cancelled":
