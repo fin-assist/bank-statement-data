@@ -21,9 +21,10 @@ type Period struct{ Kind, Key string }
 
 // QueueRow identifies exactly the generation observed before a failed attempt.
 type QueueRow struct {
-	Month      string
-	Generation int16
-	EnqueuedAt time.Time
+	Month        string
+	Generation   int16
+	EnqueuedAt   time.Time
+	RegistryOnly bool
 }
 
 // Lease is the state read under the user's lock.
@@ -51,6 +52,11 @@ type Publication struct {
 
 // Repository owns persisted queue and publication bookkeeping, never network I/O.
 type Repository interface {
+	CatalogReady(context.Context) (bool, error)
+	BeginBackfill(context.Context, time.Time) (string, bool, error)
+	BackfillUsers(context.Context, string, int) ([]string, error)
+	EnqueueBackfill(context.Context, string, time.Time) error
+	AdvanceBackfill(context.Context, string, int, bool, time.Time) error
 	Pending(context.Context, time.Time, int, ...string) ([]string, error)
 	Lock(context.Context, string, time.Time) (Lease, bool, error)
 	Snapshot(context.Context, string) (importing.Snapshot, error)

@@ -238,7 +238,7 @@ func (r *Imports) schedule(ctx context.Context, user string, operations []import
 		sort.Strings(keys)
 		_, err := r.db.Writer(ctx).Exec(ctx, `INSERT INTO recalc_queue(user_id,month,enqueued_at,next_attempt_at)
  SELECT $1,month::date,$3,$3 FROM unnest($2::text[]) AS months(month)
- ON CONFLICT(user_id,month) DO UPDATE SET generation=CASE WHEN recalc_queue.generation=32767 THEN 1 ELSE recalc_queue.generation+1 END,enqueued_at=EXCLUDED.enqueued_at,next_attempt_at=EXCLUDED.next_attempt_at,attempts=0,last_error=NULL`, user, keys, now)
+ ON CONFLICT(user_id,month) DO UPDATE SET registry_only=false,generation=CASE WHEN recalc_queue.generation=32767 THEN 1 ELSE recalc_queue.generation+1 END,enqueued_at=EXCLUDED.enqueued_at,next_attempt_at=EXCLUDED.next_attempt_at,attempts=0,last_error=NULL`, user, keys, now)
 		if err != nil {
 			return importError(ctx, err)
 		}

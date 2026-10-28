@@ -34,6 +34,9 @@ func New(tx importing.Transactions, repo Repository, deleted importing.Tombstone
 // Tick handles at most sixteen users. Each user's expensive computation has a
 // thirty-second deadline; SQL locks are skipped so replicas cannot duplicate work.
 func (s *Service) Tick(ctx context.Context) error {
+	if err := s.PlanBackfill(ctx); err != nil {
+		return err
+	}
 	after := ""
 	if cursor := s.cursor.Load(); cursor != nil {
 		after = *cursor
@@ -61,6 +64,10 @@ func (s *Service) Tick(ctx context.Context) error {
 var errBusy = errors.New("recalculation user busy")
 
 func (s *Service) lock(ctx context.Context, user string) (Lease, bool, error) {
+	ready, err := s.repo.CatalogReady(ctx)
+	if err != nil || !ready {
+		return Lease{}, false, err
+	}
 	guardCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 	defer cancel()
 	live, err := s.deleted.Guard(guardCtx, user)
@@ -101,7 +108,7 @@ func (s *Service) Recalculate(ctx context.Context, user string) error {
 			state.TimeZone = "Europe/Moscow"
 		}
 		state.CalculatedAt = s.now()
-		if err = s.publisher.Publish(ctx, Publication{User: user, Version: lease.Version + 1, State: state, Recalculating: len(lease.Queue) > 0, Pending: true}); err != nil {
+		if err = s.publisher.Publish(ctx, Publication{User: user, Version: lease.Version + 1, State: state, Recalculating: userAction(lease.Queue), Pending: true}); err != nil {
 			return err
 		}
 		return s.repo.Start(ctx, lease, state)
@@ -163,7 +170,7 @@ func (s *Service) Recalculate(ctx context.Context, user string) error {
 				keys = append(keys, p.Period)
 			}
 			global.Revisions = maps.Clone(lease.Revisions)
-			if err = s.publisher.Publish(ctx, Publication{User: user, Version: lease.Version + 1, State: global, Recalculating: len(lease.Queue) > 0, Periods: snapshots, Removed: removed(lease.Known, keys)}); err != nil {
+			if err = s.publisher.Publish(ctx, Publication{User: user, Version: lease.Version + 1, State: global, Recalculating: userAction(lease.Queue), Periods: snapshots, Removed: removed(lease.Known, keys)}); err != nil {
 				return err
 			}
 			return s.repo.Complete(ctx, lease, global, keys, now)
