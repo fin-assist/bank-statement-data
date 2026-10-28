@@ -46,7 +46,17 @@ type repoFake struct {
 	active                                                                         bool
 	snapshot                                                                       importing.Snapshot
 	pendingErr, lockErr, snapshotErr, startErr, completeErr, failErr, referenceErr error
-	startCalls, completeCalls, failCalls, lockCalls                                int
+	startCalls, completeCalls, failCalls, lockCalls, snapshotCalls                 int
+}
+
+func (f *repoFake) CatalogReady(context.Context) (bool, error) { return true, nil }
+func (f *repoFake) BeginBackfill(context.Context, time.Time) (string, bool, error) {
+	return "", true, nil
+}
+func (f *repoFake) BackfillUsers(context.Context, string, int) ([]string, error) { return nil, nil }
+func (f *repoFake) EnqueueBackfill(context.Context, string, time.Time) error     { return nil }
+func (f *repoFake) AdvanceBackfill(context.Context, string, int, bool, time.Time) error {
+	return nil
 }
 
 func (f *repoFake) Pending(context.Context, time.Time, int, ...string) ([]string, error) {
@@ -57,6 +67,7 @@ func (f *repoFake) Lock(context.Context, string, time.Time) (Lease, bool, error)
 	return f.lease, f.active, f.lockErr
 }
 func (f *repoFake) Snapshot(context.Context, string) (importing.Snapshot, error) {
+	f.snapshotCalls++
 	return f.snapshot, f.snapshotErr
 }
 func (f *repoFake) Reference(context.Context, string, string, string) (calculating.Reference, error) {
@@ -66,7 +77,7 @@ func (f *repoFake) Start(_ context.Context, _ Lease, state calculating.State) er
 	f.startCalls++
 	if f.startErr == nil {
 		f.lease.Version++
-		f.lease.Recalculating = true
+		f.lease.Recalculating = userAction(f.lease.Queue)
 		f.lease.State = state
 	}
 	return f.startErr
