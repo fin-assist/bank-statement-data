@@ -35,6 +35,9 @@ type plannerRepository struct {
 	catalogCalls   int
 	catalogBlocked int
 	catalogErrorAt int
+	beginCalls     int
+	beginErrorAt   int
+	beginDoneAt    int
 }
 
 func (r *plannerRepository) record(name string) error {
@@ -46,7 +49,12 @@ func (r *plannerRepository) record(name string) error {
 }
 func (r *plannerRepository) BeginBackfill(ctx context.Context, _ time.Time) (string, bool, error) {
 	r.deadline, _ = ctx.Deadline()
-	return r.cursor, r.done, r.record("begin")
+	r.beginCalls++
+	err := r.record("begin")
+	if r.beginCalls == r.beginErrorAt {
+		err = r.failure
+	}
+	return r.cursor, r.done || r.beginCalls == r.beginDoneAt, err
 }
 func (r *plannerRepository) BackfillUsers(_ context.Context, cursor string, limit int) ([]string, error) {
 	r.readCursor, r.limit = cursor, limit
@@ -90,6 +98,9 @@ type completionTransaction struct {
 	result       error
 	callbackErr  error
 	callbackDone bool
+	committed    int
+	rolledBack   int
+	resultAt     int
 }
 
 func (tx *completionTransaction) Run(ctx context.Context, fn func(context.Context) error) error {
@@ -100,9 +111,14 @@ func (tx *completionTransaction) Run(ctx context.Context, fn func(context.Contex
 	tx.callbackErr = fn(ctx)
 	tx.callbackDone = tx.callbackErr == nil
 	if tx.callbackErr != nil {
+		tx.rolledBack++
 		return tx.callbackErr
 	}
-	return tx.result
+	if tx.result != nil && (tx.resultAt == 0 || tx.resultAt == tx.calls) {
+		return tx.result
+	}
+	tx.committed++
+	return nil
 }
 
 func plannerFixture(t *testing.T) (*Service, *plannerRepository, *publisherFake) {
@@ -127,7 +143,7 @@ func TestUnitRegistryBackfillPlansOneBoundedPageAndSkipsDeletedUsers(t *testing.
 	if err := s.PlanBackfill(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"begin", "users", "guard:a", "enqueue:a", "guard:b", "guard:c", "enqueue:c", "advance"}
+	want := []string{"begin", "begin", "users", "guard:a", "enqueue:a", "guard:b", "guard:c", "enqueue:c", "advance"}
 	if !reflect.DeepEqual(r.calls, want) || r.readCursor != "prior" || r.limit != 16 {
 		t.Fatal("planner changed lock order, page bound or restart cursor", r.calls, r.readCursor, r.limit)
 	}
@@ -164,10 +180,19 @@ func TestUnitRegistryBackfillCheckpointsFullAndEmptyPages(t *testing.T) {
 	if err := s.PlanBackfill(t.Context()); err != nil || !reflect.DeepEqual(r.calls, []string{"begin"}) || r.advance != nil {
 		t.Fatal("finished registry scan was repeated", err, r.calls)
 	}
+	// A second replica may finish the scan after registration committed but before
+	// this replica acquires the planning transaction's release lock.
+	s, r, _ = plannerFixture(t)
+	r.beginDoneAt = 2
+	tx := &completionTransaction{}
+	s.tx = tx
+	if err := s.PlanBackfill(t.Context()); err != nil || !reflect.DeepEqual(r.calls, []string{"begin", "begin"}) || r.advance != nil || tx.committed != 2 {
+		t.Fatal("finished scan in the second transaction was read or enqueued again", err, r.calls, tx.committed)
+	}
 }
 
 func TestUnitRegistryBackfillErrorsReachTransactionWithoutAdvancingFailedPage(t *testing.T) {
-	for _, failAt := range []string{"begin", "users", "guard", "enqueue:a", "enqueue:b", "advance", "transaction", "commit"} {
+	for _, failAt := range []string{"begin", "users", "guard", "enqueue:a", "enqueue:b", "advance", "transaction", "commit", "begin-page", "commit-page"} {
 		t.Run(failAt, func(t *testing.T) {
 			s, r, _ := plannerFixture(t)
 			r.failAt = failAt
@@ -176,8 +201,14 @@ func TestUnitRegistryBackfillErrorsReachTransactionWithoutAdvancingFailedPage(t 
 			if failAt == "transaction" {
 				s.tx = &txFake{failure: r.failure}
 			}
-			if failAt == "commit" {
+			if failAt == "commit" || failAt == "commit-page" {
 				tx.result = r.failure
+			}
+			if failAt == "commit-page" {
+				tx.resultAt = 2
+			}
+			if failAt == "begin-page" {
+				r.beginErrorAt = 2
 			}
 			if failAt == "guard" {
 				s.deleted = guardedCall{guard: func(context.Context, string) (bool, error) { return false, r.failure }}
@@ -185,14 +216,17 @@ func TestUnitRegistryBackfillErrorsReachTransactionWithoutAdvancingFailedPage(t 
 			if err := s.PlanBackfill(t.Context()); !errors.Is(err, r.failure) {
 				t.Fatal("failed planning transaction was acknowledged", err)
 			}
-			if failAt != "transaction" && failAt != "commit" && !errors.Is(tx.callbackErr, r.failure) {
+			if failAt != "transaction" && failAt != "commit" && failAt != "commit-page" && !errors.Is(tx.callbackErr, r.failure) {
 				t.Fatal("planner swallowed callback error and would commit partial page", tx.callbackErr)
 			}
-			if failAt != "advance" && failAt != "commit" && r.advance != nil {
+			if failAt != "advance" && failAt != "commit" && failAt != "commit-page" && r.advance != nil {
 				t.Fatal("failed page advanced its restart checkpoint", r.advance)
 			}
 			if failAt == "transaction" && len(r.calls) != 0 {
 				t.Fatal("storage ran after transaction refused work")
+			}
+			if (failAt == "begin-page" || failAt == "commit-page") && tx.committed != 1 {
+				t.Fatal("page failure lost the separately committed registry fence", tx.committed)
 			}
 		})
 	}
@@ -207,6 +241,9 @@ func TestUnitRegistryBackfillBusyUserRollsBackPageAndParentCancellationSurfaces(
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			s.deleted = guardedCall{guard: func(guardCtx context.Context, user string) (bool, error) {
+				if tx.committed != 1 || tx.calls != 2 {
+					t.Fatal("release fence was not committed before acquiring user guards", tx.committed, tx.calls)
+				}
 				if user == "a" {
 					return true, nil
 				}
@@ -224,7 +261,7 @@ func TestUnitRegistryBackfillBusyUserRollsBackPageAndParentCancellationSurfaces(
 			} else if err != nil || !errors.Is(tx.callbackErr, errBusy) {
 				t.Fatal("busy page did not request transaction rollback", err, tx.callbackErr)
 			}
-			if tx.callbackDone || r.advance != nil || !reflect.DeepEqual(r.calls, []string{"begin", "users", "enqueue:a"}) {
+			if tx.callbackDone || tx.committed != 1 || tx.rolledBack != 1 || r.advance != nil || !reflect.DeepEqual(r.calls, []string{"begin", "begin", "users", "enqueue:a"}) {
 				t.Fatal("busy/cancelled page skipped a user or committed partial work", r.calls, r.advance)
 			}
 		})
