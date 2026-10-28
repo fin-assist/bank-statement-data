@@ -44,10 +44,28 @@ func (r *Recalculations) CatalogReady(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-// BeginBackfill registers an immutable release and locks its durable scan checkpoint.
+// BeginBackfill skips completed releases, otherwise registering and locking the scan.
 func (r *Recalculations) BeginBackfill(ctx context.Context, now time.Time) (cursor string, done bool, err error) {
 	if _, err = r.transaction(ctx); err != nil {
 		return "", false, err
+	}
+	// A completed scan has no work to serialize. In particular, its periodic
+	// check must not wait for another user's shared calculation fence. A later
+	// generation is checked again by CatalogReady before any publication.
+	var observedVersion int32
+	var observedFingerprint string
+	var observedFinished *time.Time
+	err = r.db.Writer(ctx).QueryRow(ctx, `SELECT catalog_version,fingerprint,finished_at FROM metrics_backfill ORDER BY catalog_version DESC LIMIT 1`).Scan(&observedVersion, &observedFingerprint, &observedFinished)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return "", false, importError(ctx, err)
+	}
+	if err == nil {
+		if observedVersion < 1 || (observedVersion == accounting.CatalogVersion() && observedFingerprint != accounting.CatalogFingerprint()) {
+			return "", false, errImportStorage
+		}
+		if observedVersion > accounting.CatalogVersion() || (observedVersion == accounting.CatalogVersion() && observedFinished != nil) {
+			return "", true, nil
+		}
 	}
 	if _, err = r.db.Writer(ctx).Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, catalogLockKey); err != nil {
 		return "", false, importError(ctx, err)

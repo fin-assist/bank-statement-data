@@ -34,7 +34,9 @@ func (tx *backfillSQLTx) QueryRow(c context.Context, query string, values ...any
 			}
 			*args[0].(*int32) = tx.catalog
 			*args[1].(*string) = tx.fingerprint
-			if len(args) > 2 {
+			if len(args) == 3 {
+				*args[2].(**time.Time) = tx.finished
+			} else if len(args) == 4 {
 				*args[2].(**string) = tx.cursor
 				*args[3].(**time.Time) = tx.finished
 			}
@@ -208,5 +210,22 @@ func TestUnitBackfillStorageFailuresHideDriverDetails(t *testing.T) {
 	tx := &backfillSQLTx{recalcTx: recalcTx{noRowsAffected: true}}
 	if e := unitBackfill(t, tx, func(c context.Context, r *Recalculations) error { return r.AdvanceBackfill(c, "cursor", 1, false, now) }); e == nil {
 		t.Fatal("missing checkpoint accepted")
+	}
+}
+
+func TestUnitBackfillCompletedReleaseDoesNotAcquireExclusiveFence(t *testing.T) {
+	now := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	tx := &backfillSQLTx{catalog: accounting.CatalogVersion(), fingerprint: accounting.CatalogFingerprint(), finished: &now}
+	if err := unitBackfill(t, tx, func(c context.Context, r *Recalculations) error {
+		_, done, err := r.BeginBackfill(c, now)
+		if err != nil || !done {
+			t.Fatal(done, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(tx.queries, "\n"), "pg_advisory_xact_lock(") {
+		t.Fatal("completed catalog took the global exclusive fence")
 	}
 }
