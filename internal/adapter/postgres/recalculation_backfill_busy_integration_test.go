@@ -74,7 +74,7 @@ func TestIntegrationBackfillBusyUserRetainsCommittedGenerationAndRetriesPage(t *
 	}
 	if e := svc.PlanBackfill(t.Context()); e != nil {
 		close(release)
-		<-done
+		_ = <-done
 		t.Fatal("busy page must remain retryable", e)
 	}
 	var version int32
@@ -85,13 +85,13 @@ func TestIntegrationBackfillBusyUserRetainsCommittedGenerationAndRetriesPage(t *
 	e = f.db.Primary().QueryRow(t.Context(), `SELECT catalog_version,fingerprint,cursor::text,planned_users,finished_at FROM metrics_backfill`).Scan(&version, &fingerprint, &cursor, &planned, &finished)
 	if e != nil || version != accounting.CatalogVersion() || fingerprint != accounting.CatalogFingerprint() || cursor != nil || planned != 0 || finished != nil {
 		close(release)
-		<-done
+		_ = <-done
 		t.Fatal("busy rollback lost generation fence or advanced cursor", version, fingerprint, cursor, planned, finished, e)
 	}
 	var queued int
 	if e = f.db.Primary().QueryRow(t.Context(), `SELECT count(*)FROM recalc_queue`).Scan(&queued); e != nil || queued != 0 {
 		close(release)
-		<-done
+		_ = <-done
 		t.Fatal("busy page wrote partial queue", queued, e)
 	}
 	if e = f.db.Run(t.Context(), func(c context.Context) error {
@@ -102,7 +102,7 @@ func TestIntegrationBackfillBusyUserRetainsCommittedGenerationAndRetriesPage(t *
 		return e
 	}); e != nil {
 		close(release)
-		<-done
+		_ = <-done
 		t.Fatal(e)
 	}
 	close(release)
