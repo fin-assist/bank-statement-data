@@ -189,3 +189,123 @@ func TestIntegrationBackfillLeasePreservesSilentRegistryCause(t *testing.T) {
 		t.Fatal("registry retry lost", pending, e)
 	}
 }
+
+func TestIntegrationBackfillGenerationFenceSerializesPublicationAndPlanning(t *testing.T) {
+	for _, plannerFirst := range []bool{false, true} {
+		t.Run(map[bool]string{false: "publication_first", true: "planner_first"}[plannerFirst], func(t *testing.T) {
+			f := importRepository(t)
+			repo := postgres.NewRecalculations(f.db, 0)
+			held := make(chan struct{})
+			release := make(chan struct{})
+			done := make(chan error, 1)
+			go func() {
+				done <- f.db.Run(t.Context(), func(c context.Context) error {
+					if plannerFirst {
+						if _, _, e := repo.BeginBackfill(c, f.now); e != nil {
+							return e
+						}
+					} else {
+						if ready, e := repo.CatalogReady(c); e != nil || !ready {
+							return errors.New("publication fence unavailable")
+						}
+					}
+					close(held)
+					select {
+					case <-release:
+						return nil
+					case <-c.Done():
+						return c.Err()
+					}
+				})
+			}()
+			select {
+			case <-held:
+			case e := <-done:
+				t.Fatal("first transaction failed", e)
+			case <-time.After(5 * time.Second):
+				t.Fatal("first transaction did not acquire fence")
+			}
+			blocked, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+			e := f.db.Run(blocked, func(c context.Context) error {
+				if plannerFirst {
+					_, e := repo.CatalogReady(c)
+					return e
+				}
+				_, _, e := repo.BeginBackfill(c, f.now)
+				return e
+			})
+			cancel()
+			close(release)
+			if first := <-done; first != nil {
+				t.Fatal(first)
+			}
+			if !errors.Is(e, context.DeadlineExceeded) {
+				t.Fatal("release generation crossed an in-flight snapshot", e)
+			}
+			if e = f.db.Run(t.Context(), func(c context.Context) error {
+				if plannerFirst {
+					ready, e := repo.CatalogReady(c)
+					if !ready {
+						t.Fatal("fence remained closed")
+					}
+					return e
+				}
+				_, _, e := repo.BeginBackfill(c, f.now)
+				return e
+			}); e != nil {
+				t.Fatal("fence did not recover after transaction", e)
+			}
+		})
+	}
+}
+
+func TestIntegrationBackfillRegistryRowsBecomeUserActionsAfterTimezoneChange(t *testing.T) {
+	f := importRepository(t)
+	repo := postgres.NewRecalculations(f.db, 0)
+	user, id := uuid.NewString(), uuid.NewString()
+	if e := f.db.Run(t.Context(), func(c context.Context) error {
+		if e := f.admitted(c, user, id); e != nil {
+			return e
+		}
+		if _, e := f.db.Writer(c).Exec(c, `UPDATE upload SET status='done',statement_from='2020-01-01',statement_to='2020-03-31',statement_from_instant='2020-01-01Z',statement_to_instant='2020-03-31Z',statement_range_source='tags' WHERE id=$1`, id); e != nil {
+			return e
+		}
+		if _, _, e := repo.BeginBackfill(c, f.now); e != nil {
+			return e
+		}
+		return repo.EnqueueBackfill(c, user, f.now)
+	}); e != nil {
+		t.Fatal(e)
+	}
+	if e := f.db.Run(t.Context(), func(c context.Context) error { return f.repo.SetTimezone(c, user, "UTC", 1, f.now) }); e != nil {
+		t.Fatal(e)
+	}
+	var count, action int
+	if e := f.db.Primary().QueryRow(t.Context(), `SELECT count(*),count(*)FILTER(WHERE NOT registry_only)FROM recalc_queue WHERE user_id=$1`, user).Scan(&count, &action); e != nil || count != 3 || action != 3 {
+		t.Fatal("source edit retained silent registry cause", count, action, e)
+	}
+}
+
+func TestIntegrationBackfillDueRegistryLeaseRetainsFutureUserAction(t *testing.T) {
+	f := importRepository(t)
+	repo := postgres.NewRecalculations(f.db, 0)
+	user := uuid.NewString()
+	if e := f.db.Run(t.Context(), func(c context.Context) error {
+		if _, e := f.repo.LockUser(c, user, true); e != nil {
+			return e
+		}
+		_, e := f.db.Writer(c).Exec(c, `INSERT INTO recalc_queue(user_id,month,enqueued_at,next_attempt_at,registry_only)VALUES($1,'2020-01-01',$2,$2,true),($1,'2020-02-01',$2,$3,false)`, user, f.now, f.now.Add(time.Hour))
+		return e
+	}); e != nil {
+		t.Fatal(e)
+	}
+	if e := f.db.Run(t.Context(), func(c context.Context) error {
+		lease, active, e := repo.Lock(c, user, f.now)
+		if e != nil || !active || len(lease.Queue) != 1 || !lease.Queue[0].RegistryOnly || !lease.UserAction {
+			t.Fatal("future user action lost from full-calendar lease", lease, active, e)
+		}
+		return nil
+	}); e != nil {
+		t.Fatal(e)
+	}
+}
