@@ -1,6 +1,7 @@
 package metricswire
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -100,7 +101,7 @@ func TestUnitMetricsWirePreservesCapturedDefinitionInsteadOfCurrentCatalog(t *te
 	for _, version := range []int32{0, -1} {
 		result.Periods[0].Metrics["tiles.expense"] = calculating.Metric{DefinitionVersion: version, Status: "none"}
 		state, snapshots, err := Encode(result)
-		if err != calculating.ErrCalculation || state != nil || snapshots != nil {
+		if !errors.Is(err, calculating.ErrCalculation) || state != nil || snapshots != nil {
 			t.Fatal("unversioned metric was published", version, err)
 		}
 	}

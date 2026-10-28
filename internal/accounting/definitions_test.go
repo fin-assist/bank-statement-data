@@ -39,7 +39,8 @@ func TestUnitRegistryFingerprintChangesWithDefinitionsAndSharedRules(t *testing.
 		return catalogFingerprint(v, d, f, r, w)
 	}
 	base := fingerprint(1, baseDefinitions, baseFeatures, rules, words)
-	if len(base) != 64 || CatalogFingerprint() == "" || CatalogFingerprint() != CatalogFingerprint() {
+	first, second := CatalogFingerprint(), CatalogFingerprint()
+	if len(base) != 64 || first == "" || first != second {
 		t.Fatal("unstable fingerprint")
 	}
 	reversedDefinitions, reversedFeatures, reversedWords := slices.Clone(baseDefinitions), slices.Clone(baseFeatures), slices.Clone(words)
