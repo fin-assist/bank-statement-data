@@ -36,6 +36,7 @@ func AccessPolicy() server.Policy {
 		"/finassist.statementdata.v1.OperationsService/*":      {Callers: []string{"bank-bff"}, Model: server.ModelUser},
 		"/finassist.statementdata.v1.CategoriesService/*":      {Callers: []string{"bank-bff"}, Model: server.ModelUser},
 		"/finassist.statementdata.v1.RegularPaymentsService/*": {Callers: []string{"bank-bff"}, Model: server.ModelUser},
+		"/finassist.statementdata.v1.AssistantToolsService/*":  {Callers: []string{"assistant"}, Model: server.ModelSystem},
 		"/finassist.usersettings.v1.UserSettingsSyncService/*": {Callers: []string{"user"}, Model: server.ModelSystem},
 		"/finassist.userdeletion.v1.UserDeletionService/*":     {Callers: []string{"user"}, Model: server.ModelSystem},
 	}
@@ -141,6 +142,13 @@ func wire(ctx context.Context, a *App, reg prometheus.Registerer, openDB func(co
 		return fail(err)
 	}
 	if err = operationsgrpc.Register(a.GRPC.GRPC(), a.Operations); err != nil {
+		return fail(err)
+	}
+	tools, err := operations.NewTools(a.Operations, postgres.NewToolFacts(a.DB))
+	if err != nil {
+		return fail(err)
+	}
+	if err = operationsgrpc.RegisterTools(a.GRPC.GRPC(), tools); err != nil {
 		return fail(err)
 	}
 	recalcJobs, closeRecalc, err := wireRecalculations(ctx, a, reg, opts, now, objects)

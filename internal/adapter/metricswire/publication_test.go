@@ -3,6 +3,7 @@ package metricswire
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -20,6 +21,7 @@ type publicationStore struct {
 	events                                               []outbox.Event
 	failStore, failLoad, failAck, failPending, failEvent error
 	pending                                              bool
+	pendingVersion                                       int32
 }
 
 func (s *publicationStore) StoreDelivery(_ context.Context, user string, version int32, payload []byte, final bool) (string, error) {
@@ -41,8 +43,8 @@ func (s *publicationStore) AcknowledgeDelivery(_ context.Context, id string) err
 	delete(s.records, id)
 	return nil
 }
-func (s *publicationStore) DeliveryPending(context.Context, string, int32) (bool, error) {
-	return s.pending, s.failPending
+func (s *publicationStore) DeliveryPending(_ context.Context, _ string, version int32) (bool, error) {
+	return s.pending && (s.pendingVersion == 0 || s.pendingVersion == version), s.failPending
 }
 func (s *publicationStore) Publish(_ context.Context, topic, key string, payload []byte) error {
 	s.events = append(s.events, outbox.Event{Topic: topic, Key: key, Payload: payload})
@@ -89,6 +91,7 @@ func TestUnitPublicationUsesOpaqueReferencesAndImmutableBarrier(t *testing.T) {
 		t.Fatal(err)
 	}
 	store.pending = true
+	store.pendingVersion = value.Version
 	if err = deliver(t.Context(), store.events[1]); err == nil || sends != 0 {
 		t.Fatal("false state overtook chunk")
 	}
@@ -239,5 +242,105 @@ func TestUnitPublicationPropagatesStorageAndDeliveryErrors(t *testing.T) {
 		if err := deliver(t.Context(), event); err == nil {
 			t.Fatal("untrusted reference accepted")
 		}
+	}
+}
+
+func TestUnitPublicationSourceRevisionsAreImmutableAcrossEveryPairAndFinalState(t *testing.T) {
+	value := wireFixture()
+	value.State.Revisions = map[string]int64{"categories": 0, "uploads": 5, "time_zone": 2, "future_source": math.MaxInt64}
+	chunks, err := publications(value, 4<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, request := range chunks {
+		if i == len(chunks)-1 {
+			if len(request.State.DataRevisions) != 4 || request.State.DataRevisions[1].Value != math.MaxInt64 {
+				t.Fatal(request)
+			}
+		} else if len(request.State.DataRevisions) != 0 {
+			t.Fatal("part state certified incomplete inventory")
+		}
+		for _, period := range request.Periods {
+			if len(period.DataRevisions) != 4 || period.DataRevisions[3].Value != 5 {
+				t.Fatal(period)
+			}
+		}
+	}
+	value.State.Revisions["uploads"] = 99
+	if chunks[len(chunks)-1].State.DataRevisions[3].Value != 5 {
+		t.Fatal("immutable payload changed")
+	}
+	for _, bad := range []map[string]int64{{"uploads": -1}, {"UPPER": 1}} {
+		value.State.Revisions = bad
+		if _, err := publications(value, 4<<20); err == nil {
+			t.Fatal("invalid provenance published")
+		}
+	}
+}
+
+type clearingStore struct{ *publicationStore }
+
+func (s clearingStore) DeliveryPending(_ context.Context, _ string, version int32) (bool, error) {
+	for _, r := range s.records {
+		if r.Version == version && !r.Final {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+func TestUnitPublicationRequiresClearingAckBeforePartsAndFinal(t *testing.T) {
+	store := clearingStore{&publicationStore{records: map[string]recalculating.DeliveryRecord{}}}
+	publisher, err := NewPublisher(store, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := wireFixture()
+	value.Version = 1
+	value.Pending = true
+	value.State.Revisions = map[string]int64{"uploads": 5}
+	if err := publisher.Publish(t.Context(), value); err != nil {
+		t.Fatal(err)
+	}
+	value.Version = 2
+	value.Pending = false
+	if err := publisher.Publish(t.Context(), value); err != nil {
+		t.Fatal(err)
+	}
+	sent := []int32{}
+	deliver, err := Delivery(store, func(_ context.Context, event outbox.Event) error {
+		var request pb.UpsertUserMetricsRequest
+		if err := proto.Unmarshal(event.Payload, &request); err != nil {
+			return err
+		}
+		sent = append(sent, request.CalcVersion)
+		if request.CalcVersion < 3 && len(request.State.DataRevisions) != 0 {
+			t.Fatal("partial delivery certified inventory", &request)
+		}
+		if request.CalcVersion == 3 && len(request.State.DataRevisions) != 1 {
+			t.Fatal("final lost provenance", &request)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, i := range []int{1, 2} {
+		if err := deliver(t.Context(), store.events[i]); err == nil || len(sent) != 0 {
+			t.Fatal("part overtook clearing ACK", err, sent)
+		}
+	}
+	if err := deliver(t.Context(), store.events[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := deliver(t.Context(), store.events[2]); err == nil || len(sent) != 1 {
+		t.Fatal("final overtook part ACK", err, sent)
+	}
+	for _, i := range []int{1, 2} {
+		if err := deliver(t.Context(), store.events[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(sent) != 3 || sent[0] != 1 || sent[1] != 2 || sent[2] != 3 {
+		t.Fatal(sent)
 	}
 }

@@ -268,7 +268,8 @@ func TestIntegrationRecalculationRestartRecoversImmutableOutboxAndPeerFailure(t 
 	peer.mu.Unlock()
 	var instant atomic.Int64
 	instant.Store(calculationNow().UnixNano())
-	clock := func() time.Time { return time.Unix(0, instant.Load()) }
+	wallStart := time.Now()
+	clock := func() time.Time { return time.Unix(0, instant.Load()).Add(time.Since(wallStart)) }
 	restarted, err := app.New(t.Context(), cfg, slog.New(slog.DiscardHandler), prometheus.NewRegistry(), app.Options{ObjectClient: objects.Server.Client(), Now: clock, AnalyticsDialOptions: []grpc.DialOption{dial}})
 	if err != nil {
 		t.Fatal(err)
@@ -316,7 +317,7 @@ func TestIntegrationRecalculationRestartRecoversImmutableOutboxAndPeerFailure(t 
 	if err = restarted.Recalculations.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	eventuallyMetrics(t, func() bool { return peer.settled() && peer.version() == 5 })
+	eventuallyMetrics(t, func() bool { return peer.settled() && peer.version() == 6 })
 	peer.mu.Lock()
 	defer peer.mu.Unlock()
 	for _, request := range peer.requests {

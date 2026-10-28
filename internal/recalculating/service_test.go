@@ -294,7 +294,7 @@ func TestUnitDailyOnlyRecalculationDoesNotSetUserActionFlag(t *testing.T) {
 	if err := s.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if len(p.values) != 1 || p.values[0].Pending || p.values[0].Recalculating || r.startCalls != 0 {
+	if len(p.values) != 2 || !p.values[0].Pending || p.values[0].Recalculating || p.values[1].Pending || p.values[1].Recalculating || r.startCalls != 1 {
 		t.Fatal("daily update masqueraded as user action", p.values)
 	}
 }
@@ -320,5 +320,21 @@ func TestUnitLegacyRecoveryWaitAndErrorKeepQueueAndPendingState(t *testing.T) {
 	s.coverage = coverageFake{ready: true}
 	if e := s.Recalculate(t.Context(), "u"); e != nil || r.startCalls != 1 || r.completeCalls != 1 {
 		t.Fatal("recovered original did not resume same durable work", e)
+	}
+}
+
+func TestUnitRecalculationSourceRevisionsPreservePendingAndReplaceWholeCalendar(t *testing.T) {
+	s, r, p := fixture(t)
+	r.lease.Revisions = map[string]int64{"categories": 2, "uploads": 5, "time_zone": 4}
+	r.lease.State.Revisions = map[string]int64{"categories": 1, "uploads": 3, "time_zone": 4}
+	if err := s.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.values) != 2 || p.values[0].State.Revisions["uploads"] != 3 || p.values[1].State.Revisions["uploads"] != 5 || len(p.values[1].Periods) != 6 {
+		t.Fatal(p.values)
+	}
+	r.lease.Revisions["uploads"] = 99
+	if p.values[1].State.Revisions["uploads"] != 5 {
+		t.Fatal("publication aliases mutable lease")
 	}
 }

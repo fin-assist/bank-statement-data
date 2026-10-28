@@ -52,5 +52,17 @@ func (r *Imports) SaveRules(ctx context.Context, user string, operations []impor
 			return errImportStorage
 		}
 	}
+	// Tools read replicas and must never create identities while serving a read.
+	// Keep UUIDs stable across imports, edits and calculator runs.
+	if _, err := r.db.Writer(ctx).Exec(ctx, `INSERT INTO merchant(user_id,key)
+ SELECT DISTINCT user_id,description FROM operation WHERE user_id=$1
+ ON CONFLICT(user_id,key) DO NOTHING`, user); err != nil {
+		return importError(ctx, err)
+	}
+	if _, err := r.db.Writer(ctx).Exec(ctx, `INSERT INTO regular_payment(user_id,periodicity,description)
+ SELECT DISTINCT user_id,'monthly',description FROM operation WHERE user_id=$1 AND direction='expense' AND description<>''
+ ON CONFLICT(user_id,periodicity,description) DO NOTHING`, user); err != nil {
+		return importError(ctx, err)
+	}
 	return r.schedule(ctx, user, operations, now)
 }

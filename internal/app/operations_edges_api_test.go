@@ -7,7 +7,6 @@ import (
 
 	common "github.com/fin-assist/contracts/gen/go/finassist/common/v1"
 	pb "github.com/fin-assist/contracts/gen/go/finassist/statementdata/v1"
-	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -100,8 +99,8 @@ func TestAPIOperationsStreamingLargeLedgerAndMerchantIncomeRefund(t *testing.T) 
 	operationsAPIImport(t, env, calculationRuleOFX())
 	ctx := apitest.User(t.Context(), apiUser)
 	c := pb.NewOperationsServiceClient(env.Conn)
-	merchant := uuid.NewString()
-	if _, err := env.App.DB.Primary().Exec(t.Context(), `INSERT INTO merchant(user_id,id,key) VALUES($1,$2,'Coffee')`, apiUser, merchant); err != nil {
+	var merchant string
+	if err := env.App.DB.Primary().QueryRow(t.Context(), `SELECT id::text FROM merchant WHERE user_id=$1 AND key='Coffee'`, apiUser).Scan(&merchant); err != nil {
 		t.Fatal(err)
 	}
 	selection := "s_merchant_" + merchant

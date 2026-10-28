@@ -89,11 +89,14 @@ func publications(value recalculating.Publication, limit int) ([]*pb.UpsertUserM
 		return nil, recalculating.ErrWork
 	}
 	if value.Pending {
+		state.DataRevisions = nil
 		return []*pb.UpsertUserMetricsRequest{chunk}, nil
 	}
 	if value.Version == int32(^uint32(0)>>1) {
 		return nil, recalculating.ErrWork
 	}
+	finalState := proto.Clone(state).(*pb.UserDataState)
+	state.DataRevisions = nil
 	var chunks []*pb.UpsertUserMetricsRequest
 	flush := func() {
 		if len(chunk.Periods) > 0 || len(chunk.RemovedPeriods) > 0 {
@@ -131,7 +134,6 @@ func publications(value recalculating.Publication, limit int) ([]*pb.UpsertUserM
 		}
 	}
 	flush()
-	finalState := proto.Clone(state).(*pb.UserDataState)
 	finalState.Recalculating = false
 	final := &pb.UpsertUserMetricsRequest{UserId: value.User, CalcVersion: value.Version + 1, State: finalState}
 	if proto.Size(final) > limit {
@@ -158,8 +160,14 @@ func Delivery(receipts Receipts, send outbox.Delivery) (outbox.Delivery, error) 
 		if !exists {
 			return nil
 		}
+		// Every part waits for the preceding clearing-state ACK. Final state also
+		// waits for that clearing record when the complete publication had no parts.
+		versions := []int32{record.Version - 1}
 		if record.Final {
-			pending, err := receipts.DeliveryPending(ctx, record.User, record.Version-1)
+			versions = append(versions, record.Version-2)
+		}
+		for _, version := range versions {
+			pending, err := receipts.DeliveryPending(ctx, record.User, version)
 			if err != nil {
 				return err
 			}

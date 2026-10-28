@@ -59,8 +59,9 @@ func operationReferenceIDs(t *testing.T, a *app.App, user string) foreignReferen
 }
 
 type unchangedOperationState struct {
-	facts, queue string
-	changed      *time.Time
+	facts, queue                        string
+	changed                             *time.Time
+	categoriesRevision, uploadsRevision int64
 }
 
 func operationMutationState(t *testing.T, a *app.App, user string) unchangedOperationState {
@@ -72,7 +73,7 @@ func operationMutationState(t *testing.T, a *app.App, user string) unchangedOper
 	if err := a.DB.Primary().QueryRow(t.Context(), `SELECT COALESCE(jsonb_agg(to_jsonb(q) ORDER BY month)::text,'[]') FROM recalc_queue q WHERE user_id=$1`, user).Scan(&out.queue); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.DB.Primary().QueryRow(t.Context(), `SELECT categories_changed_at FROM user_state WHERE user_id=$1`, user).Scan(&out.changed); err != nil {
+	if err := a.DB.Primary().QueryRow(t.Context(), `SELECT categories_changed_at,categories_revision,uploads_revision FROM user_state WHERE user_id=$1`, user).Scan(&out.changed, &out.categoriesRevision, &out.uploadsRevision); err != nil {
 		t.Fatal(err)
 	}
 	return out
@@ -163,7 +164,7 @@ func operationsForeignIsolationChecks(t *testing.T, a *app.App, client pb.Operat
 	}
 	after := operationMutationState(t, a, apiUser)
 	stampEqual := before.changed == nil && after.changed == nil || before.changed != nil && after.changed != nil && before.changed.Equal(*after.changed)
-	if before.facts != after.facts || before.queue != after.queue || !stampEqual {
+	if before.facts != after.facts || before.queue != after.queue || !stampEqual || before.categoriesRevision != after.categoriesRevision || before.uploadsRevision != after.uploadsRevision {
 		t.Fatalf("rejected foreign category changed financial facts/manual category, recalc generation, or edit timestamp: factsEqual%v queueEqual%v stampEqual%v", before.facts == after.facts, before.queue == after.queue, stampEqual)
 	}
 }

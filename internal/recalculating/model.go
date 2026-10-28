@@ -28,6 +28,7 @@ type QueueRow struct {
 
 // Lease is the state read under the user's lock.
 type Lease struct {
+	Revisions     map[string]int64
 	User          string
 	Version       int32
 	Recalculating bool

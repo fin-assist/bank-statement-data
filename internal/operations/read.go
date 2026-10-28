@@ -96,6 +96,21 @@ func (s *Service) Feed(ctx context.Context, user string, before *time.Time) (out
 
 // Search returns the complete selection or refuses rather than truncating at 10000.
 func (s *Service) Search(ctx context.Context, user string, f Filter, allTime bool) (out Search, err error) {
+	var items []Operation
+	out, err = s.scan(ctx, user, f, allTime, nil, func(_ context.Context, row Operation, _ importing.Operation) error {
+		items = append(items, row)
+		if len(items) > 10000 {
+			return ErrTooMany
+		}
+		return nil
+	})
+	out.Items = items
+	return
+}
+
+// scan owns the single coherent snapshot for public and assistant selections.
+// Consumers decide their own bounded projection without truncating the count.
+func (s *Service) scan(ctx context.Context, user string, f Filter, allTime bool, setup func(context.Context, Snapshot, Metadata, Filter) error, visit func(context.Context, Operation, importing.Operation) error) (out Search, err error) {
 	if err = validateFilter(f, allTime); err != nil {
 		return
 	}
@@ -131,6 +146,11 @@ func (s *Service) Search(ctx context.Context, user string, f Filter, allTime boo
 		}
 		if e = s.resolveSelection(ctx, user, &state, f.Selection); e != nil {
 			return e
+		}
+		if setup != nil {
+			if e = setup(ctx, state, meta, f); e != nil {
+				return e
+			}
 		}
 		selected, e := prepareSelection(state, f.Selection)
 		if e != nil {
@@ -195,10 +215,7 @@ func (s *Service) Search(ctx context.Context, user string, f Filter, allTime boo
 				local.small = map[string]bool{op.At.In(zone).Format("2006-01") + "\x00" + op.Description: calculating.SmallGroup(candidate.SmallCount, candidate.SmallTotal)}
 			}
 			if matches(row, op, f, local, zone, state.Categories[op.BankCategory].Name) {
-				out.Items = append(out.Items, row)
-				if len(out.Items) > 10000 {
-					return ErrTooMany
-				}
+				return visit(ctx, row, op)
 			}
 			return nil
 		})
@@ -234,7 +251,15 @@ func validateFilter(f Filter, all bool) error {
 
 type selection struct {
 	name, key      string
+	merchant       *string
 	regular, small map[string]bool
+}
+
+const smallCategoryMerchantPrefix = "s_small_category_merchant_"
+
+func smallCategoryMerchant(value string) (id, category string) {
+	id, category, _ = strings.Cut(strings.TrimPrefix(value, smallCategoryMerchantPrefix), "_")
+	return
 }
 
 func (s *Service) resolveSelection(ctx context.Context, user string, state *Snapshot, token string) error {
@@ -244,6 +269,9 @@ func (s *Service) resolveSelection(ctx context.Context, user string, state *Snap
 		return nil
 	case strings.HasPrefix(token, "s_regular_"):
 		kind, id = domain.ReferenceKindRegular, strings.TrimPrefix(token, "s_regular_")
+	case strings.HasPrefix(token, smallCategoryMerchantPrefix):
+		id, _ = smallCategoryMerchant(token)
+		kind = domain.ReferenceKindMerchant
 	case strings.HasPrefix(token, "s_small_merchant_"):
 		kind, id = domain.ReferenceKindMerchant, strings.TrimPrefix(token, "s_small_merchant_")
 	case strings.HasPrefix(token, "s_merchant_"):
@@ -274,6 +302,14 @@ func prepareSelection(state Snapshot, value string) (out selection, err error) {
 		return out, nil
 	case strings.HasPrefix(value, "s_regular_"):
 		out.key = state.Regular[strings.TrimPrefix(value, "s_regular_")]
+	case strings.HasPrefix(value, smallCategoryMerchantPrefix):
+		id, category := smallCategoryMerchant(value)
+		key, exists := state.Merchants[id]
+		if _, valid := state.Categories[category]; !exists || !valid {
+			return out, ErrSelection
+		}
+		out.key, out.merchant = category, &key
+		return out, nil
 	case strings.HasPrefix(value, "s_small_merchant_"):
 		out.key = state.Merchants[strings.TrimPrefix(value, "s_small_merchant_")]
 	case strings.HasPrefix(value, "s_merchant_"):
@@ -288,7 +324,11 @@ func prepareSelection(state Snapshot, value string) (out selection, err error) {
 		return out, ErrSelection
 	}
 	if out.key == "" {
-		return out, ErrSelection
+		// An empty source description is still a real merchant key.
+		id := strings.TrimPrefix(strings.TrimPrefix(value, "s_small_merchant_"), "s_merchant_")
+		if _, exists := state.Merchants[id]; !exists {
+			return out, ErrSelection
+		}
 	}
 	return out, nil
 }
@@ -324,7 +364,7 @@ func matches(row Operation, op importing.Operation, f Filter, selection selectio
 		return op.Direction == "expense" && selection.regular[op.Description] && calculating.Observation(cat)
 	}
 	if strings.HasPrefix(selection.name, "s_small_category_") {
-		return op.Direction == "expense" && cat == selection.key && !selection.small[op.At.In(zone).Format("2006-01")+"\x00"+op.Description] && calculating.Observation(cat)
+		return op.Direction == "expense" && cat == selection.key && (selection.merchant == nil || op.Description == *selection.merchant) && !selection.small[op.At.In(zone).Format("2006-01")+"\x00"+op.Description] && calculating.Observation(cat)
 	}
 	if strings.HasPrefix(selection.name, "s_merchant_") {
 		return op.Description == selection.key

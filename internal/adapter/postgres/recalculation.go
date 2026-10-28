@@ -13,6 +13,7 @@ import (
 	"github.com/fin-assist/bank-statement-data/internal/calculating"
 	"github.com/fin-assist/bank-statement-data/internal/importing"
 	"github.com/fin-assist/bank-statement-data/internal/recalculating"
+	"github.com/fin-assist/bank-statement-data/internal/sourcerevision"
 )
 
 // Recalculations owns queue leases and the complete published calendar inventory.
@@ -94,6 +95,11 @@ func (r *Recalculations) Lock(ctx context.Context, user string, now time.Time) (
 			return out, false, nil
 		}
 	}
+	version, err := NewToolFacts(r.db).Version(ctx, user)
+	if err != nil {
+		return out, false, err
+	}
+	out.Revisions = version.Revisions
 	var state, keys []byte
 	err = r.db.Writer(ctx).QueryRow(ctx, `SELECT state,period_keys,recalculating FROM metrics_publication WHERE user_id=$1`, user).Scan(&state, &keys, &out.Recalculating)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -103,6 +109,16 @@ func (r *Recalculations) Lock(ctx context.Context, user string, now time.Time) (
 		return out, false, importError(ctx, err)
 	}
 	if json.Unmarshal(state, &out.State) != nil || json.Unmarshal(keys, &out.Known) != nil {
+		return out, false, errImportStorage
+	}
+	var stored struct {
+		Revisions json.RawMessage `json:"data_revisions"`
+	}
+	if json.Unmarshal(state, &stored) != nil {
+		return out, false, errImportStorage
+	}
+	out.State.Revisions, err = sourcerevision.Decode(stored.Revisions)
+	if err != nil {
 		return out, false, errImportStorage
 	}
 	return out, true, nil

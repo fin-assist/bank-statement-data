@@ -169,7 +169,7 @@ func (r *Operations) Changed(ctx context.Context, user string, now time.Time) er
 	if _, err := r.transaction(ctx); err != nil {
 		return err
 	}
-	_, err := r.db.Writer(ctx).Exec(ctx, `UPDATE user_state SET categories_changed_at=GREATEST($2,categories_changed_at+interval '1 microsecond') WHERE user_id=$1`, user, now)
+	_, err := r.db.Writer(ctx).Exec(ctx, `UPDATE user_state SET categories_changed_at=GREATEST($2,categories_changed_at+interval '1 microsecond'),categories_revision=categories_revision+1 WHERE user_id=$1`, user, now)
 	return importError(ctx, err)
 }
 
