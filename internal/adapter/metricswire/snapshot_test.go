@@ -20,16 +20,16 @@ func TestUnitMetricsWirePreservesAllTypedFamiliesAndOptionalValues(t *testing.T)
 	share := 0.25
 	name := "fees"
 	f := calculating.Filter{Range: r, Mode: "without", Kind: "expense", Category: "cat_food", Selection: "s_bank_fees", Name: "Bank"}
-	m := calculating.Metric{Status: "ready", Value: &amount, Share: &share, Filter: &f, Range: &r, Basis: &calculating.Basis{Range: r, FullMonths: 3}, Categories: []calculating.CategoryAmount{{ID: "cat_transfers", Name: "Переводы", Icon: "tag", Amount: 10, Count: 2, Share: &share, Filter: f}}, Points: []calculating.Point{{Month: "2026-09", Range: r, Bounds: calculating.Bounds{Coverage: "partial", From: &now, To: &end, Gaps: []calculating.Range{r}}, Expense: &amount}}, Payments: []calculating.Payment{{ID: "id", Title: "Cloud", Amount: 29900, Day: 15, Category: "cat_food", Filter: f}}, Notable: []calculating.Notable{{ID: "cat_food", Name: "Food", Amount: 100, Typical: 10, Filter: f}}, Small: []calculating.Small{{Title: "Coffee", Count: 9, Average: 28000, Amount: 252000, Yearly: 3024000, Filter: f}}, FeeKinds: &name}
+	m := calculating.Metric{DefinitionVersion: 1, Status: "ready", Value: &amount, Share: &share, Filter: &f, Range: &r, Basis: &calculating.Basis{Range: r, FullMonths: 3}, Categories: []calculating.CategoryAmount{{ID: "cat_transfers", Name: "Переводы", Icon: "tag", Amount: 10, Count: 2, Share: &share, Filter: f}}, Points: []calculating.Point{{Month: "2026-09", Range: r, Bounds: calculating.Bounds{Coverage: "partial", From: &now, To: &end, Gaps: []calculating.Range{r}}, Expense: &amount}}, Payments: []calculating.Payment{{ID: "id", Title: "Cloud", Amount: 29900, Day: 15, Category: "cat_food", Filter: f}}, Notable: []calculating.Notable{{ID: "cat_food", Name: "Food", Amount: 100, Typical: 10, Filter: f}}, Small: []calculating.Small{{Title: "Coffee", Count: 9, Average: 28000, Amount: 252000, Yearly: 3024000, Filter: f}}, FeeKinds: &name}
 	ids := []string{"tiles.balance", "expense_categories", "income_categories", "monthly_chart", "insights.regular_payments", "insights.notable_spending", "insights.bank_fees", "insights.small_frequent"}
 	metrics := map[string]calculating.Metric{}
 	for _, id := range ids {
 		metrics[id] = m
 	}
-	locked := calculating.Metric{Status: "locked", Lock: &calculating.Lock{Reason: "need_full_months", Required: 2, Available: 0}}
+	locked := calculating.Metric{DefinitionVersion: 1, Status: "locked", Lock: &calculating.Lock{Reason: "need_full_months", Required: 2, Available: 0}}
 	metrics["tiles.expense.typical"] = locked
-	metrics["tiles.forecast"] = calculating.Metric{Status: "locked", Lock: &calculating.Lock{Reason: "too_early_in_month", AvailableFrom: &now}}
-	metrics["tiles.expense"] = calculating.Metric{Status: "none"}
+	metrics["tiles.forecast"] = calculating.Metric{DefinitionVersion: 1, Status: "locked", Lock: &calculating.Lock{Reason: "too_early_in_month", AvailableFrom: &now}}
+	metrics["tiles.expense"] = calculating.Metric{DefinitionVersion: 1, Status: "none"}
 	state, periods, err := Encode(calculating.Result{State: calculating.State{HasData: true, From: &now, To: &end, LastOperation: &now, StaleAfter: &end, FullMonths: 3, TimeZone: "UTC", CalculatedAt: now}, Periods: []calculating.Period{{Kind: "month", Key: "2026-09", Mode: "without", Range: r, Bounds: calculating.Bounds{Coverage: "complete", From: &now, To: &end}, Metrics: metrics, CalculatedAt: now}}})
 	if err != nil {
 		t.Fatal(err)
@@ -73,6 +73,35 @@ func TestUnitMetricsWireRejectsCountsOutsideInt32(t *testing.T) {
 	for _, n := range []int{-1, 1 << 31} {
 		if state, periods, err := Encode(calculating.Result{State: calculating.State{FullMonths: n}}); err == nil || state != nil || periods != nil {
 			t.Fatal("unsafe count escaped", n)
+		}
+	}
+}
+
+func TestUnitMetricsWirePreservesCapturedDefinitionInsteadOfCurrentCatalog(t *testing.T) {
+	now := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	result := calculating.Result{State: calculating.State{CalculatedAt: now}, Periods: []calculating.Period{{
+		Kind: "month", Key: "2026-09", Mode: "with", CalculatedAt: now,
+		Metrics: map[string]calculating.Metric{
+			"tiles.expense": {DefinitionVersion: 7, Status: "none"},
+			"new.metric":    {DefinitionVersion: 3, Status: "locked"},
+		},
+	}}}
+	_, periods, err := Encode(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	versions := map[string]int32{}
+	for _, snapshot := range periods[0].Metrics {
+		versions[snapshot.MetricId] = snapshot.DefinitionVersion
+	}
+	if versions["tiles.expense"] != 7 || versions["new.metric"] != 3 {
+		t.Fatal("wire adapter relabeled an already calculated result", versions)
+	}
+	for _, version := range []int32{0, -1} {
+		result.Periods[0].Metrics["tiles.expense"] = calculating.Metric{DefinitionVersion: version, Status: "none"}
+		state, snapshots, err := Encode(result)
+		if err != calculating.ErrCalculation || state != nil || snapshots != nil {
+			t.Fatal("unversioned metric was published", version, err)
 		}
 	}
 }
