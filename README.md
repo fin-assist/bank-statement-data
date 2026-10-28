@@ -115,7 +115,7 @@ CI (`.github/workflows/ci.yml`):
 | Job | Что |
 |---|---|
 | `go` | `go mod tidy` без изменений, `go vet`, три отдельных набора `unit`/`integration`/`api` с `-race`, PostgreSQL 18, проверкой фактического исполнения и порогом 80% statements каждого; combined дополнительно, отчёты в сводке и артефактах; тесты скриптов |
-| `lint` | golangci-lint (`.golangci.yml`), в том числе `forbidigo` против обхода `finerr` и `depguard` против фреймворков, ORM и DI-контейнеров |
+| `lint` | golangci-lint (`.finassist-ci/generated/.golangci.yml`), в том числе `forbidigo` против обхода `finerr` и `depguard` против фреймворков, ORM и DI-контейнеров |
 | `image` | сборка образа и запуск бинаря в нём |
 | `migrations` (PR) | существующие миграции не изменены, squawk по новым |
 
@@ -151,7 +151,7 @@ CI сохраняет `.out`, `.jsonl`, `*.coverage.txt` и `*.report.txt` ка�
 
 Подробности классификации и исходные дефициты — [docs/testing.md](docs/testing.md).
 
-Модули `github.com/fin-assist/*` берутся из git, минуя прокси (`GOPRIVATE`, задан в `Makefile` и CI). Для приватного — токен с чтением репозиториев fin-assist: локально `git config --global url."https://x-access-token:<token>@github.com/fin-assist/".insteadOf "https://github.com/fin-assist/"`, в CI — секрет `GO_MODULES_TOKEN`, в `docker build` — секрет `netrc`.
+Модули `github.com/fin-assist/*` берутся из git, минуя прокси (`GOPRIVATE`, задан в `Makefile` и CI). Для приватного — токен с чтением репозиториев fin-assist: локально `git config --global url."https://x-access-token:<token>@github.com/fin-assist/".insteadOf "https://github.com/fin-assist/"`, в CI для доверенного push в `main` — секрет `GO_MODULES_TOKEN`, в локальном `docker build` — секрет `netrc`. В PR, включая PR из того же репозитория, этот CI-секрет не передаётся.
 
 ## Расчёты MVP (FIN-355)
 
@@ -172,3 +172,14 @@ FIN-6 версионирует каждое определение метрик�
 историю через существующий конвейер. Прежние снимки доступны до атомарной замены обоих режимов;
 пользовательская версия реестра в БД не вводится. Выпуск, прогресс, повтор и ограничение отката —
 [docs/recalculation.md](docs/recalculation.md#выпуск-определений-и-запуск-бэкфилла-fin-6).
+
+## Общий Go CI и линтеры (FIN-372)
+
+В CI `GO_MODULES_TOKEN` передаётся только при доверенном push в `main`, включая сборку образа. Ни один PR, в том числе из того же репозитория, этот секрет не получает. Текущие модули fin-assist публичны. Одного добавления секрета недостаточно для проверки PR с приватными Go-модулями: доступ в PR этой конфигурацией не предоставляется.
+
+Общие команды и тесты скриптов требуют Python 3.11+ с PyYAML.
+
+`.finassist-ci.json` закрепляет общий источник `fin-assist/go-ci` полным SHA и объявляет профиль/исключения. CI вызывает reusable workflows того же SHA; `make lint`, `make fmt`, `make lint-config` и `make lint-migrations BASE_REF=origin/main` используют его через `scripts/common_ci.py`. Конфигурации создаются в игнорируемом `.finassist-ci/generated/`; локальные копии правил не редактируются. Первый локальный вызов требует доступ к GitHub. Обновление workflow и manifest pin приходит одним PR Renovate; откат возвращает прежние SHA вместе. [Источник, профили, обновление и откат](https://github.com/fin-assist/go-ci/blob/main/docs/shared-go-ci.md). Проверки тестов/coverage, PostgreSQL 18, race и совместимость сохраняются.
+
+
+Если новая ревизия меняет `common/bootstrap.py`, в том же PR нужно синхронизировать его точную копию `scripts/common_ci.py`; Renovate сам обновляет только SHA. При откате возвращаются вместе pins и соответствующая копия bootstrap. До синхронизации byte-equality guard оставляет PR красным. Ручное изменение копии не считается bot-only обновлением по FIN-211.
