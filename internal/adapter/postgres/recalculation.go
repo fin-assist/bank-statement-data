@@ -108,7 +108,7 @@ func (r *Recalculations) Lock(ctx context.Context, user string, now time.Time) (
 	}
 	out.Revisions = version.Revisions
 	var state, keys []byte
-	err = r.db.Writer(ctx).QueryRow(ctx, `SELECT state,period_keys,recalculating FROM metrics_publication WHERE user_id=$1`, user).Scan(&state, &keys, &out.Recalculating)
+	err = r.db.Writer(ctx).QueryRow(ctx, `SELECT state,period_keys,recalculating,pending_user_action FROM metrics_publication WHERE user_id=$1`, user).Scan(&state, &keys, &out.Recalculating, &out.PendingUserAction)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return out, true, nil
 	}
@@ -143,8 +143,8 @@ func (r *Recalculations) Start(ctx context.Context, lease recalculating.Lease, s
 	if err != nil {
 		return errImportStorage
 	}
-	_, err = r.db.Writer(ctx).Exec(ctx, `INSERT INTO metrics_publication(user_id,state,recalculating) VALUES($1,$2,true)
- ON CONFLICT(user_id)DO UPDATE SET state=EXCLUDED.state,recalculating=true`, lease.User, data)
+	_, err = r.db.Writer(ctx).Exec(ctx, `INSERT INTO metrics_publication(user_id,state,recalculating,pending_user_action) VALUES($1,$2,true,$3)
+ ON CONFLICT(user_id)DO UPDATE SET state=EXCLUDED.state,recalculating=true,pending_user_action=EXCLUDED.pending_user_action`, lease.User, data, lease.UserAction)
 	if err != nil {
 		return importError(ctx, err)
 	}
@@ -182,8 +182,8 @@ func (r *Recalculations) Complete(ctx context.Context, lease recalculating.Lease
 	if err != nil {
 		return errImportStorage
 	}
-	_, err = r.db.Writer(ctx).Exec(ctx, `INSERT INTO metrics_publication(user_id,state,period_keys,recalculating)VALUES($1,$2,$3,false)
- ON CONFLICT(user_id)DO UPDATE SET state=EXCLUDED.state,period_keys=EXCLUDED.period_keys,recalculating=false`, lease.User, data, encoded)
+	_, err = r.db.Writer(ctx).Exec(ctx, `INSERT INTO metrics_publication(user_id,state,period_keys,recalculating,pending_user_action)VALUES($1,$2,$3,false,false)
+ ON CONFLICT(user_id)DO UPDATE SET state=EXCLUDED.state,period_keys=EXCLUDED.period_keys,recalculating=false,pending_user_action=false`, lease.User, data, encoded)
 	if err != nil {
 		return importError(ctx, err)
 	}

@@ -29,15 +29,16 @@ type QueueRow struct {
 
 // Lease is the state read under the user's lock.
 type Lease struct {
-	Revisions     map[string]int64
-	User          string
-	Version       int32
-	Recalculating bool
-	UserAction    bool
-	State         calculating.State
-	Known         []Period
-	Queue         []QueueRow
-	DailyDue      *time.Time
+	Revisions         map[string]int64
+	User              string
+	Version           int32
+	Recalculating     bool
+	UserAction        bool
+	PendingUserAction bool
+	State             calculating.State
+	Known             []Period
+	Queue             []QueueRow
+	DailyDue          *time.Time
 }
 
 // Publication contains a complete immutable version, encoded by its adapter.

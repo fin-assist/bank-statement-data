@@ -1,6 +1,9 @@
 ALTER TABLE recalc_queue ADD COLUMN registry_only boolean NOT NULL DEFAULT false;
 COMMENT ON COLUMN recalc_queue.registry_only IS 'Причина пересчёта только в изменении реестра: прежние снимки сохраняются без публичного признака recalculating; пользовательская правка переводит значение в false.';
 
+ALTER TABLE metrics_publication ADD COLUMN pending_user_action boolean NOT NULL DEFAULT false;
+COMMENT ON COLUMN metrics_publication.pending_user_action IS 'С каким публичным признаком отправлено незавершённое начало пересчёта: пользовательская правка после тихого бэкфилла требует новой публикации true, а последующие повторы не создают лишних версий.';
+
 CREATE TABLE metrics_backfill (
     catalog_version integer PRIMARY KEY,
     fingerprint text NOT NULL,

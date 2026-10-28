@@ -5,4 +5,5 @@ BEGIN
     END IF;
 END $$;
 DROP TABLE metrics_backfill;
+ALTER TABLE metrics_publication DROP COLUMN pending_user_action;
 ALTER TABLE recalc_queue DROP COLUMN registry_only;
