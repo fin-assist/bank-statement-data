@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- FIN-372: CI и конфигурации линтеров получают общий источник по неизменяемому SHA; локальные команды используют тот же профиль, обновление и откат выполняются одним PR. Runtime и публичный API не меняются.
+
 - FIN-358: переход из merchant-группы остатка мелких трат сохраняет точное пересечение категории, продавца и помесячного SmallGroup, не добавляя возвраты; системные callers user/analytics отклоняются всеми четырьмя tools, validation source revisions общая с producer.
 
 - FIN-369: producer передаёт ревизии categories/uploads/time_zone из того же locked snapshot во все периоды полного календаря, оба режима и финальное состояние. Mandatory clearing (включая daily) и состояния chunks опускают metadata; ACKgate перед chunks и финальная barrier доказывают полноту набора. User recalculating остаётся только для пользовательских действий; immutable payload не переоценивает counters при повторе. Неподтверждённое legacy raw coverage опускает uploads в tools/current version до metadata repair без изменения source counter.

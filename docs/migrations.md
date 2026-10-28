@@ -39,7 +39,7 @@ golang-migrate отправляет файл целиком одним запр�
 
 Команда `migrate` ставит на соединение `lock_timeout` и `statement_timeout` и ограничивает ожидание параллельного запуска того же источника: переменные `MIGRATE_LOCK_TIMEOUT`, `MIGRATE_STATEMENT_TIMEOUT`, `MIGRATE_WAIT_TIMEOUT`, значения по умолчанию — в [config.md](config.md), «`migrate`» (таблица генерируется из кода).
 
-Долгая миграция (бэкфилл, индекс на большой таблице) поднимает таймаут у себя: `SET LOCAL statement_timeout = '2h';`. Повторять таймауты в каждом файле не нужно — поэтому правила squawk `require-lock-timeout` и `require-statement-timeout` выключены в `.squawk.toml`.
+Долгая миграция (бэкфилл, индекс на большой таблице) поднимает таймаут у себя: `SET LOCAL statement_timeout = '2h';`. Повторять таймауты в каждом файле не нужно — поэтому правила squawk `require-lock-timeout` и `require-statement-timeout` выключены в `.finassist-ci/generated/.squawk.toml`.
 
 Упал по `lock_timeout` — значит, таблицу держала долгая транзакция сервиса. Файл откатился целиком, его можно запустить снова (после `force`, см. ниже).
 
@@ -119,7 +119,7 @@ Down шага 000006 сначала проверяет, можно ли восс
 
 Список инвариантов, которые проверяет код этого сервиса, и где именно, — [schema.md](schema.md), «Инварианты в коде сервиса».
 
-Разрядность целого выбирается по диапазону значений и росту за срок жизни таблицы; для identity учитываются все выделенные значения последовательности, включая откаты и конфликтующие вставки. По [FIN-214](https://finassist.youtrack.cloud/issue/FIN-214) и [FIN-371](https://finassist.youtrack.cloud/issue/FIN-371) правила `prefer-bigint-over-int` и `prefer-bigint-over-smallint` выключены в `.squawk.toml`: `integer` и `smallint` не требуют подавления этих правил. Прежние комментарии подавления в неизменяемых миграциях сохраняются.
+Разрядность целого выбирается по диапазону значений и росту за срок жизни таблицы; для identity учитываются все выделенные значения последовательности, включая откаты и конфликтующие вставки. По [FIN-214](https://finassist.youtrack.cloud/issue/FIN-214) и [FIN-371](https://finassist.youtrack.cloud/issue/FIN-371) правила `prefer-bigint-over-int` и `prefer-bigint-over-smallint` выключены в `.finassist-ci/generated/.squawk.toml`: `integer` и `smallint` не требуют подавления этих правил. Прежние комментарии подавления в неизменяемых миграциях сохраняются.
 
 У каждой таблицы и каждого столбца — описание на русском: `COMMENT ON TABLE` (что хранит, ключ и роль) и `COMMENT ON COLUMN` (смысл значения). Описание начинается с русского слова; имена полей, коды и ссылки на контракт — внутри текста. У партиций `operation` описаний нет, их описывает родительская таблица. Таблицу или столбец без такого описания ловит `TestIntegrationEveryTableAndColumnHasDescription` (`migrations/schema_test.go`).
 
@@ -151,7 +151,7 @@ Down шага 000006 сначала проверяет, можно ли восс
 ## Проверки в CI
 
 - `go test ./...` с PostgreSQL в Docker (testcontainers): для каждой миграции сервиса — «вверх → вниз → вверх» на чистой базе (`migrations/migrations_test.go`), плюс тесты самого запуска.
-- Squawk по **новым** up-файлам PR (`.squawk.toml`). Down-файлы проверяет «вверх → вниз → вверх».
+- Squawk по **новым** up-файлам PR (`.finassist-ci/generated/.squawk.toml`). Down-файлы проверяет «вверх → вниз → вверх».
 - Существующие файлы в `migrations/` не меняются.
 
 Локально без Docker — свой PostgreSQL:
