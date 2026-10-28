@@ -180,3 +180,6 @@ FIN-6 версионирует каждое определение метрик�
 Общие команды и тесты скриптов требуют Python 3.11+ с PyYAML.
 
 `.finassist-ci.json` закрепляет общий источник полным SHA и объявляет профиль/исключения. CI вызывает reusable workflows того же SHA; `make lint`, `make fmt`, `make lint-config` и `make lint-migrations BASE_REF=origin/main` используют его через `scripts/common_ci.py`. Конфигурации создаются в игнорируемом `.finassist-ci/generated/`; локальные копии правил не редактируются. Первый локальный вызов требует доступ к GitHub. Обновление workflow и manifest pin приходит одним PR Renovate; откат возвращает прежние SHA вместе. [Источник, профили, обновление и откат](https://github.com/fin-assist/go-service-template/blob/main/docs/shared-go-ci.md). Проверки тестов/coverage, PostgreSQL 18, race и совместимость сохраняются.
+
+
+Если новая ревизия меняет `common/bootstrap.py`, в том же PR нужно синхронизировать его точную копию `scripts/common_ci.py`; Renovate сам обновляет только SHA. При откате возвращаются вместе pins и соответствующая копия bootstrap. До синхронизации byte-equality guard оставляет PR красным. Ручное изменение копии не считается bot-only обновлением по FIN-211.
