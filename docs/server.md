@@ -46,3 +46,9 @@ supervisor вместе с импортом; отмена jobs предшест�
 `finassist_outbox_delivery_errors_total{target}`, target ограничен конфигурацией (`analytics`).
 Обязательный алерт: `finassist_outbox_oldest_age_seconds > 3600` для всех target, включая пустой.
 Подробности транзакций, версий, удаления и восстановления — [recalculation.md](recalculation.md).
+
+FIN-6 дополняет наблюдение четырьмя gauges без labels:
+`finassist_definition_backfill_planned_users`, `finassist_definition_backfill_pending_users`,
+`finassist_definition_backfill_failed_users`, `finassist_definition_backfill_oldest_age_seconds`.
+Первый показывает прогресс обхода, остальные — registry-only очередь; завершение доставки
+по-прежнему подтверждается `finassist_outbox_*`. Инструкция — [recalculation.md](recalculation.md).

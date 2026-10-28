@@ -33,6 +33,7 @@ type Lease struct {
 	User          string
 	Version       int32
 	Recalculating bool
+	UserAction    bool
 	State         calculating.State
 	Known         []Period
 	Queue         []QueueRow

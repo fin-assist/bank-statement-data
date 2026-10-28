@@ -86,8 +86,9 @@ func wireRecalculations(ctx context.Context, a *App, reg prometheus.Registerer, 
 	queueRows := prometheus.NewGauge(prometheus.GaugeOpts{Name: "finassist_recalculation_queue_users", Help: "Users awaiting financial recalculation."})
 	queueAge := prometheus.NewGauge(prometheus.GaugeOpts{Name: "finassist_recalculation_oldest_age_seconds", Help: "Age of the oldest pending financial recalculation."})
 	failures := prometheus.NewCounter(prometheus.CounterOpts{Name: "finassist_recalculation_errors_total", Help: "Failed financial recalculation iterations."})
+	backfill := newBackfillMetrics()
 	var registered []prometheus.Collector
-	for _, collector := range []prometheus.Collector{queueRows, queueAge, failures} {
+	for _, collector := range []prometheus.Collector{queueRows, queueAge, failures, backfill.pending, backfill.planned, backfill.failed, backfill.age} {
 		if err := reg.Register(collector); err != nil {
 			for _, previous := range registered {
 				reg.Unregister(previous)
@@ -117,11 +118,12 @@ func wireRecalculations(ctx context.Context, a *App, reg prometheus.Registerer, 
 				}
 				observe, cancel := context.WithTimeout(ctx, 5*time.Second)
 				count, age, err := repo.QueueStats(observe, now())
-				cancel()
 				if err == nil {
 					queueRows.Set(float64(count))
 					queueAge.Set(age)
 				}
+				backfill.observe(observe, repo, now())
+				cancel()
 			}
 		}
 	}}

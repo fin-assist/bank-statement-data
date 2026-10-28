@@ -95,6 +95,13 @@ func (r *Recalculations) Lock(ctx context.Context, user string, now time.Time) (
 			return out, false, nil
 		}
 	}
+	// A registry row can be due before a failed source-change row. This full
+	// calendar calculation consumes both, so retain the user-action flag even
+	// when that source row's retry time is later than the due lease rows.
+	err = r.db.Writer(ctx).QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM recalc_queue WHERE user_id=$1 AND NOT registry_only)`, user).Scan(&out.UserAction)
+	if err != nil {
+		return out, false, importError(ctx, err)
+	}
 	version, err := NewToolFacts(r.db).Version(ctx, user)
 	if err != nil {
 		return out, false, err

@@ -108,7 +108,7 @@ func (s *Service) Recalculate(ctx context.Context, user string) error {
 			state.TimeZone = "Europe/Moscow"
 		}
 		state.CalculatedAt = s.now()
-		if err = s.publisher.Publish(ctx, Publication{User: user, Version: lease.Version + 1, State: state, Recalculating: userAction(lease.Queue), Pending: true}); err != nil {
+		if err = s.publisher.Publish(ctx, Publication{User: user, Version: lease.Version + 1, State: state, Recalculating: lease.UserAction || userAction(lease.Queue), Pending: true}); err != nil {
 			return err
 		}
 		return s.repo.Start(ctx, lease, state)
@@ -170,7 +170,7 @@ func (s *Service) Recalculate(ctx context.Context, user string) error {
 				keys = append(keys, p.Period)
 			}
 			global.Revisions = maps.Clone(lease.Revisions)
-			if err = s.publisher.Publish(ctx, Publication{User: user, Version: lease.Version + 1, State: global, Recalculating: userAction(lease.Queue), Periods: snapshots, Removed: removed(lease.Known, keys)}); err != nil {
+			if err = s.publisher.Publish(ctx, Publication{User: user, Version: lease.Version + 1, State: global, Recalculating: lease.UserAction || userAction(lease.Queue), Periods: snapshots, Removed: removed(lease.Known, keys)}); err != nil {
 				return err
 			}
 			return s.repo.Complete(ctx, lease, global, keys, now)
