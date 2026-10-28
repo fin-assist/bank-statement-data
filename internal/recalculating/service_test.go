@@ -77,7 +77,7 @@ func (f *repoFake) Start(_ context.Context, _ Lease, state calculating.State) er
 	f.startCalls++
 	if f.startErr == nil {
 		f.lease.Version++
-		f.lease.Recalculating = userAction(f.lease.Queue)
+		f.lease.Recalculating = f.lease.UserAction || userAction(f.lease.Queue)
 		f.lease.State = state
 	}
 	return f.startErr

@@ -267,10 +267,10 @@ func TestUnitTickPlansBeforePendingAndRetainsFairRecalculationCursor(t *testing.
 }
 
 func TestUnitRegistryAndDailyWorkStaySilentWhileMixedUserWorkIsVisible(t *testing.T) {
-	for _, kind := range []string{"registry", "daily", "user", "mixed", "resumed-registry"} {
+	for _, kind := range []string{"registry", "daily", "user", "mixed", "resumed-registry", "resumed-internal-registry", "registry-with-future-user"} {
 		t.Run(kind, func(t *testing.T) {
 			s, r, p := fixture(t)
-			wantVisible := kind == "user" || kind == "mixed"
+			wantVisible := kind == "user" || kind == "mixed" || kind == "registry-with-future-user"
 			r.lease.Queue = []QueueRow{{RegistryOnly: true}}
 			switch kind {
 			case "daily":
@@ -281,6 +281,12 @@ func TestUnitRegistryAndDailyWorkStaySilentWhileMixedUserWorkIsVisible(t *testin
 				r.lease.Queue = append(r.lease.Queue, QueueRow{RegistryOnly: false})
 			case "resumed-registry":
 				r.lease.Version = 5
+			case "resumed-internal-registry":
+				r.lease.Recalculating = true
+			case "registry-with-future-user":
+				// The due lease contains only registry rows, but the same
+				// full-history calculation also consumes a backed-off user row.
+				r.lease.UserAction = true
 			}
 			if err := s.Recalculate(t.Context(), "u"); err != nil {
 				t.Fatal(err)
