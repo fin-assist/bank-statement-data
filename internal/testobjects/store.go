@@ -23,15 +23,17 @@ import (
 // Store serves a dedicated private fixture bucket, including conditional file writes
 // and permanent zero-byte erasure fences.
 type Store struct {
-	Server          *httptest.Server
-	mu              sync.Mutex
-	data            map[string][]byte
-	modified        map[string]time.Time
-	TokenFile       string
-	erasureFailure  atomic.Bool
-	creationFailure atomic.Bool
-	readEntered     chan<- struct{}
-	readResume      <-chan struct{}
+	Server                    *httptest.Server
+	mu                        sync.Mutex
+	data                      map[string][]byte
+	modified                  map[string]time.Time
+	TokenFile                 string
+	erasureFailure            atomic.Bool
+	creationFailure           atomic.Bool
+	defaultEncryptionFailure  atomic.Bool
+	responseEncryptionFailure atomic.Bool
+	readEntered               chan<- struct{}
+	readResume                <-chan struct{}
 }
 
 // PauseReads delays the response after its snapshot was captured, modelling a
@@ -47,6 +49,12 @@ func (s *Store) SetErasureFailure(fail bool) { s.erasureFailure.Store(fail) }
 
 // SetCreationFailure models a provider refusal after durable admission staging.
 func (s *Store) SetCreationFailure(fail bool) { s.creationFailure.Store(fail) }
+
+// SetDefaultEncryptionFailure models a privileged operator changing the bucket key.
+func (s *Store) SetDefaultEncryptionFailure(fail bool) { s.defaultEncryptionFailure.Store(fail) }
+
+// SetResponseEncryptionFailure models a provider response without encryption proof.
+func (s *Store) SetResponseEncryptionFailure(fail bool) { s.responseEncryptionFailure.Store(fail) }
 
 // New creates a real TLS S3 protocol fixture and an external token file.
 func New(t testing.TB) *Store {
@@ -85,6 +93,12 @@ func (s *Store) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		q := r.URL.Query()
 		switch {
+		case q.Has("encryption"):
+			key := "fixture-key"
+			if s.defaultEncryptionFailure.Load() {
+				key = "unexpected-key"
+			}
+			_, _ = io.WriteString(w, `<ServerSideEncryptionConfiguration><Rule><ApplyServerSideEncryptionByDefault><SSEAlgorithm>aws:kms</SSEAlgorithm><KMSMasterKeyID>`+key+`</KMSMasterKeyID></ApplyServerSideEncryptionByDefault></Rule></ServerSideEncryptionConfiguration>`)
 		case q.Has("versioning"):
 			_, _ = io.WriteString(w, "<VersioningConfiguration/>")
 		case q.Has("lifecycle"), q.Has("object-lock"):
@@ -128,7 +142,7 @@ func (s *Store) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodPut:
-		if r.Header.Get("X-Amz-Server-Side-Encryption") != "aws:kms" || r.Header.Get("X-Amz-Server-Side-Encryption-Aws-Kms-Key-Id") != "fixture-key" {
+		if r.Header.Get("X-Amz-Server-Side-Encryption") != "" || r.Header.Get("X-Amz-Server-Side-Encryption-Aws-Kms-Key-Id") != "" {
 			w.WriteHeader(400)
 			return
 		}
@@ -153,6 +167,7 @@ func (s *Store) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		s.data[key] = append([]byte{}, body...)
 		s.modified[key] = time.Now()
+		s.encryptionProof(w)
 		w.WriteHeader(200)
 	case http.MethodGet:
 		s.mu.Lock()
@@ -175,9 +190,17 @@ func (s *Store) serve(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		s.encryptionProof(w)
 		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 		_, _ = w.Write(body)
 	default:
 		w.WriteHeader(405)
+	}
+}
+
+func (s *Store) encryptionProof(w http.ResponseWriter) {
+	if !s.responseEncryptionFailure.Load() {
+		w.Header().Set("X-Amz-Server-Side-Encryption", "aws:kms")
+		w.Header().Set("X-Amz-Server-Side-Encryption-Aws-Kms-Key-Id", "fixture-key")
 	}
 }

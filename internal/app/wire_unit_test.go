@@ -45,6 +45,9 @@ func wireResponse(body string, code int) *http.Response {
 	return &http.Response{StatusCode: code, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}
 }
 func wireSafeResponse(r *http.Request) (*http.Response, error) {
+	if r.URL.Query().Has("encryption") {
+		return wireResponse(`<ServerSideEncryptionConfiguration><Rule><ApplyServerSideEncryptionByDefault><SSEAlgorithm>aws:kms</SSEAlgorithm><KMSMasterKeyID>fixture</KMSMasterKeyID></ApplyServerSideEncryptionByDefault></Rule></ServerSideEncryptionConfiguration>`, 200), nil
+	}
 	if r.URL.Query().Has("versioning") {
 		return wireResponse("<VersioningConfiguration/>", 200), nil
 	}
@@ -91,6 +94,7 @@ func TestUnitImportAssemblyFailsClosedOnUnsafeOrUnavailableBucket(t *testing.T) 
 		{name: "enabled-versioning", kind: "versioning", body: "<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>", code: 200},
 		{name: "suspended-versioning", kind: "versioning", body: "<VersioningConfiguration><Status>Suspended</Status></VersioningConfiguration>", code: 200},
 		{name: "expiry", kind: "lifecycle", body: "<LifecycleConfiguration><Rule><Status>Enabled</Status><Expiration><Days>1</Days></Expiration></Rule></LifecycleConfiguration>", code: 200},
+		{name: "wrong-encryption", kind: "encryption", body: "<ServerSideEncryptionConfiguration/>", code: 200},
 		{name: "object-lock", kind: "object-lock", body: "<ObjectLockConfiguration><ObjectLockEnabled>Enabled</ObjectLockEnabled></ObjectLockConfiguration>", code: 200},
 		{name: "malformed", kind: "versioning", body: "private malformed provider diagnostics", code: 200},
 		{name: "unavailable", kind: "versioning", body: "private provider diagnostics", code: 503},
@@ -159,7 +163,7 @@ func TestUnitImportAssemblyPropagatesBarrierFailureAfterAllSafetyChecks(t *testi
 		if pools == 1 {
 			return &postgres.DB{}, nil
 		}
-		if transport.requests != 3 || opts.ReplicaDSN != "" || opts.MaxConns != 8 || opts.AppName != "bank-statement-data-object-barrier" {
+		if transport.requests != 4 || opts.ReplicaDSN != "" || opts.MaxConns != 8 || opts.AppName != "bank-statement-data-object-barrier" {
 			t.Error("unsafe/shared barrier opening", opts, transport.requests)
 		}
 		return nil, failure
@@ -179,7 +183,7 @@ func TestUnitImportWiringMetricConflictDoesNotPublishPartialService(t *testing.T
 	// GRPC remains nil: the conflicting key metric must fail before any RPC
 	// registration, job exposure or Imports publication can occur.
 	jobs, closer, err := wire(t.Context(), a, reg, func(context.Context, postgres.Options) (*postgres.DB, error) { pools++; return &postgres.DB{}, nil }, Options{ObjectClient: &http.Client{Transport: transport}})
-	if err == nil || !strings.Contains(err.Error(), "finassist_idempotency_requests_total") || jobs != nil || closer != nil || a.Imports != nil || pools != 1 || transport.requests != 3 || transport.closed != 0 {
+	if err == nil || !strings.Contains(err.Error(), "finassist_idempotency_requests_total") || jobs != nil || closer != nil || a.Imports != nil || pools != 1 || transport.requests != 4 || transport.closed != 0 {
 		t.Fatal(err, pools)
 	}
 }
@@ -193,7 +197,7 @@ func TestUnitImportAssemblyDoesNotOwnInjectedHTTPTransport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if transport.requests != 3 || a.Imports == nil || len(a.Jobs) != 6 {
+	if transport.requests != 4 || a.Imports == nil || len(a.Jobs) != 6 {
 		t.Fatal("incomplete import assembly")
 	}
 	a.Close()

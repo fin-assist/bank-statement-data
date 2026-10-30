@@ -87,6 +87,12 @@ func (s *Store) put(ctx context.Context, key string, body io.Reader, size int64,
 	if err != nil || int64(len(data)) != size {
 		return ErrInput
 	}
+	// Both requests share one budget, leaving the reservation's final commit time.
+	ctx, cancel := context.WithTimeout(ctx, s.client.Timeout)
+	defer cancel()
+	if err := s.checkEncryption(ctx); err != nil {
+		return err
+	}
 	req, err := s.request(ctx, http.MethodPut, key, nil, bytes.NewReader(data))
 	if err != nil {
 		return err
@@ -98,14 +104,12 @@ func (s *Store) put(ctx context.Context, key string, body io.Reader, size int64,
 	req.Header.Set("Content-Type", "application/octet-stream")
 	sum := md5.Sum(data) // #nosec G401 -- mandated S3 Content-MD5 transfer checksum.
 	req.Header.Set("Content-MD5", base64.StdEncoding.EncodeToString(sum[:]))
-	req.Header.Set("X-Amz-Server-Side-Encryption", "aws:kms")
-	req.Header.Set("X-Amz-Server-Side-Encryption-Aws-Kms-Key-Id", s.kmsKeyID)
 	resp, err := s.do(req)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK || !s.encryptedResponse(resp.Header) {
 		return ErrUnavailable
 	}
 	return nil
@@ -124,6 +128,10 @@ func (s *Store) Open(ctx context.Context, key string) (io.ReadCloser, error) {
 	resp, err := s.do(req)
 	if err != nil {
 		return nil, err
+	}
+	if resp.StatusCode == http.StatusOK && !s.encryptedResponse(resp.Header) {
+		_ = resp.Body.Close()
+		return nil, ErrUnavailable
 	}
 	if resp.StatusCode != http.StatusOK || resp.ContentLength > maxObjectBytes || resp.ContentLength == 0 {
 		_ = resp.Body.Close()

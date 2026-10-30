@@ -43,6 +43,14 @@ func verifyFixtureCAS(t *testing.T, fixture *Store, client *http.Client) {
 	key := "73ef1f95-14d5-453c-80ec-d0e2ac8c854d/b7a17bfd-cf78-44a3-95f7-09941c59e996"
 	original := []byte("private synthetic file")
 
+	fixture.SetDefaultEncryptionFailure(true)
+	if err = store.Put(t.Context(), key, bytes.NewReader(original), int64(len(original))); !errors.Is(err, objectstore.ErrConfig) {
+		t.Fatal("unsafe default accepted", err)
+	}
+	if _, ok := fixture.Bytes(key); ok {
+		t.Fatal("unsafe default wrote object")
+	}
+	fixture.SetDefaultEncryptionFailure(false)
 	fixture.SetCreationFailure(true)
 	if err = store.Put(t.Context(), key, bytes.NewReader(original), int64(len(original))); err == nil {
 		t.Fatal("fixture hid provider create refusal")
@@ -66,6 +74,11 @@ func verifyFixtureCAS(t *testing.T, fixture *Store, client *http.Client) {
 	if !bytes.Equal(stored, original) {
 		t.Fatal("fixture leaked mutable object storage")
 	}
+	fixture.SetResponseEncryptionFailure(true)
+	if unverified, err := store.Open(t.Context(), key); unverified != nil || !errors.Is(err, objectstore.ErrUnavailable) {
+		t.Fatal("unverified bytes exposed", err)
+	}
+	fixture.SetResponseEncryptionFailure(false)
 	opened, err := store.Open(t.Context(), key)
 	if err != nil {
 		t.Fatal(err)
@@ -152,9 +165,9 @@ func TestUnitFixtureDoesNotAcceptInvalidObjectRequests(t *testing.T) {
 		{"unsupported bucket method", http.MethodPost, "/private", "fixture-iam-token", "", "", 0, 405},
 		{"unknown query", http.MethodGet, "/private?other", "fixture-iam-token", "", "", 0, 400},
 		{"foreign bucket", http.MethodGet, "/foreign/file", "fixture-iam-token", "", "", 0, 404},
-		{"missing encryption", http.MethodPut, "/private/key", "fixture-iam-token", "", "a", 1, 400},
+		{"explicit encryption", http.MethodPut, "/private/key", "fixture-iam-token", "fixture-key", "a", 1, 400},
 		{"bad KMS", http.MethodPut, "/private/key", "fixture-iam-token", "wrong", "a", 1, 400},
-		{"size mismatch", http.MethodPut, "/private/key", "fixture-iam-token", "fixture-key", "abc", 2, 400},
+		{"size mismatch", http.MethodPut, "/private/key", "fixture-iam-token", "", "abc", 2, 400},
 		{"unsupported object method", http.MethodHead, "/private/key", "fixture-iam-token", "", "", 0, 405},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

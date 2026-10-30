@@ -48,7 +48,7 @@ var Vars = []Var{
 		Doc: "elapsed-сдвиг ежедневного пересчёта от первого реального начала локальных суток пользователя (`StartOfDay`), `0 <= offset < 24h`; формат `time.ParseDuration`. `0` — начало суток, `5m` — обычно 00:05. Это длительность от начала суток, а не фиксированное местное время; календарная логика и DST сохраняются"},
 	{Name: "OBJECT_STORAGE_ENDPOINT", Command: "serve", Default: "https://storage.yandexcloud.net", Doc: "HTTPS endpoint S3 без credentials, query и fragment; сервис не обращается к банку"},
 	{Name: "OBJECT_STORAGE_BUCKET", Command: "serve", Required: true, Doc: "отдельный приватный бакет выписок: версионирование никогда не включалось, без Object Lock и активного удаления по lifecycle"},
-	{Name: "OBJECT_STORAGE_KMS_KEY_ID", Command: "serve", Required: true, Doc: "ключ SSE-KMS; каждый PUT файла и пустого маркера требует aws:kms"},
+	{Name: "OBJECT_STORAGE_KMS_KEY_ID", Command: "serve", Required: true, Doc: "ожидаемый ключ default SSE-KMS бакета; проверяется перед каждым PUT и в ответах PUT/GET"},
 	{Name: "OBJECT_STORAGE_IAM_TOKEN_FILE", Command: "serve", Required: true, Doc: "абсолютный путь к файлу IAM-токена; внешний механизм обновляет токен, адаптер перечитывает его перед каждым запросом"},
 	{Name: "GRPC_ADDR", Command: "serve", Default: ":9090",
 		Doc: "gRPC"},

@@ -21,7 +21,17 @@ import (
 
 func protocolTLS(t *testing.T, handler http.HandlerFunc) (*Store, *httptest.Server) {
 	t.Helper()
-	server := httptest.NewTLSServer(handler)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Has("encryption") {
+			_, _ = io.WriteString(w, encryptionXML)
+			return
+		}
+		if r.URL.RawQuery == "" && r.URL.Path != "/private-statements" {
+			w.Header().Set(encryptionAlgorithm, "aws:kms")
+			w.Header().Set(encryptionKey, "kms-test")
+		}
+		handler(w, r)
+	}))
 	t.Cleanup(server.Close)
 	store, err := New(Config{Endpoint: server.URL, Bucket: "private-statements", KMSKeyID: "kms-test", Token: func(context.Context) (string, error) { return "protocol-token", nil }, Client: server.Client()})
 	if err != nil {
@@ -152,7 +162,7 @@ func TestIntegrationConditionalCreateAndPermanentFenceUseExactWireHeaders(t *tes
 			return
 		}
 		checksum := md5.Sum(data) // #nosec G401 -- S3 checksum.
-		if r.ContentLength != int64(len(data)) || r.Header.Get("Content-MD5") != base64.StdEncoding.EncodeToString(checksum[:]) || r.Header.Get("Content-Type") != "application/octet-stream" || r.Header.Get("X-Amz-Server-Side-Encryption") != "aws:kms" || r.Header.Get("X-Amz-Server-Side-Encryption-Aws-Kms-Key-Id") != "kms-test" || r.Header.Get("X-YaCloud-SubjectToken") != "protocol-token" {
+		if r.ContentLength != int64(len(data)) || r.Header.Get("Content-MD5") != base64.StdEncoding.EncodeToString(checksum[:]) || r.Header.Get("Content-Type") != "application/octet-stream" || r.Header.Get("X-Amz-Server-Side-Encryption") != "" || r.Header.Get("X-Amz-Server-Side-Encryption-Aws-Kms-Key-Id") != "" || r.Header.Get("X-YaCloud-SubjectToken") != "protocol-token" {
 			t.Error("incomplete S3 integrity/encryption headers")
 		}
 		if len(data) > 0 {

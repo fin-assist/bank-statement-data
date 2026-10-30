@@ -29,8 +29,8 @@ func TestUnitFileErasureFencesLateCreates(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if r.Header.Get("X-Amz-Server-Side-Encryption") != "aws:kms" || r.Header.Get("X-Amz-Server-Side-Encryption-Aws-Kms-Key-Id") != "kms-test" {
-			t.Fatal("unencrypted fence or file")
+		if r.Header.Get("X-Amz-Server-Side-Encryption") != "" || r.Header.Get("X-Amz-Server-Side-Encryption-Aws-Kms-Key-Id") != "" {
+			t.Fatal("unexpected explicit encryption parameters")
 		}
 		if len(data) > 0 {
 			if r.Header.Get("If-None-Match") != "*" {
@@ -78,6 +78,12 @@ func TestIntegrationErasureSurvivesCloudCommitAfterClientCancellation(t *testing
 	objects := make(map[string][]byte)
 	revision := make(map[string]int)
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Has("encryption") {
+			_, _ = io.WriteString(w, encryptionXML)
+			return
+		}
+		w.Header().Set(encryptionAlgorithm, "aws:kms")
+		w.Header().Set(encryptionKey, "kms-test")
 		if r.Header.Get("X-YaCloud-SubjectToken") != "test-token" {
 			w.WriteHeader(403)
 			return
