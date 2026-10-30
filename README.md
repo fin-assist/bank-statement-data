@@ -21,6 +21,8 @@ Go-сервис «Понятных финансов»: приём выписок
 - [docs/schema.md](docs/schema.md) — что держит схема БД и какие инварианты проверяет код ([FIN-111](https://finassist.youtrack.cloud/issue/FIN-111)).
 - [AGENTS.md](AGENTS.md) — карта и правила для агентов, Code Review Rules.
 
+FIN-193: задание `operation-partitions` проверяет годовые партиции при запуске и раз в неделю (каждые 7 суток); следующий год создаёт с октября UTC. Права роли — [docs/migrations.md](docs/migrations.md#партиции), метрика отсутствующей партиции и условие алерта — [docs/server.md](docs/server.md#партиции-operation-fin-193).
+
 ## Автоматизация обновлений зависимостей
 
 [Политика Renovate](docs/renovate-policy.md) (FIN-211): одна актуальная release/main, автомерж полностью ботских PR после обязательного CI, один повтор красного CI и закрытие с явным повтором через Dependency Dashboard. AndroidX/Compose остаются на ручной проверке. Исходные группировки, ограничения версий и расписания — `renovate-base.json`; generated target и quarantine — ветка `renovate-policy`. Активация требует отдельного токена и строгой защиты веток; по умолчанию выключена.

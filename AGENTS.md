@@ -53,7 +53,7 @@ updates them in the same PR. A service made from the template rewrites the first
 | Stand identity for verify-mode tests: key files, signed tokens, user GetSigningKeys peer | `internal/testidentity/`; never wired into serve; counted in every profile |
 | SQL migrations (embedded) and schema constraint tests | `migrations/` (`schema_test.go`); rules — `docs/migrations.md`, schema and code invariants — `docs/schema.md` |
 | Application-specific peer adapters, when needed | `internal/adapter/client/<peer>/`; shared dialing/token contracts — go-grpc/client |
-| Shared job lifecycle; application jobs when needed | `github.com/fin-assist/go-worker` v0.1.1; `internal/worker/<job>/` |
+| Shared job lifecycle; operation partition maintenance (`operation-partitions`, UTC yearly DDL) | `github.com/fin-assist/go-worker` v0.1.2; `internal/worker/partitions/` |
 | Configuration: every variable with its default and description; daily recalc offset is explicitly passed by app to repositories | `internal/config/vars.go` (`Vars`); generated tables — `docs/config.md` |
 | Request-scoped values (request ID, caller, user, bank-bff hints) | `github.com/fin-assist/go-grpc/reqctx` |
 | Logger, metrics endpoint, readiness | `internal/logx/`, `internal/ops/` |
@@ -63,6 +63,7 @@ updates them in the same PR. A service made from the template rewrites the first
 | Dependency updates | `renovate.json` |
 | PR review by Claude | `.github/workflows/claude.yml` |
 
+FIN-193 wires weekly/startup operation-partitions maintenance in internal/worker/partitions and adapter/postgres/partitions.go; read docs/migrations.md for runtime role ownership/CREATE requirements and docs/server.md for the bounded missing-partition gauge.
 FIN-258 keeps only service routing/assembly adapters locally. Do not copy library internals back into the service
 or add dummy RPCs, SQL or jobs. FIN-267: AUTH_MODE=verify is go-identity v0.2.1 NewAssembly (prod: Kubernetes
 ServiceAccounts, stage: file-key stand JWTs; user JWTs by user.GetSigningKeys through PEER_USER_ADDR, refreshed by
