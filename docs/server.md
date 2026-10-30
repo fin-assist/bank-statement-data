@@ -20,6 +20,8 @@
 
 Общий запуск и периодичность — `github.com/fin-assist/go-worker`. Сервис явно передаёт logger, clock и RestartDelay=5s, сохраняя прежнюю политику перезапуска независимо от default библиотеки. Сборка запускает `statement-import` (два восстанавливаемых обработчика durable queue), `statement-files` (очистка и аудит сирот) и `idempotency-cleanup` (сохранённые ключи); их реализации — `internal/importing` и опубликованная библиотека идемпотентности. В verify добавляется `identity-keys`. Задания запускаются в каждом поде: единственность эффекта обеспечивает прикладная блокировка или `FOR UPDATE SKIP LOCKED`, а не сам runner.
 
+`operation-partitions` (FIN-193, `internal/worker/partitions`) проверяет годовые партиции при запуске и каждый час, создаёт следующий год с октября UTC и восстанавливает текущий после простоя. Использует primary и транзакционную advisory-блокировку; границы, таймауты и права — [migrations.md](migrations.md), «Партиции».
+
 ## PostgreSQL и lifecycle
 
 Сервис передаёт pool options в `go-postgres.OpenPools` v0.3.0. Локальный `postgres.DB` остаётся тонким адаптером менеджера транзакций и маршрутизации: `Writer` выбирает транзакцию/primary, `Reader` — транзакцию, primary для `x-read-primary` от `bank-bff` или реплику. Репозитории и domain mapping принадлежат сервису; подробнее — [migrations.md](migrations.md).
@@ -31,6 +33,12 @@
 Logger и Prometheus registry создаёт сервис и явно передаёт библиотекам. `go-grpc` не должен молча отключить прежние server/client metrics из-за nil metrics/registry; logger по умолчанию в библиотеке не заменяет сервисный logger. Имена и метки сохраняются: `grpc_server_handled_total{method,code,reason}`, `grpc_server_handling_seconds{method}`, `finassist_grpc_denied_total{method,caller,cause}`, `grpc_client_handled_total{peer,method,code}`, `grpc_client_handling_seconds{peer,method}`. Пользовательские идентификаторы и другие неограниченные значения в labels запрещены.
 
 `internal/logx` использует значения из `go-grpc/reqctx`. Логи не раскрывают токены, ключи, DSN и банковские данные; параметры маскирования и безопасного сообщения об ошибке задаёт контракт библиотеки. `/metrics`, `/healthz`, `/readyz` и readiness ping primary остаются в `internal/ops` и сборке сервиса. FIN-342 регистрирует `finassist_idempotency_requests_total{endpoint,outcome}` опубликованной go-idempotency v0.6.0 в том же реестре: endpoint ограничен зарегистрированным UploadStatement, outcome — фиксированным набором решений библиотеки. Нового process-wide logger/registry нет.
+
+### Партиции operation (FIN-193)
+
+`finassist_operation_partition_missing{period="current"|"next"}` — gauge с двумя фиксированными рядами. `current=1`, если текущую партицию не удалось подтвердить; `next=1`, если до 1 января UTC осталось строго меньше 30 суток и партиция следующего года отсутствует либо проверка не удалась. После успешного создания/повторной проверки значение сбрасывается в 0. Состояние читается с primary после COMMIT/ROLLBACK, неверные границы и непривязанная одноимённая таблица готовностью не считаются. До первой итерации значения 0; ошибка БД в первой итерации выставляет сигнал по тому же правилу.
+
+Условие алерта: `finassist_operation_partition_missing == 1` с `for: 5m`. Проверять каждый под, не усреднять: устаревшая метрика другого пода не должна скрыть отказ. Проверить права роли, доступность primary, конфликтующее имя/границы и блокировки; после устранения задание повторяется раз в час (или при рестарте). Само правило мониторинга в инфраструктуру этим PR не устанавливается: задача допускает метрику как самостоятельный результат.
 
 ## Пересчёт и доставка метрик (FIN-357)
 

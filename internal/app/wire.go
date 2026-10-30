@@ -26,6 +26,7 @@ import (
 	"github.com/fin-assist/bank-statement-data/internal/calculating"
 	"github.com/fin-assist/bank-statement-data/internal/importing"
 	"github.com/fin-assist/bank-statement-data/internal/operations"
+	"github.com/fin-assist/bank-statement-data/internal/worker/partitions"
 	"github.com/fin-assist/bank-statement-data/migrations"
 )
 
@@ -151,9 +152,17 @@ func wire(ctx context.Context, a *App, reg prometheus.Registerer, openDB func(co
 	if err = operationsgrpc.RegisterTools(a.GRPC.GRPC(), tools); err != nil {
 		return fail(err)
 	}
+	partitionClock := opts.PartitionClock
+	if partitionClock == nil {
+		partitionClock = worker.SystemClock{}
+	}
+	partitionJob, err := partitions.New(a.DB, postgres.NewOperationPartitions(a.DB), now, partitionClock, a.Log, reg)
+	if err != nil {
+		return fail(err)
+	}
 	recalcJobs, closeRecalc, err := wireRecalculations(ctx, a, reg, opts, now, objects)
 	if err != nil {
 		return fail(err)
 	}
-	return append([]worker.Job{{Name: "statement-import", Run: service.Run}, {Name: "statement-files", Run: service.RunCleanup}, cleanup}, recalcJobs...), func() { closeRecalc(); closeAll() }, nil
+	return append([]worker.Job{{Name: "statement-import", Run: service.Run}, {Name: "statement-files", Run: service.RunCleanup}, cleanup, partitionJob}, recalcJobs...), func() { closeRecalc(); closeAll() }, nil
 }

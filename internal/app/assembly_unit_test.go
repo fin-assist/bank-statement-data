@@ -52,7 +52,7 @@ func TestUnitAssemblyWiresImportAndIndependentBarrierPool(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer a.Close()
-	if calls != 2 || a.DB != db || a.Log != log || a.Cfg.Service != cfg.Service || a.Clients == nil || a.Tokens == nil || len(a.Jobs) != 5 || a.Imports == nil || a.Operations == nil {
+	if calls != 2 || a.DB != db || a.Log != log || a.Cfg.Service != cfg.Service || a.Clients == nil || a.Tokens == nil || len(a.Jobs) != 6 || a.Imports == nil || a.Operations == nil {
 		t.Fatal("incomplete or unexpectedly populated assembly")
 	}
 	if err := a.GRPC.Check(); err != nil {

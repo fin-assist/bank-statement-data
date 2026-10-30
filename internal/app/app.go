@@ -54,6 +54,8 @@ type Options struct {
 	AnalyticsDialOptions []grpc.DialOption
 	// RecalculationClock supplies scheduler timers; business instants still use Now.
 	RecalculationClock worker.Clock
+	// PartitionClock supplies timers for hourly operation partition maintenance.
+	PartitionClock worker.Clock
 }
 
 // New assembles the service from cfg. Close releases what it opened.
