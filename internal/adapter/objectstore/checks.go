@@ -54,7 +54,7 @@ func (s *Store) CheckBucket(ctx context.Context) error {
 	if len(lock.Enabled) != 0 {
 		return ErrConfig
 	}
-	return nil
+	return s.checkEncryption(ctx)
 }
 
 func (s *Store) bucketConfig(ctx context.Context, kind string, out any, optional bool) error {

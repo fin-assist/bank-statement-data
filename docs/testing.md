@@ -46,3 +46,11 @@ FIN-355 review: hand-computed OFX-сценарий проверяет на об�
 импорт/расчёт через PG и API. Unit различает exclusive global/inclusive period bounds, signed trunc,
 целочисленную границу среднего и точный ApplyRules-кейс ручного transfer/refund. Гонка calculation/purge
 подтверждает PostgreSQL blocker до освобождения транзакции; UUID-проверка использует два непустых tenant.
+
+## FIN-382: default SSE-KMS и доказательство шифрования
+
+- Unit: `TestUnitDefaultEncryptionRejectsUnsafeOrUnverifiableSettingsBeforeWrites` проверяет startup/file/fence для отсутствующей, неверной, повторённой и повреждённой конфигурации, 403/404/503 и лимита XML; `TestUnitDefaultEncryptionIsRecheckedAndTokensReloadBetweenGuardAndPut` — отсутствие кеша и ротацию токена между фазами; `TestUnitEncryptionResponseProofIsRequiredForFilesAndEmptyFences` — пропущенные/чужие/повторённые заголовки PUT/GET, включая пустой объект; `TestUnitEncryptionPreflightAndPutShareOneDeadline` — единый бюджет и запрет позднего успеха.
+- Integration: `TestIntegrationDefaultEncryptionProofAcrossAuthenticatedTLS` проходит настоящий TLS/HTTP с проверкой identity, отказами чтения конфигурации и доказательства ответов; `TestIntegrationStartupRefusesChangedDefaultEncryptionBeforeListeners` — отказ полной сборки и сохранение cleanup intent после неопределённого PUT на реальном PostgreSQL. Прежние conditional write/late PUT/zero-fence тесты сохранены с default encryption.
+- API: `TestAPIDefaultEncryptionRefusesImportsAndPreservesPurgeIntents` вызывает реальные RPC полной сборки: неверный default запрещает импорт и fence, PUT без доказательства после фактического remote commit не подтверждает purge, восстановление доказательства завершает purge без воскрешения пользователя. `TestAPIUnverifiedSourceEncryptionCannotPublishFinancialFacts` задерживает настоящий source GET, убирает proof до ответа и подтверждает отказ без операций: пока proof нет, cleanup остаётся неподтверждённым с generic INTERNAL; после восстановления proof Watch отдаёт PROCESSING_FAILED. Unit/integration отдельно проверяют отказ fixture на explicit SSE-параметры.
+
+Облачные роли и реальная выкладка этими fixture-тестами не проверяются. Принятый предел config→PUT описан в `docs/import.md`; ни тесты, ни response validation не доказывают атомарность настройки и записи.

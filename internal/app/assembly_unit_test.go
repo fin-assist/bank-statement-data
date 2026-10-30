@@ -42,7 +42,9 @@ func TestUnitAssemblyWiresImportAndIndependentBarrierPool(t *testing.T) {
 	}, Options{ObjectClient: &http.Client{Transport: assemblyTransport(func(r *http.Request) (*http.Response, error) {
 		body := "<VersioningConfiguration/>"
 		code := 200
-		if !r.URL.Query().Has("versioning") {
+		if r.URL.Query().Has("encryption") {
+			body = "<ServerSideEncryptionConfiguration><Rule><ApplyServerSideEncryptionByDefault><SSEAlgorithm>aws:kms</SSEAlgorithm><KMSMasterKeyID>fixture</KMSMasterKeyID></ApplyServerSideEncryptionByDefault></Rule></ServerSideEncryptionConfiguration>"
+		} else if !r.URL.Query().Has("versioning") {
 			body = ""
 			code = 404
 		}

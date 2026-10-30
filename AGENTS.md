@@ -80,6 +80,10 @@ FIN-358 registers AssistantToolsService for verified assistant system calls only
 Read docs/import.md before changing staged admission, permanent erasure fences or two-phase purge.
 Object barrier uses a separately owned pool; remote I/O is forbidden inside data transactions.
 The dedicated bucket must never enable versioning/Object Lock/marker expiration; CheckBucket precedes listeners.
+FIN-382 uses mandatory default aws:kms encryption with the configured expected key, checked at startup and uncached
+before every original/fence PUT in one <=10s budget. No explicit SSE request parameters or configurer role are needed.
+PUT/GET encryption response proof is mandatory before success/body exposure. Configuration-to-write is not atomic:
+operators must keep defaults immutable; a mismatching PUT response is an uncertain outcome, never confirmed erasure.
 Shared TLS object fixtures live in internal/testobjects and remain counted in every profile.
 Pass the service logger, metric registry and worker clock/restart settings explicitly; library defaults
 are not a substitute for existing service behaviour. go-postgres is pinned at v0.3.0. Paths with <feature>, <peer>

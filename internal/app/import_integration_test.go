@@ -253,8 +253,6 @@ func TestIntegrationCloudCorruptionCannotPublishOperations(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Header.Set("X-YaCloud-SubjectToken", "fixture-iam-token")
-	req.Header.Set("X-Amz-Server-Side-Encryption", "aws:kms")
-	req.Header.Set("X-Amz-Server-Side-Encryption-Aws-Kms-Key-Id", "fixture-key")
 	response, err := objects.Server.Client().Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -355,4 +353,27 @@ func objectsStoreList(t *testing.T, fixture *testobjects.Store, prefix string) (
 	}
 	page, err := store.List(t.Context(), prefix, "")
 	return len(page.Objects), err
+}
+
+func TestIntegrationStartupRefusesChangedDefaultEncryptionBeforeListeners(t *testing.T) {
+	a, objects := importAssembly(t)
+	objects.SetDefaultEncryptionFailure(true)
+	rejected, err := app.New(t.Context(), a.Cfg, slog.New(slog.DiscardHandler), prometheus.NewRegistry(), app.Options{ObjectClient: objects.Server.Client()})
+	if rejected != nil || err == nil || err.Error() != "object bucket safety check failed" {
+		t.Fatal("unsafe default enabled assembly", rejected, err)
+	}
+	objects.SetDefaultEncryptionFailure(false)
+	objects.SetResponseEncryptionFailure(true)
+	accepted, err := a.Imports.Upload(t.Context(), apiUser, importing.Header{FileName: "unverified.ofx"}, bytes.NewBufferString(apiOFX), []string{uuid.NewString()})
+	if err == nil || accepted.UploadID != "" {
+		t.Fatal("unverified create accepted", accepted, err)
+	}
+	state := importSnapshot(t, a, apiUser)
+	if len(state.Operations) != 0 || len(state.Uploads) != 1 || state.Uploads[0].FileDeletedAt != nil {
+		t.Fatal("uncertain provider proof discarded intent", state)
+	}
+	objects.SetResponseEncryptionFailure(false)
+	if err = a.Imports.Purge(t.Context(), apiUser); err != nil {
+		t.Fatal("uncertain outcome unrecoverable", err)
+	}
 }

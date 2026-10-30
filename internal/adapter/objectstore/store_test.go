@@ -22,8 +22,28 @@ func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f
 func reply(code int, body string) *http.Response {
 	return &http.Response{StatusCode: code, Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body)), Header: make(http.Header)}
 }
+
+const encryptionXML = `<ServerSideEncryptionConfiguration><Rule><ApplyServerSideEncryptionByDefault><SSEAlgorithm>aws:kms</SSEAlgorithm><KMSMasterKeyID>kms-test</KMSMasterKeyID></ApplyServerSideEncryptionByDefault></Rule></ServerSideEncryptionConfiguration>`
+
+// Existing boundary tests arrange other provider behavior; supply the now-required
+// immutable encryption default and matching object metadata. Encryption adversary
+// tests use raw Config/HTTP servers rather than this convenience fixture.
 func testConfig(fn roundTrip) Config {
-	return Config{Endpoint: "https://storage.example", Bucket: "private-statements", KMSKeyID: "kms-test", Token: func(context.Context) (string, error) { return "test-token", nil }, Client: &http.Client{Transport: fn}}
+	transport := roundTrip(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Query().Has("encryption") {
+			return reply(200, encryptionXML), nil
+		}
+		response, err := fn(r)
+		if response != nil && response.StatusCode == 200 && r.URL.RawQuery == "" && r.URL.Path != "/private-statements" {
+			if response.Header == nil {
+				response.Header = make(http.Header)
+			}
+			response.Header.Set(encryptionAlgorithm, "aws:kms")
+			response.Header.Set(encryptionKey, "kms-test")
+		}
+		return response, err
+	})
+	return Config{Endpoint: "https://storage.example", Bucket: "private-statements", KMSKeyID: "kms-test", Token: func(context.Context) (string, error) { return "test-token", nil }, Client: &http.Client{Transport: transport}}
 }
 func testStore(t *testing.T, fn roundTrip) *Store {
 	t.Helper()
@@ -90,8 +110,8 @@ func TestUnitPutIntegrityAndRejections(t *testing.T) {
 		if r.Header.Get("X-YaCloud-SubjectToken") != "test-token" || r.Header.Get("Authorization") != "" {
 			t.Fatal("wrong auth")
 		}
-		if r.Header.Get("X-Amz-Server-Side-Encryption") != "aws:kms" || r.Header.Get("X-Amz-Server-Side-Encryption-Aws-Kms-Key-Id") != "kms-test" {
-			t.Fatal("encryption missing")
+		if r.Header.Get("X-Amz-Server-Side-Encryption") != "" || r.Header.Get("X-Amz-Server-Side-Encryption-Aws-Kms-Key-Id") != "" {
+			t.Fatal("explicit encryption parameters require configurer")
 		}
 		sum := md5.Sum([]byte(data))
 		if r.Header.Get("Content-MD5") != base64.StdEncoding.EncodeToString(sum[:]) || r.ContentLength != int64(len(data)) {
@@ -351,6 +371,12 @@ func TestIntegrationPrivateStorageTLSProtocol(t *testing.T) {
 	requests := 0
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
+		if r.URL.Query().Has("encryption") {
+			_, _ = io.WriteString(w, encryptionXML)
+			return
+		}
+		w.Header().Set(encryptionAlgorithm, "aws:kms")
+		w.Header().Set(encryptionKey, "kms-test")
 		if r.Header.Get("X-YaCloud-SubjectToken") != "rotated-token" {
 			t.Error("missing token")
 			w.WriteHeader(403)
@@ -359,8 +385,8 @@ func TestIntegrationPrivateStorageTLSProtocol(t *testing.T) {
 		key := strings.TrimPrefix(r.URL.Path, "/private-statements/")
 		switch r.Method {
 		case "PUT":
-			if r.Header.Get("X-Amz-Server-Side-Encryption") != "aws:kms" || r.Header.Get("X-Amz-Server-Side-Encryption-Aws-Kms-Key-Id") != "kms-test" {
-				t.Error("unencrypted request")
+			if r.Header.Get("X-Amz-Server-Side-Encryption") != "" || r.Header.Get("X-Amz-Server-Side-Encryption-Aws-Kms-Key-Id") != "" {
+				t.Error("explicit encryption parameters require configurer")
 			}
 			body, e := io.ReadAll(r.Body)
 			if e != nil {
@@ -418,7 +444,7 @@ func TestIntegrationPrivateStorageTLSProtocol(t *testing.T) {
 	if _, e = s.Open(t.Context(), "u/f"); !errors.Is(e, ErrNotFound) {
 		t.Fatal(e)
 	}
-	if requests != 6 {
+	if requests != 9 {
 		t.Fatal(requests)
 	}
 }
