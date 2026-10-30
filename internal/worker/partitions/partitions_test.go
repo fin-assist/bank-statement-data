@@ -161,3 +161,75 @@ func TestUnitPartitionConstructor(t *testing.T) {
 		t.Fatal("initial metric")
 	}
 }
+
+type scheduleClock struct {
+	interval chan time.Duration
+	ticks    chan time.Time
+	checked  chan struct{}
+}
+
+type scheduleTicker struct{ clock *scheduleClock }
+
+func (c *scheduleClock) NewTicker(interval time.Duration) worker.Ticker {
+	c.interval <- interval
+	return scheduleTicker{clock: c}
+}
+
+func (c *scheduleClock) NewTimer(interval time.Duration) worker.Timer {
+	c.interval <- interval
+	return scheduleTicker{clock: c}
+}
+
+func (t scheduleTicker) C() <-chan time.Time {
+	t.clock.checked <- struct{}{}
+	return t.clock.ticks
+}
+
+func (scheduleTicker) Stop() {}
+
+func TestUnitPartitionJobChecksOnStartupAndWeeklyTick(t *testing.T) {
+	clock := &scheduleClock{interval: make(chan time.Duration, 1), ticks: make(chan time.Time), checked: make(chan struct{}, 2)}
+	store := &fakeStore{present: map[int]bool{2027: true, 2028: true}}
+	now := time.Date(2027, 10, 1, 0, 0, 0, 0, time.UTC)
+	job, err := New(store, store, func() time.Time { return now }, clock, slog.New(slog.DiscardHandler), prometheus.NewRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- job.Run(ctx) }()
+	select {
+	case interval := <-clock.interval:
+		if interval != 168*time.Hour {
+			t.Fatal("partition job is not scheduled every seven days", interval)
+		}
+	case <-ctx.Done():
+		t.Fatal("job did not create its ticker")
+	}
+	select {
+	case <-clock.checked:
+		if !reflect.DeepEqual(store.ensured, []int{2027, 2028}) {
+			t.Fatal("startup did not check both years", store.ensured)
+		}
+	case <-ctx.Done():
+		t.Fatal("job waited for the first tick instead of checking on startup")
+	}
+	select {
+	case clock.ticks <- now.AddDate(0, 0, 7):
+	case <-ctx.Done():
+		t.Fatal("job did not accept weekly tick")
+	}
+	select {
+	case <-clock.checked:
+		if !reflect.DeepEqual(store.ensured, []int{2027, 2028, 2027, 2028}) {
+			t.Fatal("weekly tick did not repeat the check", store.ensured)
+		}
+	case <-ctx.Done():
+		t.Fatal("job did not check on weekly tick")
+	}
+	cancel()
+	if err = <-done; err != nil {
+		t.Fatal(err)
+	}
+}

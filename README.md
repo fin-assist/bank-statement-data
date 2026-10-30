@@ -21,7 +21,7 @@ Go-сервис «Понятных финансов»: приём выписок
 - [docs/schema.md](docs/schema.md) — что держит схема БД и какие инварианты проверяет код ([FIN-111](https://finassist.youtrack.cloud/issue/FIN-111)).
 - [AGENTS.md](AGENTS.md) — карта и правила для агентов, Code Review Rules.
 
-FIN-193: задание `operation-partitions` проверяет годовые партиции при запуске и раз в час; следующий год создаёт с октября UTC. Права роли — [docs/migrations.md](docs/migrations.md#партиции), метрика отсутствующей партиции и условие алерта — [docs/server.md](docs/server.md#партиции-operation-fin-193).
+FIN-193: задание `operation-partitions` проверяет годовые партиции при запуске и раз в неделю (каждые 7 суток); следующий год создаёт с октября UTC. Права роли — [docs/migrations.md](docs/migrations.md#партиции), метрика отсутствующей партиции и условие алерта — [docs/server.md](docs/server.md#партиции-operation-fin-193).
 
 ## Автоматизация обновлений зависимостей
 

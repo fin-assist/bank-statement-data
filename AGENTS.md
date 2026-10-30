@@ -63,7 +63,7 @@ updates them in the same PR. A service made from the template rewrites the first
 | Dependency updates | `renovate.json` |
 | PR review by Claude | `.github/workflows/claude.yml` |
 
-FIN-193 wires hourly/startup operation-partitions maintenance in internal/worker/partitions and adapter/postgres/partitions.go; read docs/migrations.md for runtime role ownership/CREATE requirements and docs/server.md for the bounded missing-partition gauge.
+FIN-193 wires weekly/startup operation-partitions maintenance in internal/worker/partitions and adapter/postgres/partitions.go; read docs/migrations.md for runtime role ownership/CREATE requirements and docs/server.md for the bounded missing-partition gauge.
 FIN-258 keeps only service routing/assembly adapters locally. Do not copy library internals back into the service
 or add dummy RPCs, SQL or jobs. FIN-267: AUTH_MODE=verify is go-identity v0.2.1 NewAssembly (prod: Kubernetes
 ServiceAccounts, stage: file-key stand JWTs; user JWTs by user.GetSigningKeys through PEER_USER_ADDR, refreshed by

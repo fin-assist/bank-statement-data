@@ -27,7 +27,7 @@ type maintenance struct {
 	missing *prometheus.GaugeVec
 }
 
-// New checks immediately and hourly; each iteration has its own bounded transaction.
+// New checks immediately and weekly; each iteration has its own bounded transaction.
 func New(db Transactions, store Store, now func() time.Time, clock worker.Clock, log *slog.Logger, reg prometheus.Registerer) (worker.Job, error) {
 	if db == nil || store == nil || now == nil || clock == nil || log == nil || reg == nil {
 		return worker.Job{}, errors.New("partition maintenance dependencies required")
@@ -42,7 +42,7 @@ func New(db Transactions, store Store, now func() time.Time, clock worker.Clock,
 	missing.WithLabelValues("current").Set(0)
 	missing.WithLabelValues("next").Set(0)
 	m := maintenance{db: db, store: store, now: now, missing: missing}
-	return worker.Every("operation-partitions", time.Hour, log, clock, m.check)
+	return worker.Every("operation-partitions", 7*24*time.Hour, log, clock, m.check)
 }
 
 func (m maintenance) check(ctx context.Context) error {
