@@ -119,14 +119,17 @@ func TestIntegrationPartitionPrivilegesAndAlertRecovery(t *testing.T) {
 	f := importRepository(t)
 	ctx := t.Context()
 	role := "fin193_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	password := uuid.NewString()
 	quoted := pgx.Identifier{role}.Sanitize()
-	exec := func(sql string) {
+	exec := func(sql string, args ...any) {
 		t.Helper()
-		if _, err := f.db.Primary().Exec(ctx, sql); err != nil {
+		if _, err := f.db.Primary().Exec(ctx, sql, args...); err != nil {
 			t.Fatal(err)
 		}
 	}
-	exec("CREATE ROLE " + quoted + " LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE")
+	// Utility DDL cannot bind password parameters on the server. Simple protocol
+	// quotes this ephemeral value through pgx, without putting it in the SQL source.
+	exec("CREATE ROLE "+quoted+" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD $1", pgx.QueryExecModeSimpleProtocol, password)
 	t.Cleanup(func() {
 		_, err := f.db.Primary().Exec(context.Background(), "REASSIGN OWNED BY "+quoted+" TO CURRENT_USER; DROP OWNED BY "+quoted+"; DROP ROLE "+quoted)
 		if err != nil {
@@ -137,7 +140,7 @@ func TestIntegrationPartitionPrivilegesAndAlertRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg.User = url.User(role)
+	cfg.User = url.UserPassword(role, password)
 	// Connect as the non-superuser role; migrations ran under the existing owner.
 	runtimeDB, err := postgres.Open(ctx, postgres.Options{PrimaryDSN: cfg.String(), MaxConns: 2, AppName: "partition-runtime"})
 	if err != nil {
