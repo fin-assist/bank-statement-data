@@ -250,3 +250,32 @@ func TestIntegrationPartitionConflictCancellationAndRollback(t *testing.T) {
 		t.Fatal("lock leaked or retry failed", err)
 	}
 }
+
+func TestIntegrationPartitionJobReportsCurrentYearRollback(t *testing.T) {
+	f := importRepository(t)
+	ctx := t.Context()
+	p := postgres.NewOperationPartitions(f.db)
+	if _, err := f.db.Primary().Exec(ctx, `CREATE TABLE operation_y2029(id integer)`); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2028, 12, 20, 0, 0, 0, 0, time.UTC)
+	reg := partitionIteration(t, f.db, at)
+	for _, year := range []int{2028, 2029} {
+		if exists, err := p.Exists(ctx, year); err != nil || exists {
+			t.Fatal("failed iteration left a partition attached", year, err)
+		}
+	}
+	assertPartitionMetric(t, reg, "current", 1)
+	assertPartitionMetric(t, reg, "next", 1)
+	if _, err := f.db.Primary().Exec(ctx, `DROP TABLE operation_y2029`); err != nil {
+		t.Fatal(err)
+	}
+	reg = partitionIteration(t, f.db, at)
+	for _, year := range []int{2028, 2029} {
+		if exists, err := p.Exists(ctx, year); err != nil || !exists {
+			t.Fatal("retry did not create both partitions", year, err)
+		}
+	}
+	assertPartitionMetric(t, reg, "current", 0)
+	assertPartitionMetric(t, reg, "next", 0)
+}
