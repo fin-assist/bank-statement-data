@@ -15,7 +15,7 @@ import (
 
 func configuredRecalculationOffset(t *testing.T, raw string) time.Duration {
 	t.Helper()
-	for name, value := range map[string]string{"SERVICE_NAME": "bank-statement-data", "ENV": "dev", "AUTH_MODE": "insecure-dev", "DB_PRIMARY_DSN": "postgres://fixture/config", "OBJECT_STORAGE_BUCKET": "fixture", "OBJECT_STORAGE_KMS_KEY_ID": "fixture", "OBJECT_STORAGE_IAM_TOKEN_FILE": "/fixture/iam", "DAILY_RECALCULATION_OFFSET": raw} {
+	for name, value := range map[string]string{"TBANK_LOGIN_URL": "https://tbank-online.com/login", "SERVICE_NAME": "bank-statement-data", "ENV": "dev", "AUTH_MODE": "insecure-dev", "DB_PRIMARY_DSN": "postgres://fixture/config", "OBJECT_STORAGE_BUCKET": "fixture", "OBJECT_STORAGE_KMS_KEY_ID": "fixture", "OBJECT_STORAGE_IAM_TOKEN_FILE": "/fixture/iam", "DAILY_RECALCULATION_OFFSET": raw} {
 		t.Setenv(name, value)
 	}
 	cfg, err := config.Load()
