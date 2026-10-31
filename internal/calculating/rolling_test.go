@@ -61,45 +61,64 @@ func TestUnitRollingCalendarBoundariesUseCoverageClampAndTimezone(t *testing.T) 
 	}
 }
 func TestUnitRollingFactsAndChartsClipEdgesBeforeAggregation(t *testing.T) {
-	in := rollingInput("2024-10-01", "2026-10-30")
-	in.Snapshot.Operations = []importing.Operation{
-		rollingOperation("old", "2024-10-03T12:00:00+03:00", 10000, "cat_food", "expense"),
-		rollingOperation("outside", "2025-10-30T23:59:59+03:00", 10000, "cat_food", "expense"),
-		rollingOperation("first", "2025-10-31T00:00:00+03:00", 1001, "cat_food", "expense"),
-		rollingOperation("salary", "2026-01-01T12:00:00+03:00", 10000, "cat_food", "income"),
-		rollingOperation("person", "2026-10-30T12:00:00+03:00", 500, importing.TransfersCategory, "expense"),
-		rollingOperation("own", "2026-10-30T13:00:00+03:00", 4000, importing.OwnTransferCategory, "expense"),
-		rollingOperation("refund", "2026-10-30T14:00:00+03:00", 201, importing.RefundCategory, "income"),
-		rollingOperation("last", "2026-10-30T23:59:59+03:00", 300, "cat_food", "expense"),
-		rollingOperation("after", "2026-10-31T00:00:00+03:00", 99900, "cat_food", "expense"),
-	}
-	in.Snapshot.Operations[6].RefundTarget = "cat_food"
-	for i, p := range mustBuild(t, in).Periods {
-		want := int64(1600)
-		if i == 1 {
-			want = 1100
-		}
-		value(t, p, "tiles.expense", want)
-		value(t, p, "tiles.income", 10000)
-		value(t, p, "tiles.balance", 10000-want)
-		value(t, p, "tiles.daily_expense", want/365)
-		points := p.Metrics["monthly_chart"].Points
-		if len(points) != 13 || points[0].Month != "2025-10" || points[12].Month != "2026-10" || points[0].CalculationRange == nil || points[0].CalculationRange.From != p.Range.From || points[12].CalculationRange.To != p.Range.To {
-			t.Fatal("edge intervals", points)
-		}
-		var sum int64
-		for _, point := range points {
-			if point.Expense == nil {
-				t.Fatal("covered point is null")
+	for _, tc := range []struct {
+		kind, outside, first, salary, firstMonth string
+		points, days                             int
+	}{
+		{"rolling_year", "2025-10-30", "2025-10-31", "2026-01-01", "2025-10", 13, 365},
+		{"rolling_quarter", "2026-07-30", "2026-07-31", "2026-08-01", "2026-07", 4, 92},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			in := rollingInput("2024-10-01", "2026-10-30")
+			in.Kind = tc.kind
+			in.Snapshot.Operations = []importing.Operation{
+				rollingOperation("old", "2024-10-03T12:00:00+03:00", 10000, "cat_food", "expense"),
+				rollingOperation("outside", tc.outside+"T23:59:59+03:00", 10000, "cat_food", "expense"),
+				rollingOperation("first", tc.first+"T00:00:00+03:00", 1001, "cat_food", "expense"),
+				rollingOperation("salary", tc.salary+"T12:00:00+03:00", 10000, "cat_food", "income"),
+				rollingOperation("person", "2026-10-30T12:00:00+03:00", 500, importing.TransfersCategory, "expense"),
+				rollingOperation("own", "2026-10-30T13:00:00+03:00", 4000, importing.OwnTransferCategory, "expense"),
+				rollingOperation("refund", "2026-10-30T14:00:00+03:00", 201, importing.RefundCategory, "income"),
+				rollingOperation("last", "2026-10-30T23:59:59+03:00", 300, "cat_food", "expense"),
+				rollingOperation("after", "2026-10-31T00:00:00+03:00", 99900, "cat_food", "expense"),
 			}
-			sum += *point.Expense
-		}
-		if sum != want || points[0].Bounds.Coverage != "partial" || *points[0].Expense != 1001 {
-			t.Fatalf("edges leaked %d %+v", sum, points[0])
-		}
-		if p.Metrics["tiles.expense"].Filter.Range != p.Range {
-			t.Fatal("selection widened")
-		}
+			in.Snapshot.Operations[6].RefundTarget = "cat_food"
+			for i, p := range mustBuild(t, in).Periods {
+				want := int64(1600)
+				if i == 1 {
+					want = 1100
+				}
+				value(t, p, "tiles.expense", want)
+				value(t, p, "tiles.income", 10000)
+				value(t, p, "tiles.balance", 10000-want)
+				value(t, p, "tiles.daily_expense", want/int64(tc.days))
+				points := p.Metrics["monthly_chart"].Points
+				last := len(points) - 1
+				if len(points) != tc.points || points[0].Month != tc.firstMonth || points[last].Month != "2026-10" || points[0].CalculationRange == nil || points[last].CalculationRange == nil || !points[0].CalculationRange.From.Equal(p.Range.From) || !points[last].CalculationRange.To.Equal(p.Range.To) {
+					t.Fatal("edge intervals", points)
+				}
+				var sum int64
+				for j, point := range points {
+					if point.Expense == nil {
+						t.Fatal("covered point is null")
+					}
+					sum += *point.Expense
+					coverage := "complete"
+					if j == 0 || j == last {
+						coverage = "partial"
+					}
+					if point.Bounds.Coverage != coverage {
+						t.Fatalf("%s %s coverage=%s, want %s", p.Mode, point.Month, point.Bounds.Coverage, coverage)
+					}
+				}
+				if sum != want || *points[0].Expense != 1001 {
+					t.Fatalf("edges leaked %d %+v", sum, points[0])
+				}
+				if p.Metrics["tiles.expense"].Filter.Range != p.Range {
+					t.Fatal("selection widened")
+				}
+			}
+		})
 	}
 }
 func TestUnitRollingShortCoverageGapsZerosAndClockCeiling(t *testing.T) {
