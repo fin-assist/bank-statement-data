@@ -33,7 +33,7 @@ Environment=DB_PRIMARY_DSN_FILE=%d/db-primary-dsn
 LoadCredential=stage-signing-key:/etc/finassist/bank-statement-data/stage-signing-key.pem
 Environment=AUTH_STAGE_SIGNING_KEY_FILE=%d/stage-signing-key
 Environment=AUTH_STAGE_PUBLIC_KEYS_FILE=/etc/finassist/stage-public.jwks
-# env must set TBANK_LOGIN_URL=https://tbank-online.com/login; restart after changing it (FIN-395).
+# env must set TBANK_LOGIN_URL=https://www.tbank.ru/login/; restart after changing it (FIN-395).
 # env must set OBJECT_STORAGE_BUCKET and OBJECT_STORAGE_KMS_KEY_ID (docs/import.md).
 # Token source is root-owned 0600; refresh it externally and restart this unit
 # to refresh systemd's immutable credential snapshot before the token expires.

@@ -21,7 +21,7 @@ func TestUnitTBankLoginURLRequiredAndHTTPS(t *testing.T) {
 	if _, err := load(get, noFiles, list); err == nil {
 		t.Fatal("missing URL accepted")
 	}
-	for _, value := range []string{"https://tbank-online.com/login", "https://bank.example/new-login"} {
+	for _, value := range []string{"https://www.tbank.ru/login/", "https://tbank-online.com/login", "https://bank.example/new-login"} {
 		vars["TBANK_LOGIN_URL"] = value
 		get, list := env(vars)
 		cfg, err := load(get, noFiles, list)
@@ -36,7 +36,7 @@ func TestIntegrationTBankLoginURLReloadAndInvalidValue(t *testing.T) {
 	t.Setenv("ENV", "dev")
 	t.Setenv("AUTH_MODE", "insecure-dev")
 	t.Setenv("DB_PRIMARY_DSN", "postgres://fixture/private")
-	for _, value := range []string{"https://tbank-online.com/login", "https://bank.example/new-login"} {
+	for _, value := range []string{"https://www.tbank.ru/login/", "https://tbank-online.com/login", "https://bank.example/new-login"} {
 		t.Setenv("TBANK_LOGIN_URL", value)
 		cfg, err := Load()
 		if err != nil || cfg.TBankLoginURL != value {
