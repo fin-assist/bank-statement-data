@@ -89,6 +89,10 @@ func (c calendar) complete(r Range) bool {
 	if r.To.After(c.now) {
 		return false
 	}
+	return c.fullyCovered(r)
+}
+
+func (c calendar) fullyCovered(r Range) bool {
 	err := accounting.WalkDays(c.ctx, r.From, r.To, func(at time.Time) error {
 		if !c.covered(at) {
 			return errUncoveredDay

@@ -19,7 +19,7 @@ import (
 	"github.com/fin-assist/bank-statement-data/internal/recalculating"
 )
 
-func TestIntegrationAllTimeCatalogBackfillAddsInactiveSingletonWithoutChangingCalendarFacts(t *testing.T) {
+func TestIntegrationRollingCatalogBackfillPreservesInactiveAllTimeAndCalendarFacts(t *testing.T) {
 	f := importRepository(t)
 	user := uuid.NewString()
 	doc, from, to := componentDocument()
@@ -74,23 +74,23 @@ func TestIntegrationAllTimeCatalogBackfillAddsInactiveSingletonWithoutChangingCa
 	}
 	calendars := map[string]*pb.PeriodSnapshot{}
 	for _, p := range initial[1].Periods {
-		if p.Period != common.PeriodType_PERIOD_TYPE_ALL_TIME {
+		if p.Period != common.PeriodType_PERIOD_TYPE_ROLLING_YEAR && p.Period != common.PeriodType_PERIOD_TYPE_ROLLING_QUARTER {
 			calendars[p.Period.String()+p.PeriodKey+p.TransferMode.String()] = p
 		}
 	}
 	revisions := proto.Clone(initial[2].State).(*pb.UserDataState)
-	// Persist the shape left by a completed v1 deployment: calendar-only inventory,
+	// Persist the shape left by a completed v2 deployment: calendars and all_time,
 	// no queue and a future daily deadline. No user activity triggers this rollout.
 	if _, err = f.db.Primary().Exec(t.Context(), `DELETE FROM metrics_delivery WHERE user_id=$1`, user); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = f.db.Primary().Exec(t.Context(), `UPDATE metrics_publication SET period_keys=(SELECT jsonb_agg(p) FROM jsonb_array_elements(period_keys) p WHERE p->>'Kind'<>'all_time') WHERE user_id=$1`, user); err != nil {
+	if _, err = f.db.Primary().Exec(t.Context(), `UPDATE metrics_publication SET period_keys=(SELECT jsonb_agg(p) FROM jsonb_array_elements(period_keys) p WHERE p->>'Kind' NOT IN ('rolling_year','rolling_quarter')) WHERE user_id=$1`, user); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = f.db.Primary().Exec(t.Context(), `UPDATE user_state SET daily_recalc_due_at=$2 WHERE user_id=$1`, user, f.now.AddDate(1, 0, 0)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = f.db.Primary().Exec(t.Context(), `INSERT INTO metrics_backfill(catalog_version,fingerprint,created_at,finished_at) VALUES(1,'legacy-v1',$1,$1)`, f.now); err != nil {
+	if _, err = f.db.Primary().Exec(t.Context(), `INSERT INTO metrics_backfill(catalog_version,fingerprint,created_at,finished_at) VALUES(2,'legacy-v2',$1,$1)`, f.now); err != nil {
 		t.Fatal(err)
 	}
 	if err = service.PlanBackfill(t.Context()); err != nil {
@@ -98,7 +98,7 @@ func TestIntegrationAllTimeCatalogBackfillAddsInactiveSingletonWithoutChangingCa
 	}
 	var version int32
 	var total, actions int
-	if err = f.db.Primary().QueryRow(t.Context(), `SELECT catalog_version FROM metrics_backfill`).Scan(&version); err != nil || version != 2 || accounting.CatalogVersion() != 2 {
+	if err = f.db.Primary().QueryRow(t.Context(), `SELECT catalog_version FROM metrics_backfill`).Scan(&version); err != nil || version != accounting.CatalogVersion() || accounting.CatalogVersion() != 3 {
 		t.Fatal(version, err)
 	}
 	if err = f.db.Primary().QueryRow(t.Context(), `SELECT count(*),count(*)FILTER(WHERE NOT registry_only) FROM recalc_queue WHERE user_id=$1`, user).Scan(&total, &actions); err != nil || total != 2 || actions != 0 {
@@ -111,7 +111,7 @@ func TestIntegrationAllTimeCatalogBackfillAddsInactiveSingletonWithoutChangingCa
 	if len(published) != 3 {
 		t.Fatal("publication phases", len(published))
 	}
-	allTime := 0
+	allTime, rolling := 0, 0
 	for _, request := range published {
 		if request.State.Recalculating {
 			t.Fatal("registry-only fabricated user action")
@@ -123,6 +123,9 @@ func TestIntegrationAllTimeCatalogBackfillAddsInactiveSingletonWithoutChangingCa
 			if p.PeriodKey != "all_time" || !p.Range.Start.AsTime().Equal(accounting.StartOfDay(from.In(time.FixedZone("MSK", 3*3600)), time.FixedZone("MSK", 3*3600))) || !p.Range.End.AsTime().Equal(accounting.AddDays(accounting.StartOfDay(to.In(time.FixedZone("MSK", 3*3600)), time.FixedZone("MSK", 3*3600)), 1)) {
 				t.Fatal("singleton envelope", p)
 			}
+		}
+		if p.Period == common.PeriodType_PERIOD_TYPE_ROLLING_YEAR || p.Period == common.PeriodType_PERIOD_TYPE_ROLLING_QUARTER {
+			rolling++
 			continue
 		}
 		old := calendars[p.Period.String()+p.PeriodKey+p.TransferMode.String()]
@@ -130,8 +133,8 @@ func TestIntegrationAllTimeCatalogBackfillAddsInactiveSingletonWithoutChangingCa
 			t.Fatal("new inventory changed a prior calendar snapshot", p)
 		}
 	}
-	if allTime != 2 || !reflect.DeepEqual(published[2].State.DataRevisions, revisions.DataRevisions) || len(published[0].State.DataRevisions) != 0 || len(published[1].State.DataRevisions) != 0 {
-		t.Fatal("singleton pair/provenance lost", allTime)
+	if allTime != 2 || rolling != 4 || !reflect.DeepEqual(published[2].State.DataRevisions, revisions.DataRevisions) || len(published[0].State.DataRevisions) != 0 || len(published[1].State.DataRevisions) != 0 {
+		t.Fatal("singleton pairs/provenance lost", allTime, rolling)
 	}
 	// Existing catalog fence rejects a stale producer once a newer generation owns
 	// the release; the same fence applies to publication of the new singleton.

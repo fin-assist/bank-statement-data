@@ -51,7 +51,6 @@ func Prepare(ctx context.Context, in Input) (*Prepared, error) {
 }
 
 // Build computes one exact period in both modes from this immutable batch input.
-// Empty coverage has no all-time period and returns only its no-data state.
 func (p *Prepared) Build(kind string, at time.Time) (Result, error) {
 	if p == nil || at.IsZero() {
 		return Result{}, ErrCalculation
@@ -62,23 +61,21 @@ func (p *Prepared) Build(kind string, at time.Time) (Result, error) {
 	in := p.in
 	in.Kind = kind
 	in.At = at
-	var r Range
-	var err error
-	if kind == "all_time" {
-		if len(p.cal.ranges) == 0 {
-			return Result{State: p.state}, nil
-		}
-		r = Range{p.cal.ranges[0].From, p.cal.ranges[len(p.cal.ranges)-1].To}
-	} else {
-		r, err = periodRange(at.In(p.cal.zone), kind)
+	builder, ok := periodBuilders[kind]
+	if !ok {
+		return Result{}, ErrCalculation
 	}
+	r, err := builder.bounds(p.cal, at.In(p.cal.zone))
 	if err != nil {
 		return Result{}, err
+	}
+	if r.From.IsZero() && r.To.IsZero() {
+		return Result{State: p.state}, nil
 	}
 	out := Result{State: p.state}
 	for _, mode := range []string{"with", "without"} {
 		c := calculator{ctx: p.ctx, in: in, cal: p.cal, mode: mode}
-		period := c.period(r)
+		period := builder.build(&c, r)
 		if c.err != nil {
 			return Result{}, c.err
 		}
@@ -166,12 +163,8 @@ func periodMonths(kind string) int {
 		return 1
 	}
 }
-func (c *calculator) period(r Range) Period {
+func (c *calculator) facts(r Range) Period {
 	p := Period{Kind: c.in.Kind, Key: key(r, c.in.Kind), Mode: c.mode, Range: r, Bounds: c.cal.bounds(r), CalculatedAt: c.in.Now, Metrics: make(map[string]Metric)}
-	if c.in.Kind == "all_time" && len(p.Bounds.Gaps) == 0 {
-		// Unlike calendar periods, the factual envelope need not have ended.
-		p.Bounds.Coverage = "complete"
-	}
 	index := make(map[string]bool)
 	for _, u := range c.in.Snapshot.Uploads {
 		index[u.ID] = u.Status == "done"
@@ -208,9 +201,13 @@ func (c *calculator) period(r Range) Period {
 		m["tiles.daily_expense"] = ready(expense/int64(max(1, days)), nil)
 		m["expense_categories"], m["income_categories"] = c.categories(r, "expense"), c.categories(r, "income")
 	}
-	if c.in.Kind != "all_time" {
-		c.historical(m, r, p.Bounds)
-	}
+	return p
+}
+
+func (c *calculator) period(r Range) Period {
+	p := c.facts(r)
+	m := p.Metrics
+	c.historical(m, r, p.Bounds)
 	m["monthly_chart"] = c.chart(r)
 	if c.in.Kind == "month" {
 		m["insights.regular_payments"] = c.regular(r)
@@ -218,14 +215,18 @@ func (c *calculator) period(r Range) Period {
 		m["insights.bank_fees"] = c.fees(r)
 		m["insights.small_frequent"] = c.small(r)
 	}
-	for id, metric := range m {
+	return c.definitions(p)
+}
+
+func (c *calculator) definitions(p Period) Period {
+	for id, metric := range p.Metrics {
 		definition, ok := accounting.DefinitionFor(id)
 		if !ok || definition.Version < 1 {
 			c.err = ErrCalculation
 			return p
 		}
 		metric.DefinitionVersion = definition.Version
-		m[id] = metric
+		p.Metrics[id] = metric
 	}
 	return p
 }
@@ -368,16 +369,12 @@ func (c *calculator) historical(m map[string]Metric, r Range, b Bounds) {
 }
 func (c *calculator) chart(r Range) Metric {
 	required := accounting.Threshold("monthly_chart").MonthsWithData
-	if c.in.Kind != "all_time" && len(c.cal.months) < required {
+	if len(c.cal.months) < required {
 		return locked("need_months_with_data", required, len(c.cal.months))
 	}
 	months := periodMonths(c.in.Kind)
 	start := r.From
-	if c.in.Kind == "all_time" {
-		start = month(r.From)
-		last := month(previousDay(r.To))
-		months = (last.Year()-start.Year())*12 + int(last.Month()-start.Month()) + 1
-	} else if months == 1 {
+	if months == 1 {
 		months, start = 6, shiftMonths(r.From, -5)
 	}
 	out := Metric{Status: "ready"}

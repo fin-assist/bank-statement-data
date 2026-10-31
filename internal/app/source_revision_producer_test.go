@@ -74,7 +74,7 @@ func producerRevisionScenario(t *testing.T) {
 			}
 		}
 	}
-	check(10) // August, September, Q3, year and all-time, in both transfer modes.
+	check(14) // August, September, Q3, year, all_time and both rolling singletons in both modes.
 	if current()["uploads"] != 2 {
 		t.Fatal(current())
 	}
@@ -100,7 +100,7 @@ func producerRevisionScenario(t *testing.T) {
 	if _, err := env.App.DB.Primary().Exec(t.Context(), `UPDATE user_state SET daily_recalc_due_at=$2 WHERE user_id=$1`, apiUser, calculationNow().AddDate(0, 0, -1)); err != nil {
 		t.Fatal(err)
 	}
-	check(10)
+	check(14)
 	if now := current(); !reflect.DeepEqual(now, beforeRepair) {
 		t.Fatal("repair changed source counter", now)
 	}
@@ -113,7 +113,7 @@ func producerRevisionScenario(t *testing.T) {
 	if _, err := operations.ChangeCategory(apitest.User(t.Context(), apiUser), &pb.ChangeCategoryRequest{Id: item.Id, OccurredAt: item.OccurredAt, CategoryId: "cat_own_transfer"}); err != nil {
 		t.Fatal(err)
 	}
-	check(10)
+	check(14)
 	if current()["categories"] != 1 {
 		t.Fatal(current())
 	}
@@ -121,7 +121,7 @@ func producerRevisionScenario(t *testing.T) {
 		if _, err := statements.DeleteUpload(apitest.User(t.Context(), apiUser), &pb.DeleteUploadRequest{UploadId: id}); err != nil {
 			t.Fatal(err)
 		}
-		count := 8
+		count := 12
 		if i == 1 {
 			count = 0
 		}

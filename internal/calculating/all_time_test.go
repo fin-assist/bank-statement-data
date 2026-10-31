@@ -132,7 +132,7 @@ func TestUnitAllTimeLongChartStopsOnCancellation(t *testing.T) {
 	}
 	cancel()
 	c := calculator{ctx: ctx, in: in, cal: prepared.cal, mode: "with"}
-	chart := c.chart(Range{prepared.cal.ranges[0].From, prepared.cal.ranges[len(prepared.cal.ranges)-1].To})
+	chart := c.allTimeChart(Range{prepared.cal.ranges[0].From, prepared.cal.ranges[len(prepared.cal.ranges)-1].To})
 	if !errors.Is(c.err, context.Canceled) || len(chart.Points) != 0 {
 		t.Fatal("cancelled chart retained work", c.err, chart)
 	}

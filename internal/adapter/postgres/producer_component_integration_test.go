@@ -77,7 +77,7 @@ func TestIntegrationProducerDailyRepairRebuildsAllHeadersAndGatesProofOnDurableA
 		return result
 	}
 	initial := load()
-	if len(initial) != 3 || len(initial[1].request.Periods) != 10 {
+	if len(initial) != 3 || len(initial[1].request.Periods) != 14 {
 		t.Fatalf("whole calendar missing: %v", initial)
 	}
 	// Erase initial deliveries as a receiver acknowledgment, then repair only raw
@@ -126,7 +126,7 @@ func TestIntegrationProducerDailyRepairRebuildsAllHeadersAndGatesProofOnDurableA
 		t.Fatal(err)
 	}
 	items := load()
-	if len(items) != 3 || len(items[1].request.Periods) != 10 {
+	if len(items) != 3 || len(items[1].request.Periods) != 14 {
 		t.Fatal("repair failed to resend full calendar", len(items))
 	}
 	for _, item := range items {
@@ -148,6 +148,8 @@ func TestIntegrationProducerDailyRepairRebuildsAllHeadersAndGatesProofOnDurableA
 			{common.PeriodType_PERIOD_TYPE_QUARTER, "2026-Q3"},
 			{common.PeriodType_PERIOD_TYPE_YEAR, "2026"},
 			{common.PeriodType_PERIOD_TYPE_ALL_TIME, "all_time"},
+			{common.PeriodType_PERIOD_TYPE_ROLLING_YEAR, "rolling_year"},
+			{common.PeriodType_PERIOD_TYPE_ROLLING_QUARTER, "rolling_quarter"},
 		} {
 			wantKeys[fmt.Sprint(period.kind, "/", period.key, "/", mode)] = true
 		}

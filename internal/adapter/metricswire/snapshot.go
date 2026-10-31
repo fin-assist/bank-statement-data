@@ -116,7 +116,11 @@ func (e *encoder) metric(id string, m calculating.Metric) *pb.Metric {
 	case "monthly_chart":
 		details := &pb.MonthlyChart{}
 		for _, v := range m.Points {
-			details.Points = append(details.Points, &pb.MonthlyPoint{Month: v.Month, Range: timeRange(v.Range), Bounds: bounds(v.Bounds), ExpenseMinor: v.Expense, IncomeMinor: v.Income})
+			point := &pb.MonthlyPoint{Month: v.Month, Range: timeRange(v.Range), Bounds: bounds(v.Bounds), ExpenseMinor: v.Expense, IncomeMinor: v.Income}
+			if v.CalculationRange != nil {
+				point.CalculationRange = timeRange(*v.CalculationRange)
+			}
+			details.Points = append(details.Points, point)
 		}
 		out.Details = &pb.Metric_MonthlyChart{MonthlyChart: details}
 	case "insights.regular_payments":

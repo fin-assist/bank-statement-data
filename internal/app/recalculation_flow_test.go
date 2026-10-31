@@ -189,7 +189,7 @@ func metricsFlow(t *testing.T) {
 		t.Fatal("false state overtook unacknowledged snapshot")
 	}
 	close(peer.release)
-	eventuallyMetrics(t, func() bool { return peer.settled() && peer.count() == 8 })
+	eventuallyMetrics(t, func() bool { return peer.settled() && peer.count() == 12 })
 	if peer.expense() != 12345 {
 		t.Fatal("financial snapshot differs from public import", peer.expense())
 	}
@@ -301,7 +301,7 @@ func TestIntegrationRecalculationRestartRecoversImmutableOutboxAndPeerFailure(t 
 	peer.fail = false
 	peer.mu.Unlock()
 	instant.Store(calculationNow().Add(10 * time.Minute).UnixNano())
-	eventuallyMetrics(t, func() bool { return peer.settled() && peer.count() == 8 })
+	eventuallyMetrics(t, func() bool { return peer.settled() && peer.count() == 12 })
 	eventuallyMetrics(t, func() bool {
 		var n int
 		return restarted.DB.Primary().QueryRow(t.Context(), `SELECT count(*)FROM metrics_delivery`).Scan(&n) == nil && n == 0
@@ -341,7 +341,7 @@ func timezoneRemovalFlow(t *testing.T, legacy ...bool) {
 	if err = env.App.Recalculations.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	eventuallyMetrics(t, func() bool { return peer.settled() && peer.count() == 8 })
+	eventuallyMetrics(t, func() bool { return peer.settled() && peer.count() == 12 })
 	before := peer.version()
 	var resultBefore, resultAfter string
 	if len(legacy) > 0 && legacy[0] {
@@ -596,8 +596,8 @@ func legacyBrokenOriginal(t *testing.T, missing bool) {
 		preserved[key] = proto.Clone(period).(*analytics.PeriodSnapshot)
 	}
 	peer.mu.Unlock()
-	if len(preserved) != 8 {
-		t.Fatal("initial calendar/all-time inventory incomplete", len(preserved))
+	if len(preserved) != 12 {
+		t.Fatal("initial calendar/all-time/rolling inventory incomplete", len(preserved))
 	}
 	if _, err = env.App.DB.Primary().Exec(t.Context(), `UPDATE upload SET statement_from_instant=NULL,statement_to_instant=NULL,statement_range_source=NULL WHERE user_id=$1 AND id=$2`, apiUser, accepted.UploadId); err != nil {
 		t.Fatal(err)
