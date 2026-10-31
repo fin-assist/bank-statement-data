@@ -189,7 +189,7 @@ func metricsFlow(t *testing.T) {
 		t.Fatal("false state overtook unacknowledged snapshot")
 	}
 	close(peer.release)
-	eventuallyMetrics(t, func() bool { return peer.settled() && peer.count() == 6 })
+	eventuallyMetrics(t, func() bool { return peer.settled() && peer.count() == 10 })
 	if peer.expense() != 12345 {
 		t.Fatal("financial snapshot differs from public import", peer.expense())
 	}
@@ -301,7 +301,7 @@ func TestIntegrationRecalculationRestartRecoversImmutableOutboxAndPeerFailure(t 
 	peer.fail = false
 	peer.mu.Unlock()
 	instant.Store(calculationNow().Add(10 * time.Minute).UnixNano())
-	eventuallyMetrics(t, func() bool { return peer.settled() && peer.count() == 6 })
+	eventuallyMetrics(t, func() bool { return peer.settled() && peer.count() == 10 })
 	eventuallyMetrics(t, func() bool {
 		var n int
 		return restarted.DB.Primary().QueryRow(t.Context(), `SELECT count(*)FROM metrics_delivery`).Scan(&n) == nil && n == 0
@@ -341,7 +341,7 @@ func timezoneRemovalFlow(t *testing.T, legacy ...bool) {
 	if err = env.App.Recalculations.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	eventuallyMetrics(t, func() bool { return peer.settled() && peer.count() == 6 })
+	eventuallyMetrics(t, func() bool { return peer.settled() && peer.count() == 10 })
 	before := peer.version()
 	var resultBefore, resultAfter string
 	if len(legacy) > 0 && legacy[0] {
@@ -610,7 +610,7 @@ func legacyBrokenOriginal(t *testing.T, missing bool) {
 	if err = env.App.DB.Primary().QueryRow(t.Context(), `SELECT max(attempts)FROM recalc_queue WHERE user_id=$1`, apiUser).Scan(&attempts); err != nil || attempts < 1 {
 		t.Fatal("missing durable retry", attempts, err)
 	}
-	if err = env.App.DB.Primary().QueryRow(t.Context(), `SELECT statement_range_source FROM upload WHERE user_id=$1 AND id=$2`, apiUser, accepted.UploadId).Scan(&origin); err != nil || origin != nil || peer.count() != 6 {
+	if err = env.App.DB.Primary().QueryRow(t.Context(), `SELECT statement_range_source FROM upload WHERE user_id=$1 AND id=$2`, apiUser, accepted.UploadId).Scan(&origin); err != nil || origin != nil || peer.count() != 10 {
 		t.Fatal("failed recovery changed preserved snapshots or guessed provenance", origin, err)
 	}
 }

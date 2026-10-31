@@ -17,7 +17,7 @@ type Definition struct {
 // CatalogVersion orders registry releases independently of per-user calc_version.
 // Every added, removed or changed definition or shared rule requires a larger
 // catalog version, and each affected metric requires a larger definition version.
-func CatalogVersion() int32 { return 1 }
+func CatalogVersion() int32 { return 3 }
 
 // Definitions returns an independent, deterministic catalog of all metric IDs.
 // Definition versions are local to their metric ID; they need not advance together.

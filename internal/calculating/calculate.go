@@ -61,14 +61,18 @@ func (p *Prepared) Build(kind string, at time.Time) (Result, error) {
 	in := p.in
 	in.Kind = kind
 	in.At = at
-	r, err := periodRange(at.In(p.cal.zone), kind)
+	builder, ok := periodBuilders[kind]
+	if !ok {
+		return Result{}, ErrCalculation
+	}
+	r, err := builder.bounds(p.cal, at.In(p.cal.zone))
 	if err != nil {
 		return Result{}, err
 	}
 	out := Result{State: p.state}
 	for _, mode := range []string{"with", "without"} {
 		c := calculator{ctx: p.ctx, in: in, cal: p.cal, mode: mode}
-		period := c.period(r)
+		period := builder.build(&c, r)
 		if c.err != nil {
 			return Result{}, c.err
 		}
@@ -156,7 +160,7 @@ func periodMonths(kind string) int {
 		return 1
 	}
 }
-func (c *calculator) period(r Range) Period {
+func (c *calculator) facts(r Range) Period {
 	p := Period{Kind: c.in.Kind, Key: key(r, c.in.Kind), Mode: c.mode, Range: r, Bounds: c.cal.bounds(r), CalculatedAt: c.in.Now, Metrics: make(map[string]Metric)}
 	index := make(map[string]bool)
 	for _, u := range c.in.Snapshot.Uploads {
@@ -194,6 +198,12 @@ func (c *calculator) period(r Range) Period {
 		m["tiles.daily_expense"] = ready(expense/int64(max(1, days)), nil)
 		m["expense_categories"], m["income_categories"] = c.categories(r, "expense"), c.categories(r, "income")
 	}
+	return p
+}
+
+func (c *calculator) period(r Range) Period {
+	p := c.facts(r)
+	m := p.Metrics
 	c.historical(m, r, p.Bounds)
 	m["monthly_chart"] = c.chart(r)
 	if c.in.Kind == "month" {
@@ -202,14 +212,18 @@ func (c *calculator) period(r Range) Period {
 		m["insights.bank_fees"] = c.fees(r)
 		m["insights.small_frequent"] = c.small(r)
 	}
-	for id, metric := range m {
+	return c.definitions(p)
+}
+
+func (c *calculator) definitions(p Period) Period {
+	for id, metric := range p.Metrics {
 		definition, ok := accounting.DefinitionFor(id)
 		if !ok || definition.Version < 1 {
 			c.err = ErrCalculation
 			return p
 		}
 		metric.DefinitionVersion = definition.Version
-		m[id] = metric
+		p.Metrics[id] = metric
 	}
 	return p
 }

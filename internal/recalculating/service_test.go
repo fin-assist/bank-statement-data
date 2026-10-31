@@ -132,7 +132,7 @@ func TestUnitRecalculationPublishesBothModesAllPeriodsAndRemovals(t *testing.T) 
 		t.Fatal("version sequence", r, p.values)
 	}
 	full := p.values[1]
-	if len(full.Periods) != 6 || len(full.Removed) != 1 || full.Removed[0] != (Period{"month", "2026-08"}) {
+	if len(full.Periods) != 10 || len(full.Removed) != 1 || full.Removed[0] != (Period{"month", "2026-08"}) {
 		t.Fatal(full)
 	}
 	for i := 0; i < len(full.Periods); i += 2 {
@@ -141,10 +141,10 @@ func TestUnitRecalculationPublishesBothModesAllPeriodsAndRemovals(t *testing.T) 
 			t.Fatal(a, b)
 		}
 	}
-	if !full.State.CalculatedAt.Equal(s.now()) || len(r.lease.Known) != 3 {
+	if !full.State.CalculatedAt.Equal(s.now()) || len(r.lease.Known) != 5 {
 		t.Fatal("state/calendar missing")
 	}
-	// Covered days with no operations are still three complete period replacements.
+	// Covered days with no operations are still calendar and rolling replacement pairs.
 	if full.State.HasData {
 		t.Fatal("empty statement gained operations")
 	}
@@ -345,7 +345,7 @@ func TestUnitRecalculationSourceRevisionsPreservePendingAndReplaceWholeCalendar(
 	if err := s.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if len(p.values) != 2 || p.values[0].State.Revisions["uploads"] != 3 || p.values[1].State.Revisions["uploads"] != 5 || len(p.values[1].Periods) != 6 {
+	if len(p.values) != 2 || p.values[0].State.Revisions["uploads"] != 3 || p.values[1].State.Revisions["uploads"] != 5 || len(p.values[1].Periods) != 10 {
 		t.Fatal(p.values)
 	}
 	r.lease.Revisions["uploads"] = 99

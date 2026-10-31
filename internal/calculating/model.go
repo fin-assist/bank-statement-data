@@ -52,10 +52,11 @@ type CategoryAmount struct {
 
 // Point retains absent amounts for uncovered months.
 type Point struct {
-	Month           string
-	Range           Range
-	Bounds          Bounds
-	Expense, Income *int64
+	Month            string
+	Range            Range
+	CalculationRange *Range
+	Bounds           Bounds
+	Expense, Income  *int64
 }
 
 // Payment carries the durable opaque identity of an exact description.

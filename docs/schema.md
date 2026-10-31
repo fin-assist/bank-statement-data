@@ -297,6 +297,7 @@ UUID до подтверждения analytics; неподтверждённые
 
 | Правило | Где соблюдается | Проверка |
 |---|---|---|
+| Скользящие singleton получают тот же полный inventory/двухрежимный atomic replacement и удаляются при исчезновении покрытия | `recalculating.periods`, `rollingPeriod`, `metricswire.periodType` | unit rolling; API/integration RollingAnalyticsImportsCoverageAnchorAndDurableDelivery |
 | Факты, версии, перечень периодов и события фиксируются одной транзакцией под user/tombstone lock | `recalculating.Service`, `postgres.Recalculations` | unit транзакций/ошибок, real-PG/API импорт/правка/пояс/удаление |
 | Версия int32 растёт, одна версия ключа не меняет содержимого | `Recalculations.Start/Complete`, immutable `metrics_delivery` | unit exhaustion/CAS, API повторная публикация |
 | Оба режима периода находятся в одной части ≤4 МиБ | `metricswire.publications` | unit pair/chunk/oversize guards |

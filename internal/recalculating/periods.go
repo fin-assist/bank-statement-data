@@ -29,6 +29,10 @@ func periods(ctx context.Context, state importing.Snapshot, now time.Time) ([]pe
 		return nil, err
 	}
 	found := map[Period]time.Time{}
+	if len(coverage) > 0 {
+		found[Period{"rolling_year", "rolling_year"}] = now
+		found[Period{"rolling_quarter", "rolling_quarter"}] = now
+	}
 	for _, span := range coverage {
 		first := span.From.In(zone)
 		last := span.To.In(zone)
