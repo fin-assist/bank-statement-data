@@ -51,6 +51,7 @@ func Prepare(ctx context.Context, in Input) (*Prepared, error) {
 }
 
 // Build computes one exact period in both modes from this immutable batch input.
+// Empty coverage has no all-time period and returns only its no-data state.
 func (p *Prepared) Build(kind string, at time.Time) (Result, error) {
 	if p == nil || at.IsZero() {
 		return Result{}, ErrCalculation
@@ -61,7 +62,16 @@ func (p *Prepared) Build(kind string, at time.Time) (Result, error) {
 	in := p.in
 	in.Kind = kind
 	in.At = at
-	r, err := periodRange(at.In(p.cal.zone), kind)
+	var r Range
+	var err error
+	if kind == "all_time" {
+		if len(p.cal.ranges) == 0 {
+			return Result{State: p.state}, nil
+		}
+		r = Range{p.cal.ranges[0].From, p.cal.ranges[len(p.cal.ranges)-1].To}
+	} else {
+		r, err = periodRange(at.In(p.cal.zone), kind)
+	}
 	if err != nil {
 		return Result{}, err
 	}
@@ -158,6 +168,10 @@ func periodMonths(kind string) int {
 }
 func (c *calculator) period(r Range) Period {
 	p := Period{Kind: c.in.Kind, Key: key(r, c.in.Kind), Mode: c.mode, Range: r, Bounds: c.cal.bounds(r), CalculatedAt: c.in.Now, Metrics: make(map[string]Metric)}
+	if c.in.Kind == "all_time" && len(p.Bounds.Gaps) == 0 {
+		// Unlike calendar periods, the factual envelope need not have ended.
+		p.Bounds.Coverage = "complete"
+	}
 	index := make(map[string]bool)
 	for _, u := range c.in.Snapshot.Uploads {
 		index[u.ID] = u.Status == "done"
@@ -194,7 +208,9 @@ func (c *calculator) period(r Range) Period {
 		m["tiles.daily_expense"] = ready(expense/int64(max(1, days)), nil)
 		m["expense_categories"], m["income_categories"] = c.categories(r, "expense"), c.categories(r, "income")
 	}
-	c.historical(m, r, p.Bounds)
+	if c.in.Kind != "all_time" {
+		c.historical(m, r, p.Bounds)
+	}
 	m["monthly_chart"] = c.chart(r)
 	if c.in.Kind == "month" {
 		m["insights.regular_payments"] = c.regular(r)
@@ -352,16 +368,24 @@ func (c *calculator) historical(m map[string]Metric, r Range, b Bounds) {
 }
 func (c *calculator) chart(r Range) Metric {
 	required := accounting.Threshold("monthly_chart").MonthsWithData
-	if len(c.cal.months) < required {
+	if c.in.Kind != "all_time" && len(c.cal.months) < required {
 		return locked("need_months_with_data", required, len(c.cal.months))
 	}
 	months := periodMonths(c.in.Kind)
 	start := r.From
-	if months == 1 {
+	if c.in.Kind == "all_time" {
+		start = month(r.From)
+		last := month(previousDay(r.To))
+		months = (last.Year()-start.Year())*12 + int(last.Month()-start.Month()) + 1
+	} else if months == 1 {
 		months, start = 6, shiftMonths(r.From, -5)
 	}
 	out := Metric{Status: "ready"}
 	for i := 0; i < months; i++ {
+		if err := c.ctx.Err(); err != nil {
+			c.err = err
+			return none()
+		}
 		from := shiftMonths(start, i)
 		v := Range{from, shiftMonths(from, 1)}
 		p := Point{Month: from.Format("2006-01"), Range: v, Bounds: c.cal.bounds(v)}

@@ -101,7 +101,7 @@ func registryImportHistory(t *testing.T, env *apitest.Env, peer *analyticsPeer) 
 	eventuallyMetrics(t, func() bool {
 		peer.mu.Lock()
 		defer peer.mu.Unlock()
-		return peer.state != nil && !peer.state.Recalculating && len(peer.state.DataRevisions) == 3 && len(peer.periods) == 8
+		return peer.state != nil && !peer.state.Recalculating && len(peer.state.DataRevisions) == 3 && len(peer.periods) == 10
 	})
 }
 
@@ -177,8 +177,8 @@ func TestAPIRegistryBackfillRebuildsHistoricalCalendarWithoutUserActionFlag(t *t
 			}
 		}
 	}
-	if len(seen) != 4 {
-		t.Fatal("backfill omitted old month/quarter/year keys", seen)
+	if len(seen) != 5 || seen[common.PeriodType_PERIOD_TYPE_ALL_TIME.String()+"/all_time"] != 2 {
+		t.Fatal("backfill omitted month/quarter/year/all_time keys", seen)
 	}
 	for key, count := range seen {
 		if count != 2 {
