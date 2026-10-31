@@ -40,7 +40,7 @@ services:
     command: ["serve"]
     environment:
       <<: *env
-      TBANK_LOGIN_URL: ${TBANK_LOGIN_URL:-https://www.tbank.ru/login/}
+      TBANK_LOGIN_URL: ${TBANK_LOGIN_URL:?Set TBANK_LOGIN_URL}
       OBJECT_STORAGE_ENDPOINT: ${OBJECT_STORAGE_ENDPOINT:-https://storage.yandexcloud.net}
       OBJECT_STORAGE_BUCKET: ${OBJECT_STORAGE_BUCKET:?Set the dedicated private bucket}
       OBJECT_STORAGE_KMS_KEY_ID: ${OBJECT_STORAGE_KMS_KEY_ID:?Set the KMS key ID}
