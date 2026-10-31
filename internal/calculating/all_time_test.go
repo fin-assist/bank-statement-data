@@ -96,7 +96,18 @@ func TestUnitAllTimeShortFutureCoverageAndClockOnlyRollover(t *testing.T) {
 	if out.State.HasData {
 		t.Fatal("empty ledger has data")
 	}
-	for _, p := range out.Periods {
+	if len(out.Periods) != 2 {
+		t.Fatal("covered empty ledger lost its mode pair", len(out.Periods))
+	}
+	for i, p := range out.Periods {
+		if p.Kind != "all_time" || p.Key != "all_time" || p.Mode != []string{"with", "without"}[i] {
+			t.Fatal("covered empty ledger has an invalid singleton mode pair", p)
+		}
+		if p.Bounds.From == nil || p.Bounds.To == nil || p.Bounds.Coverage != "complete" ||
+			!p.Bounds.From.Equal(instant("2026-10-01T00:00:00+03:00")) ||
+			!p.Bounds.To.Equal(instant("2026-10-31T23:59:59+03:00")) {
+			t.Fatal("covered empty ledger lost its actual bounds", p.Bounds)
+		}
 		value(t, p, "tiles.expense", 0)
 	}
 	in.Snapshot.Uploads = nil
