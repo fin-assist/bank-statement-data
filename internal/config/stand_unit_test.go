@@ -23,6 +23,7 @@ const (
 // standEnvFileContents is the env file of the stand: only the non-secret settings the
 // unit comment names.
 var standEnvFileContents = map[string]string{
+	"TBANK_LOGIN_URL":   "https://tbank-online.com/login",
 	"AUTH_STAGE_ISSUER": "stage-services", "AUTH_USER_ISSUER": "https://user.example",
 	"AUTH_USER_AUDIENCE": "finassist", "PEER_USER_ADDR": "dns:///user:9090",
 	"OBJECT_STORAGE_BUCKET": "fixture-private-bucket", "OBJECT_STORAGE_KMS_KEY_ID": "fixture-kms-key",

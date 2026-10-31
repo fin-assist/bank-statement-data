@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +32,7 @@ type Service struct {
 	now         func() time.Time
 	newID       func() (string, error)
 	method      string
+	loginURL    string
 	slots       chan struct{}
 	receiveMu   sync.Mutex
 	receivers   map[string]*receivingUser
@@ -75,13 +77,25 @@ func (s *Service) acquireReceiver(ctx context.Context, user string) (func(), err
 	}
 }
 
-// New wires explicit ports. Four admitted buffers bound process memory even when
+// New wires explicit ports and the validated browser login destination. Four admitted buffers bound process memory even when
 // clients concurrently send the maximum-size file; waiting consumes no file buffer.
-func New(tx Transactions, repo Repository, objects ObjectStore, barrier ObjectBarrier, parser Parser, keys Keys, deleted Tombstones, now func() time.Time, newID func() (string, error), method string) (*Service, error) {
+func New(tx Transactions, repo Repository, objects ObjectStore, barrier ObjectBarrier, parser Parser, keys Keys, deleted Tombstones, now func() time.Time, newID func() (string, error), method, loginURL string) (*Service, error) {
 	if tx == nil || repo == nil || objects == nil || barrier == nil || parser == nil || keys == nil || deleted == nil || now == nil || newID == nil || method == "" {
 		return nil, errors.New("invalid import service dependencies")
 	}
-	return &Service{tx: tx, repo: repo, objects: objects, barrier: barrier, parser: parser, keys: keys, deleted: deleted, now: now, newID: newID, method: method, slots: make(chan struct{}, 4)}, nil
+	if err := ValidateLoginURL(loginURL); err != nil {
+		return nil, err
+	}
+	return &Service{loginURL: loginURL, tx: tx, repo: repo, objects: objects, barrier: barrier, parser: parser, keys: keys, deleted: deleted, now: now, newID: newID, method: method, slots: make(chan struct{}, 4)}, nil
+}
+
+// ValidateLoginURL checks the operator-provided browser destination without exposing its value.
+func ValidateLoginURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.ContainsAny(raw, " \t\r\n") {
+		return errors.New("TBANK_LOGIN_URL must be an absolute HTTPS URL without credentials, query or fragment")
+	}
+	return nil
 }
 
 // Upload reads the actual bounded bytes before looking at the idempotency key.

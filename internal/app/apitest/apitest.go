@@ -134,7 +134,7 @@ func start(t testing.TB, ctx context.Context, dsn string, deps dependencies, mut
 	if err := deps.migrate(ctx, dsn); err != nil {
 		return nil, nil, fmt.Errorf("migrate: %w", err)
 	}
-	cfg := config.Config{
+	cfg := config.Config{TBankLoginURL: "https://tbank-online.com/login",
 		Service: "apitest", Env: config.EnvDev,
 		Auth: config.AuthConfig{Mode: config.AuthInsecureDev},
 		DB:   config.DBConfig{PrimaryDSN: dsn, MaxConns: 4},

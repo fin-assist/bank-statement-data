@@ -21,7 +21,7 @@ import (
 )
 
 func TestUnitAssemblyWiresImportAndIndependentBarrierPool(t *testing.T) {
-	cfg := config.Config{Service: "bank-statement-data", Env: config.EnvDev,
+	cfg := config.Config{TBankLoginURL: "https://tbank-online.com/login", Service: "bank-statement-data", Env: config.EnvDev,
 		Auth: config.AuthConfig{Mode: config.AuthInsecureDev},
 		DB:   config.DBConfig{PrimaryDSN: "postgres://fixture@127.0.0.1:1/fixture?sslmode=disable", ReplicaDSN: "replica", MaxConns: 7}}
 	cfg.Peers = map[string]string{"analytics": "passthrough:///analytics.invalid:9090"}
@@ -82,7 +82,7 @@ func TestUnitAssemblyRefusesIdentityBeforeOpeningDatabase(t *testing.T) {
 }
 
 func TestUnitAssemblyPropagatesPoolFailureAndRefusesDuplicateMetrics(t *testing.T) {
-	cfg := config.Config{Service: "bank-statement-data", Env: config.EnvDev, Auth: config.AuthConfig{Mode: config.AuthInsecureDev}}
+	cfg := config.Config{TBankLoginURL: "https://tbank-online.com/login", Service: "bank-statement-data", Env: config.EnvDev, Auth: config.AuthConfig{Mode: config.AuthInsecureDev}}
 	log := slog.New(slog.DiscardHandler)
 	boom := errors.New("pool failed")
 	a, err := assemble(t.Context(), cfg, log, prometheus.NewRegistry(), func(context.Context, postgres.Options) (*postgres.DB, error) {

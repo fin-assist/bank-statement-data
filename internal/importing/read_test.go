@@ -85,7 +85,7 @@ func newImportReadFixture(t *testing.T, state importing.Snapshot, now time.Time)
 	f.service, err = importing.New(f.tx, f.repo, unused, unused, unused, unused, unused, func() time.Time { return f.now }, func() (string, error) {
 		t.Error("read generated an identity")
 		return "", errors.New("unexpected identity")
-	}, statementdatav1.StatementsService_UploadStatement_FullMethodName)
+	}, statementdatav1.StatementsService_UploadStatement_FullMethodName, "https://tbank-online.com/login")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestUnitImportConfigCalendarClampDSTAndBrowserURL(t *testing.T) {
 				t.Fatal("tomorrow was built as fixed 24 hours across DST")
 			}
 			link, err := url.Parse(got.DownloadURL)
-			if err != nil || link.Scheme != "https" || link.Host != "www.tbank-online.com" || link.Path != "/mybank/api/operations/timeline/public/legacy/v1/export_operations" || got.LoginURL != "https://www.tbank.ru/login/" {
+			if err != nil || link.Scheme != "https" || link.Host != "www.tbank-online.com" || link.Path != "/mybank/api/operations/timeline/public/legacy/v1/export_operations" || got.LoginURL != "https://tbank-online.com/login" {
 				t.Fatal("browser link used an unapproved endpoint")
 			}
 			q := link.Query()
@@ -296,5 +296,22 @@ func TestUnitImportReadPropagatesErrorsAndCancellationWithoutPartialData(t *test
 				t.Fatal("read failure lost or leaked partial snapshot", err)
 			}
 		})
+	}
+}
+
+func TestUnitImportConfigUsesInjectedLoginURL(t *testing.T) {
+	f := newImportReadFixture(t, importing.Snapshot{TimeZone: "Europe/Moscow"}, readAt(t, "2026-10-31T12:00:00+03:00"))
+	unused := &importReadUnused{}
+	const destination = "https://bank.example/new-login"
+	service, err := importing.New(f.tx, f.repo, unused, unused, unused, unused, unused, func() time.Time { return f.now }, func() (string, error) { return "", nil }, "upload", destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := service.Config(t.Context(), "verified-user")
+	if err != nil || got.LoginURL != destination {
+		t.Fatalf("configured destination was replaced: %v", err)
+	}
+	if _, err := importing.New(f.tx, f.repo, unused, unused, unused, unused, unused, func() time.Time { return f.now }, func() (string, error) { return "", nil }, "upload", ""); err == nil {
+		t.Fatal("constructor accepted missing URL")
 	}
 }

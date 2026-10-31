@@ -41,7 +41,7 @@ func (s *Service) Config(ctx context.Context, user string) (Config, error) {
 	}
 	query := url.Values{"appName": {"supreme"}, "appVersion": {"0.0.1"}, "origin": {"web,ib5,platform"}, "start": {strconv.FormatInt(from.UnixMilli(), 10)}, "end": {strconv.FormatInt(to.UnixMilli(), 10)}, "format": {"ofx"}}
 	link := url.URL{Scheme: "https", Host: "www.tbank-online.com", Path: "/mybank/api/operations/timeline/public/legacy/v1/export_operations", RawQuery: query.Encode()}
-	return Config{DownloadURL: link.String(), LoginURL: "https://www.tbank.ru/login/", TimeZone: zone.String(), From: from, To: to, Loaded: loaded}, nil
+	return Config{DownloadURL: link.String(), LoginURL: s.loginURL, TimeZone: zone.String(), From: from, To: to, Loaded: loaded}, nil
 }
 
 // History returns visible uploads, actual operation bounds and global covered-day gaps.

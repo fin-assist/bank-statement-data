@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/fin-assist/bank-statement-data/internal/importing"
 )
 
 // Env is the environment the binary runs in.
@@ -47,6 +49,7 @@ type Config struct {
 	DB            DBConfig
 	Auth          AuthConfig
 	ObjectStorage ObjectStorageConfig
+	TBankLoginURL string            // HTTPS browser login destination, read at startup
 	Peers         map[string]string // other services: name -> gRPC target, from PEER_<NAME>_ADDR
 	// ShutdownDelay keeps serving after NOT_SERVING so balancers stop sending new calls.
 	ShutdownDelay time.Duration
@@ -150,6 +153,7 @@ func load(getenv func(string) string, readFile func(string) ([]byte, error), env
 		},
 		Peers:                    map[string]string{},
 		ObjectStorage:            r.objectStorage(),
+		TBankLoginURL:            r.str("TBANK_LOGIN_URL"),
 		ShutdownDelay:            r.duration("SHUTDOWN_DELAY"),
 		ShutdownTimeout:          r.duration("SHUTDOWN_TIMEOUT"),
 		DailyRecalculationOffset: r.duration("DAILY_RECALCULATION_OFFSET"),
@@ -198,6 +202,9 @@ func (c Config) validate() []error {
 		}
 	default:
 		errs = append(errs, fmt.Errorf("AUTH_MODE=%q, want verify or insecure-dev", c.Auth.Mode))
+	}
+	if err := importing.ValidateLoginURL(c.TBankLoginURL); err != nil {
+		errs = append(errs, err)
 	}
 	errs = append(errs, c.validateIdentity()...)
 	if err := ValidateDailyRecalculationOffset(c.DailyRecalculationOffset); err != nil {

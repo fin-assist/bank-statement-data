@@ -29,6 +29,7 @@ import (
 	"github.com/fin-assist/bank-statement-data/internal/adapter/objectstore"
 	"github.com/fin-assist/bank-statement-data/internal/app"
 	"github.com/fin-assist/bank-statement-data/internal/app/apitest"
+	"github.com/fin-assist/bank-statement-data/internal/config"
 )
 
 const apiUser = "73ef1f95-14d5-453c-80ec-d0e2ac8c854d"
@@ -96,7 +97,7 @@ func TestAPIImportRealDurabilityDedupDeletionAndPurge(t *testing.T) {
 	env := apitest.Start(t)
 	c := pb.NewStatementsServiceClient(env.Conn)
 	config, err := c.GetImportConfig(apitest.User(t.Context(), apiUser), &pb.GetImportConfigRequest{})
-	if err != nil || config.TimeZone != "Europe/Moscow" || config.LoginUrl != "https://www.tbank.ru/login/" || config.Loaded != nil {
+	if err != nil || config.TimeZone != "Europe/Moscow" || config.LoginUrl != "https://tbank-online.com/login" || config.Loaded != nil {
 		t.Fatalf("config: %v %v", config, err)
 	}
 	settings := settingspb.NewUserSettingsSyncServiceClient(env.Conn)
@@ -681,5 +682,17 @@ func TestAPIOriginalObjectWriteFailureIsFencedAndSameKeyCanRecover(t *testing.T)
 	history, err := c.ListUploads(apitest.User(t.Context(), apiUser), &pb.ListUploadsRequest{})
 	if err != nil || len(history.Uploads) != 1 || history.Uploads[0].UploadId != accepted.UploadId {
 		t.Fatalf("private failed intent leaked: %v %v", history, err)
+	}
+}
+
+func TestAPIImportConfigUsesConfiguredLoginURLAfterRestart(t *testing.T) {
+	for _, destination := range []string{"https://tbank-online.com/login", "https://bank.example/new-login"} {
+		t.Run(destination, func(t *testing.T) {
+			env := apitest.Start(t, func(cfg *config.Config) { cfg.TBankLoginURL = destination })
+			got, err := pb.NewStatementsServiceClient(env.Conn).GetImportConfig(apitest.User(t.Context(), apiUser), &pb.GetImportConfigRequest{})
+			if err != nil || got.LoginUrl != destination {
+				t.Fatalf("configured destination was not exposed by API: %v", err)
+			}
+		})
 	}
 }
