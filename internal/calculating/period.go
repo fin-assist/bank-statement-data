@@ -22,6 +22,7 @@ var periodBuilders = map[string]periodBuilder{
 	"month":           calendarPeriod{"month"},
 	"quarter":         calendarPeriod{"quarter"},
 	"year":            calendarPeriod{"year"},
+	"all_time":        allTimePeriod{},
 	"rolling_year":    rollingPeriod{12},
 	"rolling_quarter": rollingPeriod{3},
 }
@@ -35,7 +36,7 @@ func (p rollingPeriod) bounds(c calendar, _ time.Time) (Range, error) {
 	// The source coverage already owns the exclusive local-date boundary. Shift
 	// its civil date, preserving the day or clamping to the target month's end.
 	end := c.ranges[len(c.ranges)-1].To.In(c.zone)
-	target := time.Date(end.Year(), end.Month()-time.Month(p.months), 1, 12, 0, 0, 0, c.zone)
+	target := time.Date(end.Year(), end.Month()-time.Month(p.months), 1, 12, 0, 0, 0, time.UTC)
 	// Month length is civil: a skipped local last day must not become day 1.
 	last := time.Date(target.Year(), target.Month()+1, 0, 12, 0, 0, 0, time.UTC).Day()
 	if target.Year() < 1 || end.Year() > 9999 {

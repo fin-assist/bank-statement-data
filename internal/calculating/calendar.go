@@ -47,6 +47,8 @@ func periodRange(at time.Time, kind string) (Range, error) {
 }
 func key(r Range, kind string) string {
 	switch kind {
+	case "all_time":
+		return "all_time"
 	case "quarter":
 		return fmt.Sprintf("%04d-Q%d", r.From.Year(), (r.From.Month()-1)/3+1)
 	case "year":

@@ -132,7 +132,7 @@ func TestUnitRecalculationPublishesBothModesAllPeriodsAndRemovals(t *testing.T) 
 		t.Fatal("version sequence", r, p.values)
 	}
 	full := p.values[1]
-	if len(full.Periods) != 10 || len(full.Removed) != 1 || full.Removed[0] != (Period{"month", "2026-08"}) {
+	if len(full.Periods) != 12 || len(full.Removed) != 1 || full.Removed[0] != (Period{"month", "2026-08"}) {
 		t.Fatal(full)
 	}
 	for i := 0; i < len(full.Periods); i += 2 {
@@ -141,10 +141,10 @@ func TestUnitRecalculationPublishesBothModesAllPeriodsAndRemovals(t *testing.T) 
 			t.Fatal(a, b)
 		}
 	}
-	if !full.State.CalculatedAt.Equal(s.now()) || len(r.lease.Known) != 5 {
+	if !full.State.CalculatedAt.Equal(s.now()) || len(r.lease.Known) != 6 {
 		t.Fatal("state/calendar missing")
 	}
-	// Covered days with no operations are still calendar and rolling replacement pairs.
+	// Covered days with no operations still replace calendars and all factual singletons.
 	if full.State.HasData {
 		t.Fatal("empty statement gained operations")
 	}
@@ -345,11 +345,53 @@ func TestUnitRecalculationSourceRevisionsPreservePendingAndReplaceWholeCalendar(
 	if err := s.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if len(p.values) != 2 || p.values[0].State.Revisions["uploads"] != 3 || p.values[1].State.Revisions["uploads"] != 5 || len(p.values[1].Periods) != 10 {
+	if len(p.values) != 2 || p.values[0].State.Revisions["uploads"] != 3 || p.values[1].State.Revisions["uploads"] != 5 || len(p.values[1].Periods) != 12 {
 		t.Fatal(p.values)
 	}
 	r.lease.Revisions["uploads"] = 99
 	if p.values[1].State.Revisions["uploads"] != 5 {
 		t.Fatal("publication aliases mutable lease")
+	}
+}
+
+func TestUnitAllTimeDailyRebuildKeepsBothModesAndFinalDeletionRetiresSingleton(t *testing.T) {
+	s, r, p := fixture(t)
+	r.lease.Queue = nil
+	due := s.now().Add(-time.Minute)
+	r.lease.DailyDue = &due
+	if err := s.Recalculate(t.Context(), "u"); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.values) != 2 || p.values[0].Recalculating || p.values[1].Recalculating {
+		t.Fatal("daily fabricated source action", p.values)
+	}
+	found := 0
+	for _, period := range p.values[1].Periods {
+		if period.Kind == "all_time" {
+			found++
+			if period.Key != "all_time" {
+				t.Fatal(period)
+			}
+		}
+	}
+	if found != 2 {
+		t.Fatal("daily skipped singleton", found)
+	}
+	r.active = true
+	r.lease.Queue = []QueueRow{{Month: "2026-09-01", Generation: 2}}
+	r.snapshot.Uploads = nil
+	if err := s.Recalculate(t.Context(), "u"); err != nil {
+		t.Fatal(err)
+	}
+	full := p.values[len(p.values)-1]
+	if len(full.Periods) != 0 || full.State.HasData {
+		t.Fatal("last deletion resurrected history", full)
+	}
+	removedAll := false
+	for _, period := range full.Removed {
+		removedAll = removedAll || period == (Period{"all_time", "all_time"})
+	}
+	if !removedAll {
+		t.Fatal("singleton removal missing", full.Removed)
 	}
 }

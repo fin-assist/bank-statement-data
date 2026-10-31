@@ -189,7 +189,7 @@ func metricsFlow(t *testing.T) {
 		t.Fatal("false state overtook unacknowledged snapshot")
 	}
 	close(peer.release)
-	eventuallyMetrics(t, func() bool { return peer.settled() && peer.count() == 10 })
+	eventuallyMetrics(t, func() bool { return peer.settled() && peer.count() == 12 })
 	if peer.expense() != 12345 {
 		t.Fatal("financial snapshot differs from public import", peer.expense())
 	}
@@ -301,7 +301,7 @@ func TestIntegrationRecalculationRestartRecoversImmutableOutboxAndPeerFailure(t 
 	peer.fail = false
 	peer.mu.Unlock()
 	instant.Store(calculationNow().Add(10 * time.Minute).UnixNano())
-	eventuallyMetrics(t, func() bool { return peer.settled() && peer.count() == 10 })
+	eventuallyMetrics(t, func() bool { return peer.settled() && peer.count() == 12 })
 	eventuallyMetrics(t, func() bool {
 		var n int
 		return restarted.DB.Primary().QueryRow(t.Context(), `SELECT count(*)FROM metrics_delivery`).Scan(&n) == nil && n == 0
@@ -341,7 +341,7 @@ func timezoneRemovalFlow(t *testing.T, legacy ...bool) {
 	if err = env.App.Recalculations.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	eventuallyMetrics(t, func() bool { return peer.settled() && peer.count() == 10 })
+	eventuallyMetrics(t, func() bool { return peer.settled() && peer.count() == 12 })
 	before := peer.version()
 	var resultBefore, resultAfter string
 	if len(legacy) > 0 && legacy[0] {
@@ -379,7 +379,20 @@ func timezoneRemovalFlow(t *testing.T, legacy ...bool) {
 			}
 		}
 	}
+	allTime := 0
 	for _, period := range peer.periods {
+		if period.Period == common.PeriodType_PERIOD_TYPE_ALL_TIME {
+			allTime++
+			zone, err := time.LoadLocation("America/Havana")
+			if err != nil {
+				t.Fatal(err)
+			}
+			start := period.Range.Start.AsTime().In(zone)
+			end := period.Range.End.AsTime().In(zone)
+			if period.PeriodKey != "all_time" || start.Format("2006-01-02") != "2026-08-31" || end.Format("2006-01-02") != "2026-09-01" || period.Bounds.Coverage != common.Coverage_COVERAGE_COMPLETE {
+				t.Fatal("all-time singleton retained old timezone boundaries", period)
+			}
+		}
 		if period.Period == common.PeriodType_PERIOD_TYPE_MONTH {
 			if period.PeriodKey == "2026-08" {
 				august++
@@ -389,7 +402,7 @@ func timezoneRemovalFlow(t *testing.T, legacy ...bool) {
 			}
 		}
 	}
-	if !removed || august != 2 || september != 0 {
+	if !removed || august != 2 || september != 0 || allTime != 2 {
 		t.Fatal("timezone did not atomically replace both modes and remove vanished month", removed, august, september)
 	}
 }
@@ -577,6 +590,15 @@ func legacyBrokenOriginal(t *testing.T, missing bool) {
 		t.Fatal(err)
 	}
 	eventuallyMetrics(t, peer.settled)
+	preserved := map[string]*analytics.PeriodSnapshot{}
+	peer.mu.Lock()
+	for key, period := range peer.periods {
+		preserved[key] = proto.Clone(period).(*analytics.PeriodSnapshot)
+	}
+	peer.mu.Unlock()
+	if len(preserved) != 12 {
+		t.Fatal("initial calendar/all-time/rolling inventory incomplete", len(preserved))
+	}
 	if _, err = env.App.DB.Primary().Exec(t.Context(), `UPDATE upload SET statement_from_instant=NULL,statement_to_instant=NULL,statement_range_source=NULL WHERE user_id=$1 AND id=$2`, apiUser, accepted.UploadId); err != nil {
 		t.Fatal(err)
 	}
@@ -610,8 +632,18 @@ func legacyBrokenOriginal(t *testing.T, missing bool) {
 	if err = env.App.DB.Primary().QueryRow(t.Context(), `SELECT max(attempts)FROM recalc_queue WHERE user_id=$1`, apiUser).Scan(&attempts); err != nil || attempts < 1 {
 		t.Fatal("missing durable retry", attempts, err)
 	}
-	if err = env.App.DB.Primary().QueryRow(t.Context(), `SELECT statement_range_source FROM upload WHERE user_id=$1 AND id=$2`, apiUser, accepted.UploadId).Scan(&origin); err != nil || origin != nil || peer.count() != 10 {
+	if err = env.App.DB.Primary().QueryRow(t.Context(), `SELECT statement_range_source FROM upload WHERE user_id=$1 AND id=$2`, apiUser, accepted.UploadId).Scan(&origin); err != nil || origin != nil {
 		t.Fatal("failed recovery changed preserved snapshots or guessed provenance", origin, err)
+	}
+	peer.mu.Lock()
+	defer peer.mu.Unlock()
+	if len(peer.periods) != len(preserved) {
+		t.Fatal("failed recovery changed inventory")
+	}
+	for key, period := range peer.periods {
+		if !proto.Equal(period, preserved[key]) {
+			t.Fatal("failed recovery rewrote saved calendar/all-time snapshot", key)
+		}
 	}
 }
 func TestAPIRecalculationLegacyWrongOrMissingOriginalKeepsPendingRetry(t *testing.T) {

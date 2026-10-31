@@ -16,7 +16,7 @@ type periodAt struct {
 	At time.Time
 }
 
-// periods includes every covered month and its containing quarter and year.
+// periods includes every covered month, its containing quarter/year, and all factual singletons.
 // Recomputing the whole covered calendar deliberately includes every comparison,
 // observation and historical dependency, including changes before their windows.
 func periods(ctx context.Context, state importing.Snapshot, now time.Time) ([]periodAt, error) {
@@ -30,6 +30,7 @@ func periods(ctx context.Context, state importing.Snapshot, now time.Time) ([]pe
 	}
 	found := map[Period]time.Time{}
 	if len(coverage) > 0 {
+		found[Period{"all_time", "all_time"}] = now
 		found[Period{"rolling_year", "rolling_year"}] = now
 		found[Period{"rolling_quarter", "rolling_quarter"}] = now
 	}

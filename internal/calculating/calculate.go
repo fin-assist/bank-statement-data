@@ -69,6 +69,9 @@ func (p *Prepared) Build(kind string, at time.Time) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	if r.From.IsZero() && r.To.IsZero() {
+		return Result{State: p.state}, nil
+	}
 	out := Result{State: p.state}
 	for _, mode := range []string{"with", "without"} {
 		c := calculator{ctx: p.ctx, in: in, cal: p.cal, mode: mode}
@@ -376,6 +379,10 @@ func (c *calculator) chart(r Range) Metric {
 	}
 	out := Metric{Status: "ready"}
 	for i := 0; i < months; i++ {
+		if err := c.ctx.Err(); err != nil {
+			c.err = err
+			return none()
+		}
 		from := shiftMonths(start, i)
 		v := Range{from, shiftMonths(from, 1)}
 		p := Point{Month: from.Format("2006-01"), Range: v, Bounds: c.cal.bounds(v)}

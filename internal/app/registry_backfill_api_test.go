@@ -101,7 +101,7 @@ func registryImportHistory(t *testing.T, env *apitest.Env, peer *analyticsPeer) 
 	eventuallyMetrics(t, func() bool {
 		peer.mu.Lock()
 		defer peer.mu.Unlock()
-		return peer.state != nil && !peer.state.Recalculating && len(peer.state.DataRevisions) == 3 && len(peer.periods) == 12
+		return peer.state != nil && !peer.state.Recalculating && len(peer.state.DataRevisions) == 3 && len(peer.periods) == 14
 	})
 }
 
@@ -177,7 +177,7 @@ func TestAPIRegistryBackfillRebuildsHistoricalCalendarWithoutUserActionFlag(t *t
 			}
 		}
 	}
-	if len(seen) != 6 {
+	if len(seen) != 7 {
 		t.Fatal("backfill omitted calendar or rolling keys", seen)
 	}
 	for key, count := range seen {
