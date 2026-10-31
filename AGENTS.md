@@ -444,3 +444,5 @@ Shared lint and script tests require Python 3.11+ with PyYAML.
 
 
 If a pinned revision changes common/bootstrap.py, synchronize its exact scripts/common_ci.py copy in the same PR; Renovate updates SHA references only. Rollback restores both pins and the matching bootstrap bytes. Byte equality keeps an incomplete update red; a manual copy update is not a bot-only FIN-211 update.
+
+FIN-395: importing.New receives the validated browser login URL from mandatory TBANK_LOGIN_URL; config.Load rejects empty/non-HTTPS destinations and app wiring passes it into GetImportConfig unchanged.

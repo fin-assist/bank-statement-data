@@ -109,7 +109,7 @@ func wire(ctx context.Context, a *App, reg prometheus.Registerer, openDB func(co
 				return "", err
 			}
 			return id.String(), nil
-		}, statementdatav1.StatementsService_UploadStatement_FullMethodName)
+		}, statementdatav1.StatementsService_UploadStatement_FullMethodName, a.Cfg.TBankLoginURL)
 	if err != nil {
 		return fail(err)
 	}

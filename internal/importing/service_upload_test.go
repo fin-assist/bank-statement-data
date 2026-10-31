@@ -336,7 +336,7 @@ func newUploadFixture(t *testing.T) *uploadFixture {
 
 func (f *uploadFixture) service() *importing.Service {
 	f.t.Helper()
-	s, err := importing.New(f.tx, f.repo, f.objects, f.barrier, f.parser, f.keys, f.deleted, func() time.Time { return f.now }, func() (string, error) { return f.id, nil }, statementdatav1.StatementsService_UploadStatement_FullMethodName)
+	s, err := importing.New(f.tx, f.repo, f.objects, f.barrier, f.parser, f.keys, f.deleted, func() time.Time { return f.now }, func() (string, error) { return f.id, nil }, statementdatav1.StatementsService_UploadStatement_FullMethodName, "https://tbank-online.com/login")
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -748,7 +748,7 @@ func TestUnitUploadConstructorRequiresEveryDependency(t *testing.T) {
 		case 9:
 			method = ""
 		}
-		if _, err := importing.New(tx, repo, objects, barrier, parser, keys, deleted, now, id, method); err == nil {
+		if _, err := importing.New(tx, repo, objects, barrier, parser, keys, deleted, now, id, method, "https://tbank-online.com/login"); err == nil {
 			t.Fatal("missing dependency accepted", missing)
 		}
 	}

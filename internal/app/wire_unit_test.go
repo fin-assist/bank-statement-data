@@ -36,7 +36,7 @@ func wireConfig(t *testing.T) config.Config {
 	if err := os.WriteFile(token, []byte("fixture-token"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	return config.Config{Service: "bank-statement-data", Env: config.EnvDev, Auth: config.AuthConfig{Mode: config.AuthInsecureDev},
+	return config.Config{TBankLoginURL: "https://tbank-online.com/login", Service: "bank-statement-data", Env: config.EnvDev, Auth: config.AuthConfig{Mode: config.AuthInsecureDev},
 		Peers:         map[string]string{"analytics": "passthrough:///analytics.invalid:9090"},
 		DB:            config.DBConfig{PrimaryDSN: "postgres://fixture@127.0.0.1:1/fixture?sslmode=disable", ReplicaDSN: "replica", MaxConns: 7},
 		ObjectStorage: config.ObjectStorageConfig{Endpoint: "https://objects.test", Bucket: "private", KMSKeyID: "fixture", IAMTokenFile: token}}
