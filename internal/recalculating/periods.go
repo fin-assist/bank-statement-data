@@ -16,7 +16,8 @@ type periodAt struct {
 	At time.Time
 }
 
-// periods includes every covered month and its containing quarter and year.
+// periods includes every covered month, its containing quarter and year, and
+// the singleton all-time envelope. Daily work uses the same complete inventory.
 // Recomputing the whole covered calendar deliberately includes every comparison,
 // observation and historical dependency, including changes before their windows.
 func periods(ctx context.Context, state importing.Snapshot, now time.Time) ([]periodAt, error) {
@@ -29,6 +30,9 @@ func periods(ctx context.Context, state importing.Snapshot, now time.Time) ([]pe
 		return nil, err
 	}
 	found := map[Period]time.Time{}
+	if len(coverage) > 0 {
+		found[Period{"all_time", "all_time"}] = now
+	}
 	for _, span := range coverage {
 		first := span.From.In(zone)
 		last := span.To.In(zone)

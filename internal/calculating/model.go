@@ -119,7 +119,8 @@ type State struct {
 	CalculatedAt                        time.Time
 }
 
-// Result always includes both transfer modes of exactly the same period.
+// Result includes both transfer modes of exactly the same period, or no periods
+// when empty coverage has no all-time envelope.
 type Result struct {
 	State   State
 	Periods []Period
