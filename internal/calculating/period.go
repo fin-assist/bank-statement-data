@@ -70,7 +70,7 @@ func (c *calculator) rollingChart(r Range) Metric {
 		slice := Range{maxTime(from, r.From), minTime(calendarRange.To, r.To)}
 		p := Point{Month: from.Format("2006-01"), Range: calendarRange, CalculationRange: &slice, Bounds: c.cal.bounds(slice)}
 		if p.Bounds.From != nil {
-			if slice != calendarRange {
+			if !slice.From.Equal(calendarRange.From) || !slice.To.Equal(calendarRange.To) {
 				p.Bounds.Coverage = "partial"
 			}
 			expense, income := c.sum(slice, "expense", ""), c.sum(slice, "income", "")

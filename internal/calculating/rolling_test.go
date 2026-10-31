@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/fin-assist/bank-statement-data/internal/importing"
 )
@@ -177,5 +178,78 @@ func TestUnitRollingMidnightGapUsesFirstRealDateBoundaries(t *testing.T) {
 	in.Now = instant("2026-10-10T12:00:00+03:00")
 	if p := mustBuild(t, in).Periods[0]; p.Bounds.Coverage != "complete" {
 		t.Fatal("full rolling coverage depends on today", p.Bounds)
+	}
+}
+
+func TestUnitRollingMonthAlignedChartKeepsWholeMonthsComplete(t *testing.T) {
+	for _, tc := range []struct {
+		kind   string
+		months int
+	}{
+		{"rolling_year", 12},
+		{"rolling_quarter", 3},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			in := rollingInput("2022-01-01", "2026-09-30")
+			in.Kind = tc.kind
+			for _, p := range mustBuild(t, in).Periods {
+				chart := p.Metrics["monthly_chart"]
+				if chart.Status != "ready" || len(chart.Points) != tc.months {
+					t.Fatalf("month-aligned %s chart: %+v", p.Mode, chart)
+				}
+				for _, point := range chart.Points {
+					if point.CalculationRange == nil || !point.CalculationRange.From.Equal(point.Range.From) || !point.CalculationRange.To.Equal(point.Range.To) || point.Bounds.Coverage != "complete" {
+						t.Fatalf("whole month treated as clipped in %s: %+v", p.Mode, point)
+					}
+				}
+				if !chart.Points[0].Range.From.Equal(p.Range.From) || !chart.Points[len(chart.Points)-1].Range.To.Equal(p.Range.To) {
+					t.Fatal("chart did not exactly span the singleton", chart)
+				}
+			}
+		})
+	}
+}
+
+func TestUnitRollingChartComparesBoundaryInstantsAcrossLocations(t *testing.T) {
+	in := rollingInput("2022-01-01", "2026-09-30")
+	prepared, err := Prepare(t.Context(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := (rollingPeriod{12}).bounds(prepared.cal, in.At)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The same endpoint may arrive with an independently constructed location.
+	r.To = r.To.In(time.FixedZone("equivalent-Moscow", 3*3600))
+	c := calculator{ctx: t.Context(), in: in, cal: prepared.cal, mode: "with"}
+	chart := c.rollingChart(r)
+	if c.err != nil || len(chart.Points) != 12 {
+		t.Fatal(c.err, chart)
+	}
+	for _, point := range chart.Points {
+		if point.CalculationRange == nil || !point.CalculationRange.From.Equal(point.Range.From) || !point.CalculationRange.To.Equal(point.Range.To) || point.Bounds.Coverage != "complete" {
+			t.Fatal("equal instants with different locations became partial", point)
+		}
+	}
+}
+
+func TestUnitRollingChartStopsOnCancellationAfterPreparation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	in := rollingInput("2022-01-01", "2026-09-30")
+	prepared, err := Prepare(ctx, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := (rollingPeriod{12}).bounds(prepared.cal, in.At)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	c := calculator{ctx: ctx, in: in, cal: prepared.cal, mode: "with"}
+	chart := c.rollingChart(r)
+	if !errors.Is(c.err, context.Canceled) || len(chart.Points) != 0 {
+		t.Fatal("cancelled rolling chart retained work", c.err, chart)
 	}
 }
