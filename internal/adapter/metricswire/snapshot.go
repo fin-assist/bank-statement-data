@@ -164,7 +164,7 @@ func Encode(result calculating.Result) (*pb.UserDataState, []*pb.PeriodSnapshot,
 	}
 	var out []*pb.PeriodSnapshot
 	for _, p := range result.Periods {
-		wire := &pb.PeriodSnapshot{DataRevisions: e.revisions(s.Revisions), Period: map[string]common.PeriodType{"month": common.PeriodType_PERIOD_TYPE_MONTH, "quarter": common.PeriodType_PERIOD_TYPE_QUARTER, "year": common.PeriodType_PERIOD_TYPE_YEAR}[p.Kind], PeriodKey: p.Key, TransferMode: map[string]common.TransferMode{"with": common.TransferMode_TRANSFER_MODE_WITH, "without": common.TransferMode_TRANSFER_MODE_WITHOUT}[p.Mode], Range: timeRange(p.Range), Bounds: bounds(p.Bounds), UnreadLinesCount: e.count(p.Unread), CalculatedAt: timestamppb.New(p.CalculatedAt)}
+		wire := &pb.PeriodSnapshot{DataRevisions: e.revisions(s.Revisions), Period: periodType(p.Kind), PeriodKey: p.Key, TransferMode: map[string]common.TransferMode{"with": common.TransferMode_TRANSFER_MODE_WITH, "without": common.TransferMode_TRANSFER_MODE_WITHOUT}[p.Mode], Range: timeRange(p.Range), Bounds: bounds(p.Bounds), UnreadLinesCount: e.count(p.Unread), CalculatedAt: timestamppb.New(p.CalculatedAt)}
 		ids := make([]string, 0, len(p.Metrics))
 		for id := range p.Metrics {
 			ids = append(ids, id)

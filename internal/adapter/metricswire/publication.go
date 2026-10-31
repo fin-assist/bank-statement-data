@@ -185,5 +185,5 @@ func Delivery(receipts Receipts, send outbox.Delivery) (outbox.Delivery, error) 
 }
 
 func periodType(kind string) common.PeriodType {
-	return map[string]common.PeriodType{"month": common.PeriodType_PERIOD_TYPE_MONTH, "quarter": common.PeriodType_PERIOD_TYPE_QUARTER, "year": common.PeriodType_PERIOD_TYPE_YEAR}[kind]
+	return map[string]common.PeriodType{"month": common.PeriodType_PERIOD_TYPE_MONTH, "quarter": common.PeriodType_PERIOD_TYPE_QUARTER, "year": common.PeriodType_PERIOD_TYPE_YEAR, "all_time": common.PeriodType_PERIOD_TYPE_ALL_TIME}[kind]
 }

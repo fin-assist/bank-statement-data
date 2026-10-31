@@ -7,8 +7,8 @@ import (
 
 func TestUnitMetricDefinitionsAreIndependentAndComplete(t *testing.T) {
 	definitions := Definitions()
-	if CatalogVersion() != 1 || len(definitions) != 15 {
-		t.Fatal("initial catalog identity changed without updating the baseline")
+	if CatalogVersion() != 2 || len(definitions) != 15 {
+		t.Fatal("all-time catalog rollout identity changed without updating the baseline")
 	}
 	seen := make(map[string]bool)
 	for _, definition := range definitions {
