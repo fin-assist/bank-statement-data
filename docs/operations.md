@@ -6,7 +6,7 @@ Production assembly регистрирует `OperationsService` (ListFeed/Searc
 
 `internal/operations` владеет сценариями и проекцией строк; `internal/adapter/grpc/operations` проверяет
 транспорт и переводит ошибки через finerr; `internal/adapter/postgres/operations*.go` читает и сохраняет
-факты. `App.Operations` — та же сборка для интеграционных тестов. FIN-416 использует contracts `gen/go/v0.11.0` и миграцию 000010.
+факты. `App.Operations` — та же сборка для интеграционных тестов. FIN-416 использует contracts `gen/go/v0.11.0` и миграции 000010–000011.
 
 ## Чтение
 
