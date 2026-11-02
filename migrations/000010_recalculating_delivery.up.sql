@@ -4,7 +4,7 @@ COMMENT ON COLUMN regular_payment.dismissal_calc_version IS 'Исходная ц
 CREATE TABLE recalculating_delivery (
     user_id uuid NOT NULL REFERENCES user_state(user_id) ON DELETE CASCADE,
     calc_version integer NOT NULL,
-    created_at timestamptz NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
     next_attempt_at timestamptz NOT NULL,
     attempts integer NOT NULL DEFAULT 0,
     PRIMARY KEY (user_id, calc_version)
