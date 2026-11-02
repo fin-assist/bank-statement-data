@@ -1,6 +1,10 @@
 package calculating
 
-import "time"
+import (
+	"time"
+
+	"github.com/fin-assist/bank-statement-data/internal/domain"
+)
 
 // allTimePeriod preserves FIN-400's factual envelope behind the same period seam.
 type allTimePeriod struct{}
@@ -20,7 +24,7 @@ func (allTimePeriod) build(c *calculator, r Range) Period {
 	return c.definitions(p)
 }
 func (c *calculator) allTimeChart(r Range) Metric {
-	out := Metric{Status: "ready"}
+	out := Metric{Status: domain.MetricStatusReady}
 	for from := month(r.From); from.Before(r.To); from = shiftMonths(from, 1) {
 		if err := c.ctx.Err(); err != nil {
 			c.err = err

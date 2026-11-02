@@ -10,6 +10,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/fin-assist/bank-statement-data/internal/calculating"
+	"github.com/fin-assist/bank-statement-data/internal/domain"
 	"github.com/fin-assist/bank-statement-data/internal/sourcerevision"
 )
 
@@ -74,7 +75,7 @@ func (e *encoder) count(n int) int32 {
 }
 
 func (e *encoder) metric(id string, m calculating.Metric) *pb.Metric {
-	out := &pb.Metric{Status: map[string]pb.MetricStatus{"ready": pb.MetricStatus_METRIC_STATUS_READY, "tentative": pb.MetricStatus_METRIC_STATUS_TENTATIVE, "locked": pb.MetricStatus_METRIC_STATUS_LOCKED, "none": pb.MetricStatus_METRIC_STATUS_NONE}[m.Status], ValueMinor: m.Value}
+	out := &pb.Metric{Status: map[string]pb.MetricStatus{domain.MetricStatusReady: pb.MetricStatus_METRIC_STATUS_READY, domain.MetricStatusTentative: pb.MetricStatus_METRIC_STATUS_TENTATIVE, domain.MetricStatusLocked: pb.MetricStatus_METRIC_STATUS_LOCKED, domain.MetricStatusNone: pb.MetricStatus_METRIC_STATUS_NONE}[m.Status], ValueMinor: m.Value}
 	if m.Filter != nil {
 		out.Filters = filter(*m.Filter)
 	}
@@ -95,7 +96,7 @@ func (e *encoder) metric(id string, m calculating.Metric) *pb.Metric {
 			out.Lock.AvailableFrom = timestamppb.New(*l.AvailableFrom)
 		}
 	}
-	if m.Status != "ready" && m.Status != "tentative" {
+	if m.Status != domain.MetricStatusReady && m.Status != domain.MetricStatusTentative {
 		return out
 	}
 	switch id {

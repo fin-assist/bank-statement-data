@@ -10,6 +10,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/fin-assist/bank-statement-data/internal/calculating"
+	"github.com/fin-assist/bank-statement-data/internal/domain"
 )
 
 // ErrProjectionSize marks a deterministic refusal before the assignment commits.
@@ -39,7 +40,7 @@ func EncodeRegularProjection(p calculating.RegularProjection) (*pb.MetricProject
 	}
 	m := p.Metric
 	switch m.Status {
-	case "ready", "tentative":
+	case domain.MetricStatusReady, domain.MetricStatusTentative:
 		if m.Value == nil || m.Filter == nil || m.Basis == nil || len(m.Payments) == 0 {
 			return nil, calculating.ErrCalculation
 		}
@@ -51,8 +52,8 @@ func EncodeRegularProjection(p calculating.RegularProjection) (*pb.MetricProject
 			}
 			seen[item.ID] = true
 		}
-	case "locked", "none":
-		if m.Value != nil || m.Filter != nil || len(m.Payments) != 0 || (m.Status == "locked" && m.Lock == nil) {
+	case domain.MetricStatusLocked, domain.MetricStatusNone:
+		if m.Value != nil || m.Filter != nil || len(m.Payments) != 0 || (m.Status == domain.MetricStatusLocked && m.Lock == nil) {
 			return nil, calculating.ErrCalculation
 		}
 	default:

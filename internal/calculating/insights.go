@@ -58,9 +58,9 @@ func (c *calculator) regular(r Range) Metric {
 			groups[op.Description] = append(groups[op.Description], op)
 		}
 	}
-	out := Metric{Status: "ready", Basis: basis(window)}
+	out := Metric{Status: domain.MetricStatusReady, Basis: basis(window)}
 	if len(full) < accounting.RegularWindow {
-		out.Status = "tentative"
+		out.Status = domain.MetricStatusTentative
 	}
 	names := make([]string, 0, len(groups))
 	for name := range groups {
@@ -101,7 +101,7 @@ func (c *calculator) regular(r Range) Metric {
 		total = c.add(total, amount)
 	}
 	if len(out.Payments) == 0 {
-		out.Status = "none"
+		out.Status = domain.MetricStatusNone
 		return out
 	}
 	sort.Slice(out.Payments, func(i, j int) bool {
@@ -123,7 +123,7 @@ func (c *calculator) notable(r Range) Metric {
 		return locked("need_full_months", threshold, len(full))
 	}
 	window := lastMonths(full, threshold)
-	out := Metric{Status: "ready", Basis: basis(window)}
+	out := Metric{Status: domain.MetricStatusReady, Basis: basis(window)}
 	current := c.categories(r, "expense")
 	for _, cat := range current.Categories {
 		if !Observation(cat.ID) || cat.ID == importing.UncategorizedCategory {
@@ -143,7 +143,7 @@ func (c *calculator) notable(r Range) Metric {
 		out.Notable = append(out.Notable, Notable{ID: cat.ID, Name: cat.Name, Icon: cat.Icon, Amount: cat.Amount, Typical: typical, Filter: cat.Filter})
 	}
 	if len(out.Notable) == 0 {
-		out.Status = "none"
+		out.Status = domain.MetricStatusNone
 		return out
 	}
 	sort.Slice(out.Notable, func(i, j int) bool {
@@ -194,7 +194,7 @@ func (c *calculator) small(r Range) Metric {
 	}
 	selected := full[len(full)-1]
 	mr := Range{selected, shiftMonths(selected, 1)}
-	out := Metric{Status: "ready"}
+	out := Metric{Status: domain.MetricStatusReady}
 	if !selected.Equal(r.From) {
 		out.Basis = basis([]time.Time{selected})
 	}
@@ -258,7 +258,7 @@ func (c *calculator) small(r Range) Metric {
 		total = c.add(total, amount)
 	}
 	if len(out.Small) == 0 {
-		out.Status = "none"
+		out.Status = domain.MetricStatusNone
 		return out
 	}
 	sort.Slice(out.Small, func(i, j int) bool {

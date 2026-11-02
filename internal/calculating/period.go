@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/fin-assist/bank-statement-data/internal/accounting"
+	"github.com/fin-assist/bank-statement-data/internal/domain"
 )
 
 type periodBuilder interface {
@@ -60,7 +61,7 @@ func (rollingPeriod) build(c *calculator, r Range) Period {
 }
 
 func (c *calculator) rollingChart(r Range) Metric {
-	out := Metric{Status: "ready"}
+	out := Metric{Status: domain.MetricStatusReady}
 	for from := month(r.From); from.Before(r.To); from = shiftMonths(from, 1) {
 		if err := c.ctx.Err(); err != nil {
 			c.err = err
