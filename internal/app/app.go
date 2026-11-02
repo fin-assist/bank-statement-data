@@ -21,6 +21,7 @@ import (
 	"github.com/fin-assist/go-grpc/server"
 	"github.com/fin-assist/go-worker"
 
+	"github.com/fin-assist/bank-statement-data/internal/adapter/metricswire"
 	"github.com/fin-assist/bank-statement-data/internal/adapter/postgres"
 	"github.com/fin-assist/bank-statement-data/internal/calculating"
 	"github.com/fin-assist/bank-statement-data/internal/config"
@@ -42,6 +43,7 @@ type App struct {
 	Calculations   *calculating.Service
 	Operations     *operations.Service
 	Recalculations *recalculating.Service
+	Markers        *metricswire.Markers
 
 	closers []func()
 }

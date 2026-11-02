@@ -176,7 +176,7 @@ func TestAPIOperationsCategoriesDismissalAndDeletionAdmission(t *testing.T) {
 	pay := result.Periods[0].Metrics["insights.regular_payments"].Payments[0].ID
 	c := pb.NewRegularPaymentsServiceClient(env.Conn)
 	for range 2 {
-		_, err = c.DismissRegularPayment(ctx, &pb.DismissRegularPaymentRequest{RegularPaymentId: pay})
+		_, err = c.DismissRegularPayment(ctx, &pb.DismissRegularPaymentRequest{RegularPaymentId: pay, Params: dismissalRequestParams()})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -209,14 +209,14 @@ func TestAPIOperationsCategoriesDismissalAndDeletionAdmission(t *testing.T) {
 	if err = env.App.DB.Primary().QueryRow(t.Context(), `SELECT categories_changed_at FROM user_state WHERE user_id=$1`, apiUser).Scan(&restored); err != nil || !restored.After(stamp) {
 		t.Fatal("version did not advance at pinned clock", restored, stamp, err)
 	}
-	_, err = c.DismissRegularPayment(ctx, &pb.DismissRegularPaymentRequest{RegularPaymentId: strings.ToUpper(pay)})
+	_, err = c.DismissRegularPayment(ctx, &pb.DismissRegularPaymentRequest{RegularPaymentId: strings.ToUpper(pay), Params: dismissalRequestParams()})
 	operationsReason(t, err, codes.InvalidArgument, "VALIDATION_ERROR")
 	for _, user := range []string{apiOther, apiUser} {
 		id := pay
 		if user == apiUser {
 			id = uuid.NewString()
 		}
-		_, err = c.DismissRegularPayment(apitest.User(t.Context(), user), &pb.DismissRegularPaymentRequest{RegularPaymentId: id})
+		_, err = c.DismissRegularPayment(apitest.User(t.Context(), user), &pb.DismissRegularPaymentRequest{RegularPaymentId: id, Params: dismissalRequestParams()})
 		operationsReason(t, err, codes.NotFound, "NOT_FOUND")
 		_, err = c.RestoreRegularPayment(apitest.User(t.Context(), user), &pb.RestoreRegularPaymentRequest{RegularPaymentId: id})
 		operationsReason(t, err, codes.NotFound, "NOT_FOUND")
@@ -225,7 +225,7 @@ func TestAPIOperationsCategoriesDismissalAndDeletionAdmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = c.DismissRegularPayment(ctx, &pb.DismissRegularPaymentRequest{RegularPaymentId: pay})
+	_, err = c.DismissRegularPayment(ctx, &pb.DismissRegularPaymentRequest{RegularPaymentId: pay, Params: dismissalRequestParams()})
 	operationsReason(t, err, codes.Unauthenticated, "TOKEN_REVOKED")
 	_, err = cats.ListCategories(ctx, &pb.ListCategoriesRequest{})
 	operationsReason(t, err, codes.Unauthenticated, "TOKEN_REVOKED")

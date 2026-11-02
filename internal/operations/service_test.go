@@ -250,15 +250,21 @@ func (m *memory) Changed(context.Context, string, time.Time) error {
 	}
 	return nil
 }
-func (m *memory) SetDismissed(_ context.Context, _, _ string, d bool, _ time.Time) (bool, error) {
+func (m *memory) SetDismissed(_ context.Context, _, _ string, d bool, _ time.Time) (Assignment, error) {
 	m.assignments++
 	if m.fail == "dismiss" {
-		return false, errStorage
+		return Assignment{}, errStorage
 	}
 	changed := m.dismissed != d
 	m.dismissed = d
-	return changed, nil
+	version := int32(0)
+	if d {
+		version = 1
+	}
+	return Assignment{Changed: changed, Version: version}, nil
 }
+func (m *memory) Publish(context.Context, string, int32) error { return nil }
+func (m *memory) Notify(context.Context, string, int32)        {}
 func fixture() *memory {
 	cats := []Category{
 		{Category: importing.Category{ID: importing.OwnTransferCategory, Name: "Между своими счетами", Icon: "transfer", Expense: true, Income: true}, Assignable: true, System: true},
@@ -289,7 +295,7 @@ func (m *memory) add(id, at, kind, cat, name string, amount int64) {
 }
 func service(t *testing.T, m *memory, at string) *Service {
 	t.Helper()
-	s, e := New(m, m, m, func() time.Time { return moment(at) }, func() (string, error) { return "new-pair", nil })
+	s, e := New(m, m, m, func() time.Time { return moment(at) }, func() (string, error) { return "new-pair", nil }, m, acceptProjection)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -307,7 +313,7 @@ func TestUnitServiceDependencies(t *testing.T) {
 		now     func() time.Time
 		id      func() (string, error)
 	}{{nil, m, m, now, id}, {m, nil, m, now, id}, {m, m, nil, now, id}, {m, m, m, nil, id}, {m, m, m, now, nil}} {
-		if _, e := New(args.tx, args.repo, args.deleted, args.now, args.id); e == nil {
+		if _, e := New(args.tx, args.repo, args.deleted, args.now, args.id, m, acceptProjection); e == nil {
 			t.Fatal("nil dependency accepted")
 		}
 	}
@@ -525,7 +531,7 @@ func TestUnitChangePairSplitAndMerge(t *testing.T) {
 func TestUnitChangeAndDismissFailures(t *testing.T) {
 	for _, failure := range []string{"write", "guard", "lock", "locate", "snapshot", "save", "changed"} {
 		t.Run("change_"+failure, func(t *testing.T) {
-			m := fixture()
+			m := regularFixture()
 			m.add("op", "2026-09-01T12:00:00Z", "expense", "food", "Shop", 10)
 			m.fail = failure
 			s := service(t, m, "2026-10-27T12:00:00Z")
@@ -535,14 +541,14 @@ func TestUnitChangeAndDismissFailures(t *testing.T) {
 			}
 		})
 	}
-	m := fixture()
+	m := regularFixture()
 	m.alive = false
 	s := service(t, m, "2026-10-27T12:00:00Z")
 	_, e := s.Change(t.Context(), "user", "id", "food", time.Time{})
 	if !errors.Is(e, importing.ErrDeleted) || m.locks != 0 || m.saves != 0 {
 		t.Fatalf("deleted guard: %v %+v", e, m)
 	}
-	m = fixture()
+	m = regularFixture()
 	m.actual = ref(moment("2026-09-01T12:00:00Z"))
 	s = service(t, m, "2026-10-27T12:00:00Z")
 	_, e = s.Change(t.Context(), "user", "missing", "food", time.Time{})
@@ -551,18 +557,18 @@ func TestUnitChangeAndDismissFailures(t *testing.T) {
 	}
 	for _, failure := range []string{"write", "guard", "lock", "dismiss", "save", "changed"} {
 		t.Run("dismiss_"+failure, func(t *testing.T) {
-			m := fixture()
+			m := regularFixture()
 			m.fail = failure
 			s := service(t, m, "2026-10-27T12:00:00Z")
-			if e := s.Dismiss(t.Context(), "user", "payment", true); !errors.Is(e, errStorage) {
+			if _, e := testAssignment(s, t.Context(), "user", "payment", true); !errors.Is(e, errStorage) {
 				t.Fatal(e)
 			}
 		})
 	}
-	m = fixture()
+	m = regularFixture()
 	s = service(t, m, "2026-10-27T12:00:00Z")
 	for _, d := range []bool{true, true, false, false} {
-		if e = s.Dismiss(t.Context(), "user", "payment", d); e != nil {
+		if _, e = testAssignment(s, t.Context(), "user", "payment", d); e != nil {
 			t.Fatal(e)
 		}
 	}
@@ -570,7 +576,7 @@ func TestUnitChangeAndDismissFailures(t *testing.T) {
 		t.Fatalf("dismiss assignments/idempotency: %+v", m)
 	}
 	m.alive = false
-	if e = s.Dismiss(t.Context(), "user", "payment", true); !errors.Is(e, importing.ErrDeleted) || m.assignments != 4 {
+	if _, e = testAssignment(s, t.Context(), "user", "payment", true); !errors.Is(e, importing.ErrDeleted) || m.assignments != 4 {
 		t.Fatalf("late dismissal: %v", e)
 	}
 }

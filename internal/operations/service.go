@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/fin-assist/bank-statement-data/internal/calculating"
 	"github.com/fin-assist/bank-statement-data/internal/importing"
 )
 
@@ -23,7 +24,10 @@ type Repository interface {
 	LockUser(context.Context, string, bool) (string, error)
 	SaveRules(context.Context, string, []importing.Operation, time.Time) error
 	Changed(context.Context, string, time.Time) error
-	SetDismissed(context.Context, string, string, bool, time.Time) (bool, error)
+	SetDismissed(context.Context, string, string, bool, time.Time) (Assignment, error)
+	Dismissed(context.Context, string, string) (bool, error)
+	RegularSnapshot(context.Context, string, time.Time, calculating.RegularParams) (importing.Snapshot, error)
+	Reference(context.Context, string, string, string) (calculating.Reference, error)
 	Stream(context.Context, string, StreamOptions, func(Row) error) error
 	SelectionKey(context.Context, string, string, string) (string, error)
 	Enqueue(context.Context, string, time.Time) error
@@ -37,19 +41,33 @@ type Transactions interface {
 
 // Service implements public operation scenarios without transport or SQL.
 type Service struct {
-	tx      Transactions
-	repo    Repository
-	deleted importing.Tombstones
-	now     func() time.Time
-	newID   func() (string, error)
+	tx                 Transactions
+	repo               Repository
+	deleted            importing.Tombstones
+	now                func() time.Time
+	newID              func() (string, error)
+	markers            Notifier
+	validateProjection func(calculating.RegularProjection) error
+}
+
+// Notifier atomically publishes a payment's target and attempts delivery after commit.
+type Notifier interface {
+	Publish(context.Context, string, int32) error
+	Notify(context.Context, string, int32)
+}
+
+// Assignment separates a new source edit from initialization of a pre-version dismissal.
+type Assignment struct {
+	Changed, Bootstrap bool
+	Version            int32
 }
 
 // New requires explicit transaction, storage, deletion and clock boundaries.
-func New(tx Transactions, repo Repository, deleted importing.Tombstones, now func() time.Time, newID func() (string, error)) (*Service, error) {
-	if tx == nil || repo == nil || deleted == nil || now == nil || newID == nil {
+func New(tx Transactions, repo Repository, deleted importing.Tombstones, now func() time.Time, newID func() (string, error), markers Notifier, validateProjection func(calculating.RegularProjection) error) (*Service, error) {
+	if tx == nil || repo == nil || deleted == nil || now == nil || newID == nil || markers == nil || validateProjection == nil {
 		return nil, errors.New("invalid operation dependencies")
 	}
-	return &Service{tx, repo, deleted, now, newID}, nil
+	return &Service{tx, repo, deleted, now, newID, markers, validateProjection}, nil
 }
 
 func (s *Service) write(ctx context.Context, user string, fn func(context.Context) error) error {
@@ -104,20 +122,6 @@ func (s *Service) Get(ctx context.Context, user, id string, at time.Time) (out O
 		return ErrNotFound
 	})
 	return
-}
-
-// Dismiss durably assigns the exclusion and enqueues every dependent month once.
-func (s *Service) Dismiss(ctx context.Context, user, id string, dismiss bool) error {
-	return s.write(ctx, user, func(ctx context.Context) error {
-		changed, err := s.repo.SetDismissed(ctx, user, id, dismiss, s.now())
-		if err != nil || !changed {
-			return err
-		}
-		if err = s.repo.Enqueue(ctx, user, s.now()); err != nil {
-			return err
-		}
-		return s.repo.Changed(ctx, user, s.now())
-	})
 }
 
 // Change reapplies the same complete-history rules as import while holding the user lock.

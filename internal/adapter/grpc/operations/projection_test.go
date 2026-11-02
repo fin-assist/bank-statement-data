@@ -109,7 +109,7 @@ func TestUnitRPCDismissalAssignments(t *testing.T) {
 		return nil
 	}}}
 	for range 2 {
-		if _, err := h.DismissRegularPayment(ctx(), &statementv1.DismissRegularPaymentRequest{RegularPaymentId: objectID}); err != nil {
+		if _, err := h.DismissRegularPayment(ctx(), &statementv1.DismissRegularPaymentRequest{RegularPaymentId: objectID, Params: dismissalRequestParams()}); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -71,7 +71,7 @@ func TestIntegrationOperationFinancialWritesRollbackWithQueueAndVersion(t *testi
 				}
 				payment := calculated.Periods[0].Metrics["insights.regular_payments"].Payments[0].ID
 				if action == "restore" {
-					if err = a.Operations.Dismiss(t.Context(), apiUser, payment, true); err != nil {
+					if _, err = testAssignment(a.Operations, t.Context(), apiUser, payment, true); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -84,7 +84,8 @@ func TestIntegrationOperationFinancialWritesRollbackWithQueueAndVersion(t *testi
 						_, e := a.Operations.Change(t.Context(), apiUser, item.ID, "cat_supermarkets", item.At)
 						return e
 					}
-					return a.Operations.Dismiss(t.Context(), apiUser, payment, action == "dismiss")
+					_, err := testAssignment(a.Operations, t.Context(), apiUser, payment, action == "dismiss")
+					return err
 				}
 				breakSQL, restoreSQL := `ALTER TABLE recalc_queue RENAME TO injected_recalc_queue`, `ALTER TABLE injected_recalc_queue RENAME TO recalc_queue`
 				if fault == "version" {

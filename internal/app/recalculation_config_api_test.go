@@ -73,7 +73,7 @@ func TestAPIDailyOffsetConfigWiresEverySchedulingPath(t *testing.T) {
 			payment := result.Periods[0].Metrics["insights.regular_payments"].Payments[0].ID
 			regular := pb.NewRegularPaymentsServiceClient(env.Conn)
 			resetDue()
-			if _, err = regular.DismissRegularPayment(ctx, &pb.DismissRegularPaymentRequest{RegularPaymentId: payment}); err != nil {
+			if _, err = regular.DismissRegularPayment(ctx, &pb.DismissRegularPaymentRequest{RegularPaymentId: payment, Params: dismissalRequestParams()}); err != nil {
 				t.Fatal(err)
 			}
 			assertDue(tc.wantMoscow)

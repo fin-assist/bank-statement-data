@@ -33,7 +33,7 @@ type unaryUseCases struct {
 	purge    func(context.Context, string) error
 }
 
-func (u unaryUseCases) Config(c context.Context, id string) (importing.Config, error) {
+func (u unaryUseCases) Config(c context.Context, id string, _ *importing.ConfigDates) (importing.Config, error) {
 	return u.config(c, id)
 }
 func (u unaryUseCases) History(c context.Context, id string) (importing.History, error) {

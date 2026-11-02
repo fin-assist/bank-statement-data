@@ -49,7 +49,7 @@ func TestAPIOperationsEveryRPCEnforcesCallerAndDeletedUser(t *testing.T) {
 			return e
 		}},
 		{"dismiss", func(ctx context.Context) error {
-			_, e := regular.DismissRegularPayment(ctx, &pb.DismissRegularPaymentRequest{RegularPaymentId: uuid.NewString()})
+			_, e := regular.DismissRegularPayment(ctx, &pb.DismissRegularPaymentRequest{RegularPaymentId: uuid.NewString(), Params: dismissalRequestParams()})
 			return e
 		}},
 		{"restore", func(ctx context.Context) error {

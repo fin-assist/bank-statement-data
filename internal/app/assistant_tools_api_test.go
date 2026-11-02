@@ -136,7 +136,7 @@ func toolsSourceScenario(t *testing.T) {
 		t.Fatal(v2, err)
 	}
 	id := strings.TrimPrefix(regular.Groups[0].Filters.GetSelection(), "s_regular_")
-	_, err = pb.NewRegularPaymentsServiceClient(env.Conn).DismissRegularPayment(apitest.User(t.Context(), apiUser), &pb.DismissRegularPaymentRequest{RegularPaymentId: id})
+	_, err = pb.NewRegularPaymentsServiceClient(env.Conn).DismissRegularPayment(apitest.User(t.Context(), apiUser), &pb.DismissRegularPaymentRequest{RegularPaymentId: id, Params: dismissalRequestParams()})
 	if err != nil {
 		t.Fatal(err)
 	}

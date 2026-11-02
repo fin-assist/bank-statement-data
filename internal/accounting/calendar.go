@@ -39,6 +39,19 @@ func civilDate(at time.Time) time.Time {
 	return time.Date(at.Year(), at.Month(), at.Day(), 0, 0, 0, 0, time.UTC)
 }
 
+// CivilDayStart resolves a civil date in zone to its first real instant, moving
+// forward across a skipped date. The input's location is intentionally ignored.
+func CivilDayStart(civil time.Time, zone *time.Location) time.Time {
+	civil = civilDate(civil)
+	for range 3 {
+		if start, ok := civilStart(civil, zone); ok {
+			return start
+		}
+		civil = civil.AddDate(0, 0, 1)
+	}
+	return time.Time{}
+}
+
 // StartOfDay returns the first real instant of the local date containing at,
 // including midnight gaps and repeated dates. at itself proves the date exists.
 func StartOfDay(at time.Time, zone *time.Location) time.Time {

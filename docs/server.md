@@ -44,8 +44,8 @@ Logger и Prometheus registry создаёт сервис и явно перед
 
 `PEER_ANALYTICS_ADDR` обязателен. `metrics-recalculation` и `metrics-outbox` запускаются штатным
 supervisor вместе с импортом; отмена jobs предшествует закрытию отдельного primary outbox pool
-(4 соединения) и gRPC клиента. `UpsertUserMetrics` — системный вызов с дедлайном 30 секунд,
-идемпотентный по calc_version; пользовательская metadata не передаётся.
+(5 соединений: два target и три служебных) и gRPC клиента. `UpsertUserMetrics` — системный вызов с дедлайном 30 секунд,
+идемпотентный по calc_version; пользовательская metadata не передаётся. Ранний `MarkRecalculating` обслуживается тем же dispatcher в отдельном target `analytics-recalculating` с общим лимитом lookup/RPC 1 с.
 
 `finassist_recalculation_queue_users`, `finassist_recalculation_oldest_age_seconds` и
 `finassist_recalculation_errors_total` имеют фиксированные имена без пользовательских labels.

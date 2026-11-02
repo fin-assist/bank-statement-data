@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/fin-assist/bank-statement-data/internal/accounting"
+	"github.com/fin-assist/bank-statement-data/internal/domain"
 	"github.com/fin-assist/bank-statement-data/internal/importing"
 )
 
@@ -143,12 +144,12 @@ func (c *calculator) filter(r Range, kind, category string) Filter {
 	return Filter{Range: r, Mode: c.mode, Kind: kind, Category: category}
 }
 func ready(value int64, filter *Filter) Metric {
-	return Metric{Status: "ready", Value: &value, Filter: filter}
+	return Metric{Status: domain.MetricStatusReady, Value: &value, Filter: filter}
 }
 func locked(reason string, required, available int) Metric {
-	return Metric{Status: "locked", Lock: &Lock{Reason: reason, Required: required, Available: available}}
+	return Metric{Status: domain.MetricStatusLocked, Lock: &Lock{Reason: reason, Required: required, Available: available}}
 }
-func none() Metric { return Metric{Status: "none"} }
+func none() Metric { return Metric{Status: domain.MetricStatusNone} }
 func (c *calculator) value(r Range, kind string) Metric {
 	f := c.filter(r, kind, "")
 	return ready(c.sum(r, kind, ""), &f)
@@ -255,7 +256,7 @@ func (c *calculator) categories(r Range, kind string) Metric {
 	if len(items) == 0 {
 		return none()
 	}
-	out := Metric{Status: "ready"}
+	out := Metric{Status: domain.MetricStatusReady}
 	for _, v := range items {
 		if total > 0 && v.Amount >= 0 {
 			share := float64(v.Amount) / float64(total)
@@ -329,7 +330,7 @@ func (c *calculator) historical(m map[string]Metric, r Range, b Bounds) {
 	}
 	if months == 1 && c.cal.now.Day() < accounting.ForecastDay {
 		at := accounting.AddDays(r.From, accounting.ForecastDay-1)
-		m["tiles.forecast"] = Metric{Status: "locked", Lock: &Lock{Reason: "too_early_in_month", AvailableFrom: &at}}
+		m["tiles.forecast"] = Metric{Status: domain.MetricStatusLocked, Lock: &Lock{Reason: "too_early_in_month", AvailableFrom: &at}}
 		return
 	}
 	if b.From == nil {
@@ -377,7 +378,7 @@ func (c *calculator) chart(r Range) Metric {
 	if months == 1 {
 		months, start = 6, shiftMonths(r.From, -5)
 	}
-	out := Metric{Status: "ready"}
+	out := Metric{Status: domain.MetricStatusReady}
 	for i := 0; i < months; i++ {
 		if err := c.ctx.Err(); err != nil {
 			c.err = err

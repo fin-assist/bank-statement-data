@@ -57,6 +57,14 @@ func TestUnitAssemblyWiresImportAndIndependentBarrierPool(t *testing.T) {
 	if calls != 2 || a.DB != db || a.Log != log || a.Cfg.Service != cfg.Service || a.Clients == nil || a.Tokens == nil || len(a.Jobs) != 6 || a.Imports == nil || a.Operations == nil {
 		t.Fatal("incomplete or unexpectedly populated assembly")
 	}
+	jobNames := make(map[string]int)
+	for _, job := range a.Jobs {
+		jobNames[job.Name]++
+	}
+	if jobNames["metrics-outbox"] != 1 || jobNames["metrics-recalculation"] != 1 || jobNames["recalculating-delivery"] != 0 {
+		t.Fatal("marker added a separate dispatcher or retry worker", jobNames)
+	}
+
 	if err := a.GRPC.Check(); err != nil {
 		t.Fatal(err)
 	}

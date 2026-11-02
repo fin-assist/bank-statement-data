@@ -871,6 +871,7 @@ func TestIntegrationPurgeUserRemovesEverything(t *testing.T) {
 	exec(t, conn, `INSERT INTO merchant (user_id, key) VALUES ($1, 'x')`, a.user)
 	exec(t, conn, `INSERT INTO recalc_queue (user_id, month) VALUES ($1, '2026-09-01')`, a.user)
 	exec(t, conn, `INSERT INTO metrics_publication(user_id)VALUES($1)`, a.user)
+	exec(t, conn, `INSERT INTO regular_payment(user_id,periodicity,description) VALUES($1,'monthly','other')`, userB)
 	exec(t, conn, `INSERT INTO metrics_delivery(id,user_id,calc_version,payload,final)VALUES('01a10800-0000-7000-8000-0000000000bb',$1,1,'private financial bytes'::bytea,false)`, a.user)
 	exec(t, conn, `UPDATE operation SET transfer_pair_id = '01a10800-0000-7000-8000-0000000000aa' WHERE user_id = $1 AND id IN ($2, $3)`,
 		a.user, a.operation, newOp(t, conn, a, "income", time.Minute).id)
@@ -906,6 +907,9 @@ func TestIntegrationPurgeUserRemovesEverything(t *testing.T) {
 	}
 	if n := count(t, conn, `SELECT count(*) FROM operation WHERE user_id = $1`, userB); n != 1 {
 		t.Errorf("the other user lost operations: %d", n)
+	}
+	if n := count(t, conn, `SELECT count(*) FROM regular_payment WHERE user_id=$1`, userB); n != 1 {
+		t.Errorf("the other user lost regular-payment identity: %d", n)
 	}
 }
 
@@ -1476,4 +1480,17 @@ func stepsAbove(t *testing.T, v int) int {
 		}
 	}
 	return n
+}
+
+func TestIntegrationRegularPaymentOpaqueIDHasOneOwner(t *testing.T) {
+	conn, _ := schema(t)
+	seed(t, conn, userA, account1)
+	seed(t, conn, userB, account1)
+	const payment = "01a10800-0000-7000-8000-0000000000ff"
+	exec(t, conn, `INSERT INTO regular_payment(user_id,id,periodicity,description)VALUES($1,$2,'monthly','Cloud')`, userA, payment)
+	fails(t, conn, uniqueViolation, `INSERT INTO regular_payment(user_id,id,periodicity,description)VALUES($1,$2,'monthly','Other')`, userB, payment)
+	var owner string
+	if err := conn.QueryRow(t.Context(), `SELECT user_id::text FROM regular_payment WHERE id=$1`, payment).Scan(&owner); err != nil || owner != userA {
+		t.Fatal(owner, err)
+	}
 }

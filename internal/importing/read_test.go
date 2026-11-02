@@ -112,7 +112,7 @@ func TestUnitImportConfigCalendarClampDSTAndBrowserURL(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newImportReadFixture(t, importing.Snapshot{TimeZone: "Europe/Berlin"}, readAt(t, tc.now))
-			got, err := f.service.Config(context.Background(), "verified-user")
+			got, err := f.service.Config(context.Background(), "verified-user", nil)
 			if err != nil || !got.From.Equal(readAt(t, tc.from)) || !got.To.Equal(readAt(t, tc.to)) || got.Loaded != nil || got.TimeZone != "Europe/Berlin" {
 				t.Fatal("suggested period changed calendar semantics", err)
 			}
@@ -144,12 +144,12 @@ func TestUnitImportLoadedUsesActualNativeOperationsAndProfileDays(t *testing.T) 
 	first, middle, last := readAt(t, "2026-09-01T10:00:00Z"), readAt(t, "2026-09-15T10:00:00Z"), readAt(t, "2026-09-28T02:00:00Z")
 	state := importing.Snapshot{TimeZone: "America/New_York", Operations: []importing.Operation{{At: last, Currency: "JPY"}, {At: first, Currency: "RUB"}, {At: middle, Currency: "USD"}}}
 	f := newImportReadFixture(t, state, readAt(t, "2026-10-01T03:00:00Z"))
-	got, err := f.service.Config(context.Background(), "user")
+	got, err := f.service.Config(context.Background(), "user", nil)
 	if err != nil || got.Loaded == nil || got.Loaded.Count != 3 || !got.Loaded.First.Equal(first) || !got.Loaded.Last.Equal(last) || got.From.Format(time.RFC3339) != "2026-09-27T00:00:00-04:00" || got.To.Format(time.RFC3339) != "2026-10-01T00:00:00-04:00" {
 		t.Fatal("actual operation summary or profile-local latest day changed", err)
 	}
 	f = newImportReadFixture(t, importing.Snapshot{TimeZone: "invalid/private-zone"}, readAt(t, "2026-10-01T00:00:00Z"))
-	got, err = f.service.Config(context.Background(), "user")
+	got, err = f.service.Config(context.Background(), "user", nil)
 	if err != nil || got.TimeZone != "Europe/Moscow" {
 		t.Fatal("unknown profile zone did not use documented Moscow fallback", err)
 	}
@@ -291,7 +291,7 @@ func TestUnitImportReadPropagatesErrorsAndCancellationWithoutPartialData(t *test
 				f.repo.onRead = cancel
 				want = context.Canceled
 			}
-			got, err := f.service.Config(ctx, "user")
+			got, err := f.service.Config(ctx, "user", nil)
 			if !errors.Is(err, want) || got.Loaded != nil || got.DownloadURL != "" {
 				t.Fatal("read failure lost or leaked partial snapshot", err)
 			}
@@ -307,7 +307,7 @@ func TestUnitImportConfigUsesInjectedLoginURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := service.Config(t.Context(), "verified-user")
+	got, err := service.Config(t.Context(), "verified-user", nil)
 	if err != nil || got.LoginURL != destination {
 		t.Fatalf("configured destination was replaced: %v", err)
 	}

@@ -148,7 +148,7 @@ func TestIntegrationImportCancellationFailureAndEmpty(t *testing.T) {
 			t.Fatalf("empty result invented data: %+v", u)
 		}
 	}
-	cfg, err := a.Imports.Config(t.Context(), apiUser)
+	cfg, err := a.Imports.Config(t.Context(), apiUser, nil)
 	if err != nil || cfg.Loaded != nil {
 		t.Fatalf("empty loaded: %+v %v", cfg, err)
 	}
@@ -375,5 +375,27 @@ func TestIntegrationStartupRefusesChangedDefaultEncryptionBeforeListeners(t *tes
 	objects.SetResponseEncryptionFailure(false)
 	if err = a.Imports.Purge(t.Context(), apiUser); err != nil {
 		t.Fatal("uncertain outcome unrecoverable", err)
+	}
+}
+
+func TestIntegrationSelectedConfigUsesPersistedSourceTimezone(t *testing.T) {
+	a, _ := importAssembly(t, func() time.Time { return time.Date(2026, 11, 1, 1, 0, 0, 0, time.UTC) })
+	importFile(t, a, "04-edge-cases-2026-09.ofx")
+	if err := a.Imports.SetTimezone(t.Context(), apiUser, "America/Toronto", 1); err != nil {
+		t.Fatal(err)
+	}
+	from, to := "1919-03-31", "1919-03-31"
+	config, err := a.Imports.Config(t.Context(), apiUser, &importing.ConfigDates{From: &from, To: &to})
+	if err != nil || config.TimeZone != "America/Toronto" || !config.From.Equal(time.Date(1919, 3, 31, 4, 30, 0, 0, time.UTC)) || !config.To.Equal(time.Date(1919, 4, 1, 4, 0, 0, 0, time.UTC)) || config.Loaded == nil {
+		t.Fatal(config, err)
+	}
+	if err = a.Imports.SetTimezone(t.Context(), apiUser, "America/Los_Angeles", 2); err != nil {
+		t.Fatal(err)
+	}
+	from, to = "2026-11-01", "2026-11-01"
+	_, err = a.Imports.Config(t.Context(), apiUser, &importing.ConfigDates{From: &from, To: &to})
+	var validation *importing.InputError
+	if !errors.As(err, &validation) || validation.Field != "period_to" || validation.Reason != "OUT_OF_RANGE" {
+		t.Fatal("today ignored persisted source zone", err)
 	}
 }

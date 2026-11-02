@@ -57,6 +57,7 @@ type analyticsPeer struct {
 	release      chan struct{}
 	once         sync.Once
 	fail         bool
+	failedCalls  int
 }
 
 func (p *analyticsPeer) UpsertUserMetrics(ctx context.Context, r *analytics.UpsertUserMetricsRequest) (*analytics.UpsertUserMetricsResponse, error) {
@@ -66,6 +67,9 @@ func (p *analyticsPeer) UpsertUserMetrics(ctx context.Context, r *analytics.Upse
 	}
 	p.mu.Lock()
 	fail := p.fail
+	if fail {
+		p.failedCalls++
+	}
 	p.mu.Unlock()
 	if fail {
 		return nil, errors.New("peer unavailable")
@@ -293,9 +297,34 @@ func TestIntegrationRecalculationRestartRecoversImmutableOutboxAndPeerFailure(t 
 			t.Error("outbox did not stop")
 		}
 	})
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		observe, stop := context.WithTimeout(context.Background(), time.Second)
+		defer stop()
+		var rows, attempts int
+		var first, last *time.Time
+		err := restarted.DB.Primary().QueryRow(observe, `SELECT count(*),COALESCE(max(attempts),0),min(next_attempt_at),max(next_attempt_at) FROM outbox_events WHERE target='analytics'`).Scan(&rows, &attempts, &first, &last)
+		peer.mu.Lock()
+		version, periods, failures := peer.stateVersion, len(peer.periods), peer.failedCalls
+		peer.mu.Unlock()
+		t.Logf("recovery diagnostics: rows=%d max_attempts=%d first_due=%v last_due=%v state_version=%d periods=%d failed_rpcs=%d query_error=%v", rows, attempts, first, last, version, periods, failures, err)
+	})
 	eventuallyMetrics(t, func() bool {
-		var n int
-		return restarted.DB.Primary().QueryRow(t.Context(), `SELECT count(*)FROM outbox_events WHERE attempts>0`).Scan(&n) == nil && n > 0
+		peer.mu.Lock()
+		failed := peer.failedCalls > 0
+		peer.mu.Unlock()
+		if !failed {
+			return false
+		}
+		// A part/final can fail its local ACK barrier before any remote call. Wait
+		// specifically for the clearing RPC's persisted failure before moving time.
+		var recorded bool
+		err := restarted.DB.Primary().QueryRow(t.Context(), `SELECT EXISTS(
+ SELECT 1 FROM outbox_events e JOIN metrics_delivery d ON e.event_key=d.id::text
+ WHERE e.target='analytics' AND d.calc_version=1 AND e.attempts>0)`).Scan(&recorded)
+		return err == nil && recorded
 	})
 	peer.mu.Lock()
 	peer.fail = false
