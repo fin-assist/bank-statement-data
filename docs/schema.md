@@ -380,5 +380,4 @@ metadata прежнего состояния до Complete. Проверки и 
 
 `recalculating_delivery` имеет PK `(user_id, calc_version)`, каскадный FK к `user_state`, `created_at`, `next_attempt_at`, `attempts` и индекс готовности. Код проверяет canonical non-nil UUID, положительную цель, attempts 0..16; один user/target может объединять несколько изменений до начала пересчёта. ACK удаляет точный ключ, retry только обновляет существующий. Нет финансового payload, CHECK, триггеров или зарезервированных номеров; инварианты и сериализация принадлежат сервису.
 
-
 FIN-420: под user lock новый Dismiss проверяет собственный UUID и доступный месяц до изменения. Assignment, original target, очередь, true-job и новые regular references фиксируются только после успешного свежего расчёта и проверки полного protobuf ≤3 МиБ. Повтор возвращает прежний target и свежие факты; отказ не оставляет частичного нового эффекта. PostgreSQL/API покрывает rollback и конкурирующие assignments; новых SQL-ограничений нет.
