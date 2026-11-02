@@ -17,6 +17,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/fin-assist/bank-statement-data/internal/calculating"
 	"github.com/fin-assist/bank-statement-data/internal/importing"
 	usecase "github.com/fin-assist/bank-statement-data/internal/operations"
 )
@@ -59,9 +60,20 @@ func (f fake) Change(c context.Context, u, id, cat string, at time.Time) (usecas
 func (f fake) Categories(c context.Context, u string) ([]usecase.Category, error) {
 	return f.categories(c, u)
 }
-func (f fake) Dismiss(c context.Context, u, id string, d bool) (int32, error) {
-	return 1, f.dismiss(c, u, id, d)
+func (f fake) Dismiss(c context.Context, u, id string, p calculating.RegularParams) (usecase.Dismissal, error) {
+	return usecase.Dismissal{Version: 1, Projection: regularProjection(u, p)}, f.dismiss(c, u, id, true)
 }
+func (f fake) Restore(c context.Context, u, id string) error { return f.dismiss(c, u, id, false) }
+func dismissalRequestParams() *commonv1.AnalyticsParams {
+	return &commonv1.AnalyticsParams{Period: commonv1.PeriodType_PERIOD_TYPE_MONTH, PeriodKey: "2026-09", TransferMode: commonv1.TransferMode_TRANSFER_MODE_WITH}
+}
+func regularProjection(user string, p calculating.RegularParams) calculating.RegularProjection {
+	from, _ := time.Parse("2006-01", p.Month)
+	to := from.AddDate(0, 1, 0)
+	last := to.Add(-time.Second)
+	return calculating.RegularProjection{User: user, Currency: "RUB", TimeZone: "UTC", Params: p, Range: calculating.Range{From: from, To: to}, DataRange: calculating.Range{From: from, To: to}, Bounds: calculating.Bounds{Coverage: "complete", From: &from, To: &last}, Metric: calculating.Metric{DefinitionVersion: 1, Status: "locked", Lock: &calculating.Lock{Reason: "need_full_months", Required: 2, Available: 1}}}
+}
+
 func admitted(t *testing.T, c context.Context, u string) {
 	t.Helper()
 	deadline, ok := c.Deadline()
@@ -164,7 +176,7 @@ func TestUnitRPCSuccess(t *testing.T) {
 	if err != nil || len(cats.Categories) != 3 || !cats.Categories[0].Assignable || len(cats.Categories[0].Kinds) != 2 || cats.Categories[2].Kinds[0] != statementv1.CategoryKind_CATEGORY_KIND_INCOME {
 		t.Fatalf("categories: %+v %v", cats, err)
 	}
-	if _, err = h.DismissRegularPayment(ctx(), &statementv1.DismissRegularPaymentRequest{RegularPaymentId: objectID}); err != nil {
+	if _, err = h.DismissRegularPayment(ctx(), &statementv1.DismissRegularPaymentRequest{RegularPaymentId: objectID, Params: dismissalRequestParams()}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = h.RestoreRegularPayment(ctx(), &statementv1.RestoreRegularPaymentRequest{RegularPaymentId: objectID}); err != nil {
@@ -195,7 +207,7 @@ func TestUnitErrorsAndIdentity(t *testing.T) {
 		},
 		func(h *handler, c context.Context) error { _, e := h.ListCategories(c, nil); return e },
 		func(h *handler, c context.Context) error {
-			_, e := h.DismissRegularPayment(c, &statementv1.DismissRegularPaymentRequest{RegularPaymentId: objectID})
+			_, e := h.DismissRegularPayment(c, &statementv1.DismissRegularPaymentRequest{RegularPaymentId: objectID, Params: dismissalRequestParams()})
 			return e
 		},
 		func(h *handler, c context.Context) error {
@@ -215,8 +227,16 @@ func TestUnitErrorsAndIdentity(t *testing.T) {
 	}, change: func(context.Context, string, string, string, time.Time) (usecase.Change, error) {
 		return usecase.Change{}, unknown
 	}, categories: func(context.Context, string) ([]usecase.Category, error) { return nil, unknown }, dismiss: func(context.Context, string, string, bool) error { return unknown }}}
-	for _, call := range calls {
-		if err := call(&h, ctx()); !errors.Is(err, unknown) {
+	for i, call := range calls {
+		err := call(&h, ctx())
+		if i == 5 {
+			mapped, ok := finerr.ToREST(err)
+			if !ok || mapped.Code != "INTERNAL_ERROR" || mapped.RequestRetryable == nil || !*mapped.RequestRetryable {
+				t.Fatal(err, mapped)
+			}
+			continue
+		}
+		if !errors.Is(err, unknown) {
 			t.Fatalf("failure dropped: %v", err)
 		}
 	}

@@ -49,16 +49,16 @@ func TestUnitDismissalNotifiesOnlyCommittedAssignment(t *testing.T) {
 		{"queue_failure", Assignment{Changed: true, Version: 8}, "save", true, 0, 1, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p := &dismissalProbe{memory: fixture(), assignment: tc.assignment}
+			p := &dismissalProbe{memory: regularFixture(), assignment: tc.assignment}
 			p.fail = tc.failure
 			if tc.failure == "commit" {
 				p.commitError = errStorage
 			}
-			s, err := New(p, p, p, time.Now, func() (string, error) { return "id", nil }, p)
+			s, err := New(p, p, p, time.Now, func() (string, error) { return "id", nil }, p, acceptProjection)
 			if err != nil {
 				t.Fatal(err)
 			}
-			version, err := s.Dismiss(t.Context(), "user", "payment", tc.dismiss)
+			version, err := testAssignment(s, t.Context(), "user", "payment", tc.dismiss)
 			if tc.failure != "" {
 				if !errors.Is(err, errStorage) || version != 0 {
 					t.Fatal(version, err)

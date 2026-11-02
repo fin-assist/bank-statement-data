@@ -248,7 +248,7 @@ func TestIntegrationGetChangeCategoriesAndDismissalSDK(t *testing.T) {
 	}
 	regular := statementv1.NewRegularPaymentsServiceClient(cc)
 	for range 2 {
-		if _, err = regular.DismissRegularPayment(integrationContext(t, "bank-bff", userID), &statementv1.DismissRegularPaymentRequest{RegularPaymentId: objectID}); err != nil {
+		if _, err = regular.DismissRegularPayment(integrationContext(t, "bank-bff", userID), &statementv1.DismissRegularPaymentRequest{RegularPaymentId: objectID, Params: dismissalRequestParams()}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -276,8 +276,20 @@ func TestIntegrationSDKCanonicalErrorsAcrossAllOperations(t *testing.T) {
 				return usecase.Change{}, test.failure
 			}, categories: func(context.Context, string) ([]usecase.Category, error) { return nil, test.failure }, dismiss: func(context.Context, string, string, bool) error { return test.failure }}
 			cc := integrationClient(t, f, false)
-			for _, call := range integrationCalls(cc) {
-				integrationRefusal(t, call(integrationContext(t, "bank-bff", userID)), test.want)
+			for i, call := range integrationCalls(cc) {
+				err := call(integrationContext(t, "bank-bff", userID))
+				if i == 5 {
+					want, retry := test.want, false
+					if want != "NOT_FOUND" && want != "TOKEN_REVOKED" && want != "VALIDATION_ERROR" {
+						want, retry = "INTERNAL_ERROR", true
+					}
+					mapped, ok := finerr.ToREST(err)
+					if !ok || mapped.Code != want || mapped.RequestRetryable == nil || *mapped.RequestRetryable != retry {
+						t.Fatal(err, mapped)
+					}
+					continue
+				}
+				integrationRefusal(t, err, test.want)
 			}
 		})
 	}
@@ -300,7 +312,7 @@ func integrationCalls(cc *grpc.ClientConn) []func(context.Context) error {
 		_, e := c.ListCategories(ctx, &statementv1.ListCategoriesRequest{})
 		return e
 	}, func(ctx context.Context) error {
-		_, e := r.DismissRegularPayment(ctx, &statementv1.DismissRegularPaymentRequest{RegularPaymentId: objectID})
+		_, e := r.DismissRegularPayment(ctx, &statementv1.DismissRegularPaymentRequest{RegularPaymentId: objectID, Params: dismissalRequestParams()})
 		return e
 	}, func(ctx context.Context) error {
 		_, e := r.RestoreRegularPayment(ctx, &statementv1.RestoreRegularPaymentRequest{RegularPaymentId: objectID})
@@ -358,7 +370,7 @@ func TestIntegrationSDKAdmissionAndValidationPrecedeUsecases(t *testing.T) {
 		_, e := o.SearchOperations(integrationContext(t, "bank-bff", userID), &statementv1.SearchOperationsRequest{Filter: &commonv1.OperationsFilter{Kind: 99}})
 		return e
 	}, func() error {
-		_, e := statementv1.NewRegularPaymentsServiceClient(cc).DismissRegularPayment(integrationContext(t, "bank-bff", userID), &statementv1.DismissRegularPaymentRequest{RegularPaymentId: "private description"})
+		_, e := statementv1.NewRegularPaymentsServiceClient(cc).DismissRegularPayment(integrationContext(t, "bank-bff", userID), &statementv1.DismissRegularPaymentRequest{RegularPaymentId: "private description", Params: dismissalRequestParams()})
 		return e
 	}}
 	for _, call := range invalidCalls {
@@ -383,10 +395,18 @@ func TestIntegrationSDKMasksPrivateFailuresAndRejectsInvalidOutputs(t *testing.T
 		return usecase.Change{}, private
 	}, categories: func(context.Context, string) ([]usecase.Category, error) { return nil, private }, dismiss: func(context.Context, string, string, bool) error { return private }}
 	cc := integrationClient(t, f, false)
-	for _, call := range integrationCalls(cc) {
+	for i, call := range integrationCalls(cc) {
 		err := call(integrationContext(t, "bank-bff", userID))
-		if status.Code(err) != codes.Internal || strings.Contains(err.Error(), "private") || len(status.Convert(err).Details()) != 0 {
+		if status.Code(err) != codes.Internal || strings.Contains(err.Error(), "private") {
 			t.Fatalf("private failure escaped: %v", err)
+		}
+		if i == 5 { // Dismiss declares a canonical error and explicit replay permission.
+			mapped, ok := finerr.ToREST(err)
+			if !ok || mapped.Code != "INTERNAL_ERROR" || mapped.RequestRetryable == nil || !*mapped.RequestRetryable || len(mapped.Violations) != 0 {
+				t.Fatalf("dismissal lost its retry contract: %+v", mapped)
+			}
+		} else if len(status.Convert(err).Details()) != 0 {
+			t.Fatalf("private failure gained details: %v", err)
 		}
 	}
 	f = fake{feed: func(context.Context, string, *time.Time) (usecase.Feed, error) {

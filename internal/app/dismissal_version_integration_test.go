@@ -49,7 +49,7 @@ func TestIntegrationDismissalBetweenStartAndBuildKeepsVersionSequence(t *testing
 			t.Fatalf("Start did not commit exactly one version: %d", before)
 		}
 		var err error
-		target, err = a.Operations.Dismiss(ctx, apiUser, id, true)
+		target, err = testAssignment(a.Operations, ctx, apiUser, id, true)
 		if err != nil {
 			return err
 		}
@@ -80,10 +80,10 @@ func TestIntegrationDismissalBetweenStartAndBuildKeepsVersionSequence(t *testing
 		}
 	}
 	peer.mu.Unlock()
-	if _, err = a.Operations.Dismiss(t.Context(), apiUser, id, false); err != nil {
+	if _, err = testAssignment(a.Operations, t.Context(), apiUser, id, false); err != nil {
 		t.Fatal(err)
 	}
-	later, err := a.Operations.Dismiss(t.Context(), apiUser, id, true)
+	later, err := testAssignment(a.Operations, t.Context(), apiUser, id, true)
 	if err != nil || later != 4 {
 		t.Fatal("post-Complete assignment did not exceed final", later, err)
 	}

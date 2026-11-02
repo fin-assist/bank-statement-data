@@ -216,7 +216,7 @@ func (r *Operations) SetDismissed(ctx context.Context, user, id string, dismiss 
 		return out, nil
 	}
 	if version < 0 || version > math.MaxInt32-3 {
-		return out, errImportStorage
+		return out, operations.ErrVersionExhausted
 	}
 	out.Changed = current != dismiss
 	out.Bootstrap = current && dismiss && saved == nil

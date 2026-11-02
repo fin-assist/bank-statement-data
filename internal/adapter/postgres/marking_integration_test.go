@@ -12,6 +12,7 @@ import (
 	tombstone "github.com/fin-assist/go-tombstone"
 	"github.com/google/uuid"
 
+	"github.com/fin-assist/bank-statement-data/internal/adapter/metricswire"
 	"github.com/fin-assist/bank-statement-data/internal/adapter/postgres"
 	"github.com/fin-assist/bank-statement-data/internal/marking"
 	"github.com/fin-assist/bank-statement-data/internal/operations"
@@ -32,11 +33,21 @@ func markerFixture(t *testing.T, version int32, dismissed bool) (*importPG, *ope
 	if _, err := f.db.Primary().Exec(t.Context(), `INSERT INTO regular_payment(user_id,id,periodicity,description,dismissed_at) VALUES($1,$2,'monthly','Cloud',$3)`, user, payment, at); err != nil {
 		t.Fatal(err)
 	}
+	if err := f.db.Run(t.Context(), func(ctx context.Context) error {
+		upload := uuid.NewString()
+		if err := f.repo.InsertUpload(ctx, f.row(user, upload)); err != nil {
+			return err
+		}
+		_, err := f.db.Writer(ctx).Exec(ctx, `UPDATE upload SET status='done',statement_from='2026-09-01',statement_to='2026-09-30',statement_from_instant='2026-09-01T00:00:00+03:00',statement_to_instant='2026-09-30T23:59:59+03:00' WHERE user_id=$1 AND id=$2`, user, upload)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 	dead, err := tombstone.New(f.db, f.db.Primary(), func() time.Time { return f.now })
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := operations.New(f.db, postgres.NewOperations(f.db, testconfig.DefaultDailyRecalculationOffset(t)), dead, func() time.Time { return f.now }, func() (string, error) { return uuid.NewString(), nil }, unusedMarker{})
+	s, err := operations.New(f.db, postgres.NewOperations(f.db, testconfig.DefaultDailyRecalculationOffset(t)), dead, func() time.Time { return f.now }, func() (string, error) { return uuid.NewString(), nil }, unusedMarker{}, metricswire.ValidateRegularProjection)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +59,7 @@ func TestIntegrationDismissalTargetsRetriesBootstrapAndCapacity(t *testing.T) {
 		for _, bootstrap := range []bool{false, true} {
 			t.Run(fmtMarker(start, bootstrap), func(t *testing.T) {
 				f, s, user, id := markerFixture(t, start, bootstrap)
-				target, err := s.Dismiss(t.Context(), user, id, true)
+				target, err := testAssignment(s, t.Context(), user, id, true)
 				var current int32
 				var revision int64
 				var saved *int32
@@ -74,7 +85,7 @@ func TestIntegrationDismissalTargetsRetriesBootstrapAndCapacity(t *testing.T) {
 				if _, e := f.db.Primary().Exec(t.Context(), `UPDATE user_state SET calc_version=$2 WHERE user_id=$1`, user, start+2); e != nil {
 					t.Fatal(e)
 				}
-				again, e := s.Dismiss(t.Context(), user, id, true)
+				again, e := testAssignment(s, t.Context(), user, id, true)
 				if e != nil || again != target {
 					t.Fatal("retry changed target", again, e)
 				}
@@ -86,7 +97,7 @@ func TestIntegrationDismissalTargetsRetriesBootstrapAndCapacity(t *testing.T) {
 				if e = r.Ack(t.Context(), job); e != nil {
 					t.Fatal(e)
 				}
-				again, e = s.Dismiss(t.Context(), user, id, true)
+				again, e = testAssignment(s, t.Context(), user, id, true)
 				if e != nil || again != target {
 					t.Fatal("ACKed repeat", again, e)
 				}
@@ -110,7 +121,7 @@ func TestIntegrationMarkerConcurrentAssignmentsAndIndependentACKs(t *testing.T) 
 		go func() {
 			defer wg.Done()
 			<-start
-			v, err := s.Dismiss(t.Context(), user, id, true)
+			v, err := testAssignment(s, t.Context(), user, id, true)
 			if err != nil || v != 1 {
 				t.Error(v, err)
 			}
@@ -122,13 +133,13 @@ func TestIntegrationMarkerConcurrentAssignmentsAndIndependentACKs(t *testing.T) 
 	if err := f.db.Primary().QueryRow(t.Context(), `SELECT categories_revision FROM user_state WHERE user_id=$1`, user).Scan(&revision); err != nil || revision != 1 {
 		t.Fatal("duplicate change", revision, err)
 	}
-	if _, err := s.Dismiss(t.Context(), user, id, false); err != nil {
+	if _, err := testAssignment(s, t.Context(), user, id, false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.db.Primary().Exec(t.Context(), `UPDATE user_state SET calc_version=9 WHERE user_id=$1`, user); err != nil {
 		t.Fatal(err)
 	}
-	if v, err := s.Dismiss(t.Context(), user, id, true); err != nil || v != 10 {
+	if v, err := testAssignment(s, t.Context(), user, id, true); err != nil || v != 10 {
 		t.Fatal(v, err)
 	}
 	r := postgres.NewMarkers(f.db)
@@ -152,7 +163,7 @@ func TestIntegrationMarkerConcurrentAssignmentsAndIndependentACKs(t *testing.T) 
 
 func TestIntegrationMarkerDeliveryRestartLostACKPurgeAndNoTransactionNetwork(t *testing.T) {
 	f, s, user, id := markerFixture(t, 4, false)
-	if _, err := s.Dismiss(t.Context(), user, id, true); err != nil {
+	if _, err := testAssignment(s, t.Context(), user, id, true); err != nil {
 		t.Fatal(err)
 	}
 	r := postgres.NewMarkers(f.db)
@@ -183,10 +194,10 @@ func TestIntegrationMarkerDeliveryRestartLostACKPurgeAndNoTransactionNetwork(t *
 	if err := f.db.Run(t.Context(), func(ctx context.Context) error { restarted.Notify(ctx, user, 5); return nil }); err != nil || calls != 2 {
 		t.Fatal("network in SQL", err, calls)
 	}
-	if _, err := s.Dismiss(t.Context(), user, id, false); err != nil {
+	if _, err := testAssignment(s, t.Context(), user, id, false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Dismiss(t.Context(), user, id, true); err != nil {
+	if _, err := testAssignment(s, t.Context(), user, id, true); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.db.Primary().Exec(t.Context(), `DELETE FROM user_state WHERE user_id=$1`, user); err != nil {

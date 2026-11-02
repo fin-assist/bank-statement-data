@@ -101,7 +101,7 @@ func TestAPIDismissalReturnsStableTargetAfterCommitAndMarkerACK(t *testing.T) {
 	}
 	peer.markMu.Unlock()
 	c := pb.NewRegularPaymentsServiceClient(env.Conn)
-	first, err := c.DismissRegularPayment(apitest.User(t.Context(), apiUser), &pb.DismissRegularPaymentRequest{RegularPaymentId: id})
+	first, err := c.DismissRegularPayment(apitest.User(t.Context(), apiUser), &pb.DismissRegularPaymentRequest{RegularPaymentId: id, Params: dismissalRequestParams()})
 	if err != nil || first.CalcVersion != 1 {
 		t.Fatal(first, err)
 	}
@@ -109,7 +109,7 @@ func TestAPIDismissalReturnsStableTargetAfterCommitAndMarkerACK(t *testing.T) {
 	if err = env.App.DB.Primary().QueryRow(t.Context(), `SELECT count(*) FROM recalculating_delivery`).Scan(&jobs); err != nil || jobs != 0 {
 		t.Fatal("ACK did not complete", jobs, err)
 	}
-	again, err := c.DismissRegularPayment(apitest.User(t.Context(), apiUser), &pb.DismissRegularPaymentRequest{RegularPaymentId: id})
+	again, err := c.DismissRegularPayment(apitest.User(t.Context(), apiUser), &pb.DismissRegularPaymentRequest{RegularPaymentId: id, Params: dismissalRequestParams()})
 	if err != nil || again.CalcVersion != first.CalcVersion {
 		t.Fatal(again, err)
 	}
@@ -125,7 +125,7 @@ func TestAPIDismissalReturnsStableTargetAfterCommitAndMarkerACK(t *testing.T) {
 	if peer.version() != 3 {
 		t.Fatal("marker consumed version or final barrier changed", peer.version())
 	}
-	again, err = c.DismissRegularPayment(apitest.User(t.Context(), apiUser), &pb.DismissRegularPaymentRequest{RegularPaymentId: id})
+	again, err = c.DismissRegularPayment(apitest.User(t.Context(), apiUser), &pb.DismissRegularPaymentRequest{RegularPaymentId: id, Params: dismissalRequestParams()})
 	if err != nil || again.CalcVersion != 1 {
 		t.Fatal("completed assignment gained target", again, err)
 	}
@@ -135,9 +135,9 @@ func TestAPIDismissalReturnsStableTargetAfterCommitAndMarkerACK(t *testing.T) {
 	if err = env.App.DB.Primary().QueryRow(t.Context(), `SELECT count(*) FROM recalculating_delivery`).Scan(&jobs); err != nil || jobs != 0 {
 		t.Fatal("restore created marker", jobs, err)
 	}
-	_, err = c.DismissRegularPayment(apitest.User(t.Context(), apiOther), &pb.DismissRegularPaymentRequest{RegularPaymentId: id})
+	_, err = c.DismissRegularPayment(apitest.User(t.Context(), apiOther), &pb.DismissRegularPaymentRequest{RegularPaymentId: id, Params: dismissalRequestParams()})
 	operationsReason(t, err, codes.NotFound, "NOT_FOUND")
-	_, err = c.DismissRegularPayment(apitest.Caller(t.Context(), "bank-bff"), &pb.DismissRegularPaymentRequest{RegularPaymentId: id})
+	_, err = c.DismissRegularPayment(apitest.Caller(t.Context(), "bank-bff"), &pb.DismissRegularPaymentRequest{RegularPaymentId: id, Params: dismissalRequestParams()})
 	if status.Code(err) != codes.Unauthenticated {
 		t.Fatal("system dismissal allowed", err)
 	}
@@ -156,7 +156,7 @@ func TestAPIDismissalLostACKTimeoutDurableRetryAndPurge(t *testing.T) {
 			peer.mode = failure
 			peer.markMu.Unlock()
 			c := pb.NewRegularPaymentsServiceClient(env.Conn)
-			out, err := c.DismissRegularPayment(apitest.User(t.Context(), apiUser), &pb.DismissRegularPaymentRequest{RegularPaymentId: id})
+			out, err := c.DismissRegularPayment(apitest.User(t.Context(), apiUser), &pb.DismissRegularPaymentRequest{RegularPaymentId: id, Params: dismissalRequestParams()})
 			if err != nil || out.CalcVersion != 1 {
 				t.Fatal("postcommit failure escaped", out, err)
 			}
@@ -187,7 +187,7 @@ func TestAPIDismissalLostACKTimeoutDurableRetryAndPurge(t *testing.T) {
 			peer.markMu.Lock()
 			peer.mode = "lost_ack"
 			peer.markMu.Unlock()
-			if _, err = c.DismissRegularPayment(apitest.User(t.Context(), apiUser), &pb.DismissRegularPaymentRequest{RegularPaymentId: id}); err != nil {
+			if _, err = c.DismissRegularPayment(apitest.User(t.Context(), apiUser), &pb.DismissRegularPaymentRequest{RegularPaymentId: id, Params: dismissalRequestParams()}); err != nil {
 				t.Fatal(err)
 			}
 			if _, err = deletion.NewUserDeletionServiceClient(env.Conn).PurgeUserData(apitest.Caller(t.Context(), "user"), &deletion.PurgeUserDataRequest{UserId: apiUser}); err != nil {
@@ -196,7 +196,7 @@ func TestAPIDismissalLostACKTimeoutDurableRetryAndPurge(t *testing.T) {
 			if err = env.App.DB.Primary().QueryRow(t.Context(), `SELECT count(*) FROM recalculating_delivery`).Scan(&jobs); err != nil || jobs != 0 {
 				t.Fatal("purge retained marker", jobs, err)
 			}
-			_, err = c.DismissRegularPayment(apitest.User(t.Context(), apiUser), &pb.DismissRegularPaymentRequest{RegularPaymentId: id})
+			_, err = c.DismissRegularPayment(apitest.User(t.Context(), apiUser), &pb.DismissRegularPaymentRequest{RegularPaymentId: id, Params: dismissalRequestParams()})
 			operationsReason(t, err, codes.Unauthenticated, "TOKEN_REVOKED")
 		})
 	}
@@ -243,14 +243,21 @@ func TestAPISelectedImportDatesUseSourceZoneAndValidationDetails(t *testing.T) {
 	}
 }
 
-func TestAPIDismissalAfterFinalUploadDeletionPublishesNoData(t *testing.T) {
+func TestAPIDismissalAfterFinalUploadDeletionDistinguishesSavedAssignment(t *testing.T) {
 	env, peer, _, calcClock := markerEnv(t)
 	operationsAPIImport(t, env, calculationRuleOFX())
-	var id, upload string
+	var id, savedID, upload string
 	if err := env.App.DB.Primary().QueryRow(t.Context(), `SELECT id::text FROM regular_payment WHERE user_id=$1 ORDER BY id LIMIT 1`, apiUser).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	if err := env.App.DB.Primary().QueryRow(t.Context(), `SELECT id::text FROM upload WHERE user_id=$1 LIMIT 1`, apiUser).Scan(&upload); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.App.DB.Primary().QueryRow(t.Context(), `SELECT id::text FROM regular_payment WHERE user_id=$1 AND id<>$2 ORDER BY id LIMIT 1`, apiUser, id).Scan(&savedID); err != nil {
+		t.Fatal(err)
+	}
+	c := pb.NewRegularPaymentsServiceClient(env.Conn)
+	if _, err := c.DismissRegularPayment(apitest.User(t.Context(), apiUser), &pb.DismissRegularPaymentRequest{RegularPaymentId: savedID, Params: dismissalRequestParams()}); err != nil {
 		t.Fatal(err)
 	}
 	calcClock.ticks <- calculationNow()
@@ -261,13 +268,21 @@ func TestAPIDismissalAfterFinalUploadDeletionPublishesNoData(t *testing.T) {
 	}
 	calcClock.ticks <- calculationNow()
 	eventuallyMetrics(t, func() bool { return peer.settled() && peer.version() > before && peer.count() == 0 })
-	c := pb.NewRegularPaymentsServiceClient(env.Conn)
-	out, err := c.DismissRegularPayment(apitest.User(t.Context(), apiUser), &pb.DismissRegularPaymentRequest{RegularPaymentId: id})
-	if err != nil || out.CalcVersion <= peer.version() {
-		t.Fatal("missing no-data target", out, err)
+	out, err := c.DismissRegularPayment(apitest.User(t.Context(), apiUser), &pb.DismissRegularPaymentRequest{RegularPaymentId: id, Params: dismissalRequestParams()})
+	mapped, ok := finerr.ToREST(err)
+	if out != nil || !ok || mapped.Code != "VALIDATION_ERROR" || len(mapped.Violations) != 1 || mapped.Violations[0].Field != "date" || mapped.Violations[0].Reason != "OUT_OF_RANGE" || mapped.RequestRetryable == nil || *mapped.RequestRetryable {
+		t.Fatal(out, err, mapped)
 	}
-	calcClock.ticks <- calculationNow()
-	eventuallyMetrics(t, func() bool { return peer.settled() && peer.version() >= out.CalcVersion && peer.count() == 0 })
+	_, err = c.DismissRegularPayment(apitest.User(t.Context(), apiUser), &pb.DismissRegularPaymentRequest{RegularPaymentId: savedID, Params: dismissalRequestParams()})
+	mapped, ok = finerr.ToREST(err)
+	if !ok || mapped.Code != "ANALYTICS_CONTEXT_UNAVAILABLE" || len(mapped.Violations) != 0 || mapped.RequestRetryable == nil || *mapped.RequestRetryable {
+		t.Fatal(err, mapped)
+	}
+	var changed bool
+	var jobs int
+	if err = env.App.DB.Primary().QueryRow(t.Context(), `SELECT dismissed_at IS NOT NULL,(SELECT count(*) FROM recalculating_delivery WHERE user_id=$1)+(SELECT count(*) FROM recalc_queue WHERE user_id=$1) FROM regular_payment WHERE user_id=$1 AND id=$2`, apiUser, id).Scan(&changed, &jobs); err != nil || changed || jobs != 0 {
+		t.Fatal("absent context caused a new effect", changed, jobs, err)
+	}
 	peer.mu.Lock()
 	if peer.state.HasData || peer.state.DataFrom != nil || peer.state.DataTo != nil || len(peer.periods) != 0 {
 		t.Error("queue wakeup fabricated financial coverage")
@@ -276,7 +291,7 @@ func TestAPIDismissalAfterFinalUploadDeletionPublishesNoData(t *testing.T) {
 	if _, err = deletion.NewUserDeletionServiceClient(env.Conn).PurgeUserData(apitest.Caller(t.Context(), "user"), &deletion.PurgeUserDataRequest{UserId: apiUser}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = c.DismissRegularPayment(apitest.User(t.Context(), apiUser), &pb.DismissRegularPaymentRequest{RegularPaymentId: id}); err == nil {
+	if _, err = c.DismissRegularPayment(apitest.User(t.Context(), apiUser), &pb.DismissRegularPaymentRequest{RegularPaymentId: id, Params: dismissalRequestParams()}); err == nil {
 		t.Fatal("deleted user changed assignment")
 	}
 	if err = env.App.Recalculations.Tick(t.Context()); err != nil {

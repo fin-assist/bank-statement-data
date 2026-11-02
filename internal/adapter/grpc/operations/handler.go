@@ -12,9 +12,13 @@ import (
 	"github.com/fin-assist/go-grpc/reqctx"
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	keyadapter "github.com/fin-assist/bank-statement-data/internal/adapter/idempotency"
+	"github.com/fin-assist/bank-statement-data/internal/adapter/metricswire"
+	"github.com/fin-assist/bank-statement-data/internal/calculating"
 	"github.com/fin-assist/bank-statement-data/internal/importing"
 	usecase "github.com/fin-assist/bank-statement-data/internal/operations"
 )
@@ -26,7 +30,8 @@ type UseCases interface {
 	Get(context.Context, string, string, time.Time) (usecase.Operation, string, error)
 	Change(context.Context, string, string, string, time.Time) (usecase.Change, error)
 	Categories(context.Context, string) ([]usecase.Category, error)
-	Dismiss(context.Context, string, string, bool) (int32, error)
+	Dismiss(context.Context, string, string, calculating.RegularParams) (usecase.Dismissal, error)
+	Restore(context.Context, string, string) error
 }
 
 type handler struct {
@@ -227,40 +232,72 @@ func (h *handler) ListCategories(ctx context.Context, _ *statementv1.ListCategor
 	return out, nil
 }
 
-func (h *handler) dismissal(ctx context.Context, raw string, dismiss bool) (int32, error) {
+func dismissalContext(ctx context.Context, raw string) (string, string, error) {
 	user, err := actor(ctx)
 	if err != nil {
-		return 0, err
+		return "", "", err
 	}
 	id, err := requestID(raw, "regular_payment_id")
 	if err != nil {
-		return 0, err
+		return "", "", err
 	}
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	version, err := h.svc.Dismiss(ctx, user, id, dismiss)
-	if err != nil {
-		return 0, contractError(err)
-	}
-	if dismiss && version <= 0 {
-		return 0, errProjection
-	}
-	return version, nil
+	return user, id, nil
 }
 
 func (h *handler) DismissRegularPayment(ctx context.Context, r *statementv1.DismissRegularPaymentRequest) (*statementv1.DismissRegularPaymentResponse, error) {
-	version, err := h.dismissal(ctx, r.GetRegularPaymentId(), true)
+	user, id, err := dismissalContext(ctx, r.GetRegularPaymentId())
 	if err != nil {
 		return nil, err
 	}
-	return &statementv1.DismissRegularPaymentResponse{CalcVersion: version}, nil
+	p := r.GetParams()
+	date, parseErr := time.Parse("2006-01", p.GetPeriodKey())
+	if p.GetPeriod() != commonv1.PeriodType_PERIOD_TYPE_MONTH || parseErr != nil || date.Year() < 1 || date.Format("2006-01") != p.GetPeriodKey() || (p.GetTransferMode() != commonv1.TransferMode_TRANSFER_MODE_WITH && p.GetTransferMode() != commonv1.TransferMode_TRANSFER_MODE_WITHOUT) {
+		return nil, status.Error(codes.InvalidArgument, codes.InvalidArgument.String()) //nolint:forbidigo // FIN-420 required internal command shape, grpc-api.md 7.3; no new external error reason.
+	}
+	mode := "with"
+	if p.GetTransferMode() == commonv1.TransferMode_TRANSFER_MODE_WITHOUT {
+		mode = "without"
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	result, err := h.svc.Dismiss(ctx, user, id, calculating.RegularParams{Month: p.GetPeriodKey(), Mode: mode})
+	if err != nil {
+		return nil, dismissalError(err)
+	}
+	projection, err := metricswire.EncodeRegularProjection(result.Projection)
+	if err != nil || result.Version <= 0 {
+		return nil, finerr.WithRequestRetryInfo(finerr.InternalError(), true)
+	}
+	return &statementv1.DismissRegularPaymentResponse{CalcVersion: result.Version, Projection: projection}, nil
 }
 
 func (h *handler) RestoreRegularPayment(ctx context.Context, r *statementv1.RestoreRegularPaymentRequest) (*statementv1.RestoreRegularPaymentResponse, error) {
-	if _, err := h.dismissal(ctx, r.GetRegularPaymentId(), false); err != nil {
+	user, id, err := dismissalContext(ctx, r.GetRegularPaymentId())
+	if err != nil {
 		return nil, err
 	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := h.svc.Restore(ctx, user, id); err != nil {
+		return nil, contractError(err)
+	}
 	return &statementv1.RestoreRegularPaymentResponse{}, nil
+}
+
+func dismissalError(err error) error {
+	var field *importing.InputError
+	switch {
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return err
+	case errors.Is(err, usecase.ErrSavedContext):
+		return finerr.WithRequestRetryInfo(finerr.AnalyticsContextUnavailable(), false)
+	case errors.Is(err, usecase.ErrVersionExhausted), errors.Is(err, metricswire.ErrProjectionSize):
+		return finerr.WithRequestRetryInfo(finerr.InternalError(), false)
+	case errors.As(err, &field), errors.Is(err, importing.ErrNotFound), errors.Is(err, importing.ErrDeleted):
+		return finerr.WithRequestRetryInfo(contractError(err), false)
+	default:
+		return finerr.WithRequestRetryInfo(finerr.InternalError(), true)
+	}
 }
 
 func filter(p *commonv1.OperationsFilter, allTime bool) (usecase.Filter, error) {
