@@ -31,7 +31,7 @@ func (r *Markers) Find(ctx context.Context, user string, version int32) (out mar
 	if !validMarker(out) {
 		return out, false, errImportStorage
 	}
-	err = r.db.Writer(ctx).QueryRow(ctx, `SELECT attempts FROM recalculating_delivery WHERE user_id=$1 AND calc_version=$2`, user, version).Scan(&out.Attempts)
+	err = r.db.Writer(ctx).QueryRow(ctx, `SELECT d.attempts FROM recalculating_delivery d WHERE d.user_id=$1 AND d.calc_version=$2 AND NOT EXISTS(SELECT 1 FROM tombstone_users t WHERE t.user_id=d.user_id)`, user, version).Scan(&out.Attempts)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return out, false, nil
 	}
@@ -52,7 +52,7 @@ func (r *Markers) Pending(ctx context.Context, now time.Time, limit int) ([]mark
 	if limit < 1 || limit > 16 {
 		return nil, errImportStorage
 	}
-	rows, err := r.db.Writer(ctx).Query(ctx, `SELECT user_id::text,calc_version,attempts FROM recalculating_delivery WHERE next_attempt_at<=$1 ORDER BY next_attempt_at,user_id,calc_version LIMIT $2`, now, limit)
+	rows, err := r.db.Writer(ctx).Query(ctx, `SELECT d.user_id::text,d.calc_version,d.attempts FROM recalculating_delivery d WHERE d.next_attempt_at<=$1 AND NOT EXISTS(SELECT 1 FROM tombstone_users t WHERE t.user_id=d.user_id) ORDER BY d.next_attempt_at,d.user_id,d.calc_version LIMIT $2`, now, limit)
 	if err != nil {
 		return nil, importError(ctx, err)
 	}

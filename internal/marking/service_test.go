@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -16,22 +17,33 @@ type memory struct {
 
 var errTest = errors.New("storage")
 
-func (m *memory) Find(context.Context, string, int32) (Job, bool, error) {
+func (m *memory) Find(ctx context.Context, user string, version int32) (Job, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return Job{}, false, err
+	}
 	if m.fail == "find" {
 		return Job{}, false, errTest
 	}
-	if len(m.jobs) == 0 {
-		return Job{}, false, nil
+	for _, job := range m.jobs {
+		if job.User == user && job.Version == version {
+			return job, true, nil
+		}
 	}
-	return m.jobs[0], true, nil
+	return Job{}, false, nil
 }
-func (m *memory) Pending(context.Context, time.Time, int) ([]Job, error) {
+func (m *memory) Pending(ctx context.Context, _ time.Time, _ int) ([]Job, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if m.fail == "pending" {
 		return nil, errTest
 	}
 	return m.jobs, nil
 }
-func (m *memory) Ack(_ context.Context, _ Job) error {
+func (m *memory) Ack(ctx context.Context, _ Job) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	m.acked++
 	if m.fail == "ack" {
 		return errTest
@@ -39,7 +51,10 @@ func (m *memory) Ack(_ context.Context, _ Job) error {
 	m.jobs = nil
 	return nil
 }
-func (m *memory) Retry(_ context.Context, _ Job, next time.Time) error {
+func (m *memory) Retry(ctx context.Context, _ Job, next time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	m.retried++
 	m.next = next
 	if m.fail == "retry" {
@@ -134,5 +149,77 @@ func TestUnitMarkerRestartLostACKAndCancellation(t *testing.T) {
 	}
 	if sent != 2 {
 		t.Fatal("sent cancelled work")
+	}
+}
+
+func TestUnitMarkerWorkerPersistsTimeoutWithIndependentBoundedContext(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := &memory{jobs: []Job{{User: "u", Version: 1}}}
+		s, _ := New(m, func(ctx context.Context, _ string, _ int32) error {
+			<-ctx.Done()
+			return ctx.Err()
+		}, time.Now)
+		start := time.Now()
+		s.Notify(t.Context(), "u", 1)
+		if time.Since(start) != time.Second || m.retried != 0 || len(m.jobs) != 1 {
+			t.Fatal("synchronous attempt gained cleanup time or lost its job")
+		}
+		if err := s.Tick(t.Context()); !errors.Is(err, context.DeadlineExceeded) || m.retried != 1 || !m.next.Equal(time.Now().Add(time.Second)) {
+			t.Fatal("worker did not persist deadline backoff", err, m.retried, m.next)
+		}
+	})
+}
+
+type slowOutcome struct {
+	*memory
+	attempts int
+}
+
+func (m *slowOutcome) Retry(ctx context.Context, _ Job, _ time.Time) error {
+	m.attempts++
+	if ctx.Err() != nil {
+		return errors.New("cleanup inherited cancelled send")
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok || time.Until(deadline) > time.Second {
+		return errors.New("unbounded cleanup")
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestUnitMarkerWorkerShutdownFinishesOnlyCurrentJobWithinBudget(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := &slowOutcome{memory: &memory{jobs: []Job{{User: "u", Version: 1}, {User: "v", Version: 2}}}}
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		calls := 0
+		s, _ := New(m, func(ctx context.Context, _ string, _ int32) error {
+			calls++
+			cancel()
+			return ctx.Err()
+		}, time.Now)
+		start := time.Now()
+		err := s.Tick(ctx)
+		if !errors.Is(err, context.Canceled) || !errors.Is(err, context.DeadlineExceeded) || calls != 1 || m.attempts != 1 || time.Since(start) != time.Second {
+			t.Fatal("shutdown abandoned or extended cleanup / sent next job", err, calls, m.attempts, time.Since(start))
+		}
+	})
+}
+
+func TestUnitMarkerWorkerRechecksBatchBeforeNetwork(t *testing.T) {
+	for _, fail := range []string{"", "find"} {
+		m := &memory{jobs: []Job{{User: "u", Version: 1}, {User: "v", Version: 2}}}
+		calls := 0
+		s, _ := New(m, func(context.Context, string, int32) error {
+			calls++
+			m.jobs = nil
+			m.fail = fail
+			return nil
+		}, time.Now)
+		err := s.Tick(t.Context())
+		if calls != 1 || (fail == "find" && !errors.Is(err, errTest)) || (fail == "" && err != nil) {
+			t.Fatal("sent missing or unverifiable batch row", calls, err)
+		}
 	}
 }

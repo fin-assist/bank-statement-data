@@ -63,6 +63,10 @@ func (p *markerPeer) MarkRecalculating(ctx context.Context, r *analytics.MarkRec
 }
 func markerEnv(t *testing.T) (*apitest.Env, *markerPeer, *tickClock, *tickClock) {
 	t.Helper()
+	return markerEnvAt(t, calculationNow)
+}
+func markerEnvAt(t *testing.T, now func() time.Time) (*apitest.Env, *markerPeer, *tickClock, *tickClock) {
+	t.Helper()
 	peer := &markerPeer{analyticsPeer: &analyticsPeer{periods: map[string]*analytics.PeriodSnapshot{}, versions: map[string]int32{}}}
 	lis := bufconn.Listen(4 << 20)
 	srv := grpc.NewServer()
@@ -71,7 +75,7 @@ func markerEnv(t *testing.T) (*apitest.Env, *markerPeer, *tickClock, *tickClock)
 	t.Cleanup(func() { srv.Stop(); _ = lis.Close() })
 	markerClock := &tickClock{make(chan time.Time, 16)}
 	calculationClock := &tickClock{make(chan time.Time, 16)}
-	env := apitest.StartWith(t, app.Options{Now: calculationNow, MarkerClock: markerClock, RecalculationClock: calculationClock, AnalyticsDialOptions: []grpc.DialOption{grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) })}}, func(c *config.Config) {
+	env := apitest.StartWith(t, app.Options{Now: now, MarkerClock: markerClock, RecalculationClock: calculationClock, AnalyticsDialOptions: []grpc.DialOption{grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) })}}, func(c *config.Config) {
 		c.Service = "bank-statement-data"
 		c.Peers["analytics"] = "passthrough:///analytics"
 	})
@@ -286,6 +290,20 @@ func TestAPIDismissalAfterFinalUploadDeletionDistinguishesSavedAssignment(t *tes
 	peer.mu.Lock()
 	if peer.state.HasData || peer.state.DataFrom != nil || peer.state.DataTo != nil || len(peer.periods) != 0 {
 		t.Error("queue wakeup fabricated financial coverage")
+	}
+	peer.mu.Unlock()
+	before = peer.version()
+	if _, err = c.RestoreRegularPayment(apitest.User(t.Context(), apiUser), &pb.RestoreRegularPaymentRequest{RegularPaymentId: savedID}); err != nil {
+		t.Fatal(err)
+	}
+	if err = env.App.DB.Primary().QueryRow(t.Context(), `SELECT count(*) FROM recalc_queue WHERE user_id=$1 AND month='2026-09-01'`, apiUser).Scan(&jobs); err != nil || jobs != 1 {
+		t.Fatal("restore did not wake the no-data pipeline", jobs, err)
+	}
+	calcClock.ticks <- calculationNow()
+	eventuallyMetrics(t, func() bool { return peer.settled() && peer.version() > before && peer.count() == 0 })
+	peer.mu.Lock()
+	if peer.state.HasData || peer.state.DataFrom != nil || peer.state.DataTo != nil || peer.state.Recalculating {
+		t.Error("restore fabricated coverage or failed to publish final no-data state")
 	}
 	peer.mu.Unlock()
 	if _, err = deletion.NewUserDeletionServiceClient(env.Conn).PurgeUserData(apitest.Caller(t.Context(), "user"), &deletion.PurgeUserDataRequest{UserId: apiUser}); err != nil {
