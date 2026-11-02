@@ -27,7 +27,7 @@ var errProjection = errors.New("invalid statement RPC projection")
 
 // UseCases is the consumer boundary; identity and access admission run before it.
 type UseCases interface {
-	Config(context.Context, string) (importing.Config, error)
+	Config(context.Context, string, *importing.ConfigDates) (importing.Config, error)
 	History(context.Context, string) (importing.History, error)
 	Unread(context.Context, string, importing.Scope) ([]importing.Unread, string, error)
 	Upload(context.Context, string, importing.Header, io.Reader, []string) (importing.Accepted, error)
@@ -58,12 +58,16 @@ func Register(registrar grpc.ServiceRegistrar, svc UseCases) error {
 	return nil
 }
 
-func (h *handler) GetImportConfig(ctx context.Context, _ *statementdatav1.GetImportConfigRequest) (*statementdatav1.GetImportConfigResponse, error) {
+func (h *handler) GetImportConfig(ctx context.Context, r *statementdatav1.GetImportConfigRequest) (*statementdatav1.GetImportConfigResponse, error) {
 	user, err := actor(ctx)
 	if err != nil {
 		return nil, err
 	}
-	c, err := h.svc.Config(ctx, user)
+	var dates *importing.ConfigDates
+	if r != nil {
+		dates = &importing.ConfigDates{From: r.PeriodFrom, To: r.PeriodTo}
+	}
+	c, err := h.svc.Config(ctx, user, dates)
 	if err != nil {
 		return nil, keyadapter.ContractError(err)
 	}

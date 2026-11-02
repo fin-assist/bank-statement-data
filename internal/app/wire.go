@@ -138,7 +138,13 @@ func wire(ctx context.Context, a *App, reg prometheus.Registerer, openDB func(co
 		return fail(err)
 	}
 	a.Imports = service
-	a.Operations, err = operations.New(a.DB, postgres.NewOperations(a.DB, a.Cfg.DailyRecalculationOffset), deleted, now, func() (string, error) { id, err := uuid.NewV7(); return id.String(), err })
+	recalcJobs, closeRecalc, err := wireRecalculations(ctx, a, reg, opts, now, objects)
+	if err != nil {
+		return fail(err)
+	}
+	previousClose := closeAll
+	closeAll = func() { closeRecalc(); previousClose() }
+	a.Operations, err = operations.New(a.DB, postgres.NewOperations(a.DB, a.Cfg.DailyRecalculationOffset), deleted, now, func() (string, error) { id, err := uuid.NewV7(); return id.String(), err }, a.Markers)
 	if err != nil {
 		return fail(err)
 	}
@@ -160,9 +166,5 @@ func wire(ctx context.Context, a *App, reg prometheus.Registerer, openDB func(co
 	if err != nil {
 		return fail(err)
 	}
-	recalcJobs, closeRecalc, err := wireRecalculations(ctx, a, reg, opts, now, objects)
-	if err != nil {
-		return fail(err)
-	}
-	return append([]worker.Job{{Name: "statement-import", Run: service.Run}, {Name: "statement-files", Run: service.RunCleanup}, cleanup, partitionJob}, recalcJobs...), func() { closeRecalc(); closeAll() }, nil
+	return append([]worker.Job{{Name: "statement-import", Run: service.Run}, {Name: "statement-files", Run: service.RunCleanup}, cleanup, partitionJob}, recalcJobs...), closeAll, nil
 }

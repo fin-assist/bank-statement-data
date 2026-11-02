@@ -93,7 +93,7 @@ func TestIntegrationImportPersistsNativeCurrencyRoundingAndUnknownRefusal(t *tes
 	if err != nil || len(unread) != 1 || unread[0].Reason != "bad_amount" {
 		t.Fatal("unknown currency refusal lost on fresh read", err)
 	}
-	cfg, err := fresh.Imports.Config(t.Context(), apiUser)
+	cfg, err := fresh.Imports.Config(t.Context(), apiUser, nil)
 	if err != nil || cfg.Loaded == nil || cfg.Loaded.Count != 4 {
 		t.Fatal("native operations missing from loaded summary", err)
 	}

@@ -1,5 +1,7 @@
 # bank-statement-data
 
+FIN-416: отметка «Не подписка» сохраняет исходную целевую версию и надёжно доставляет признак пересчёта; конфигурация загрузки принимает пару календарных дат в исходном часовом поясе. Требуется analytics с `MarkRecalculating` из contracts `gen/go/v0.10.0` и миграция 000010. Подробности — [операции](docs/operations.md), [доставка](docs/recalculation.md), [импорт](docs/import.md).
+
 FIN-400: producer публикует всю историю (`all_time`, оба режима) и обновляет её при изменении источников
 и ежедневно; rollout получателя и поколения каталога 2 — [docs/recalculation.md](docs/recalculation.md#rollout-all_time-fin-400).
 

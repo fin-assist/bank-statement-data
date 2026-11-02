@@ -20,6 +20,7 @@ import (
 	"github.com/fin-assist/bank-statement-data/internal/adapter/postgres"
 	"github.com/fin-assist/bank-statement-data/internal/covering"
 	"github.com/fin-assist/bank-statement-data/internal/importing"
+	"github.com/fin-assist/bank-statement-data/internal/marking"
 	"github.com/fin-assist/bank-statement-data/internal/recalculating"
 )
 
@@ -45,11 +46,25 @@ func wireRecalculations(ctx context.Context, a *App, reg prometheus.Registerer, 
 	}
 	closeAll := func() { pool.Close() }
 	fail := func(err error) ([]worker.Job, func(), error) { closeAll(); return nil, nil, err }
-	conn, err := client.Dial(target, client.Options{Peer: "analytics", Tokens: a.Tokens, Metrics: a.Clients, Retry: []string{strings.TrimPrefix(pb.MetricsIngestService_UpsertUserMetrics_FullMethodName, "/")}, DefaultTimeout: 30 * time.Second, DialOptions: opts.AnalyticsDialOptions})
+	conn, err := client.Dial(target, client.Options{Peer: "analytics", Tokens: a.Tokens, Metrics: a.Clients, Retry: []string{strings.TrimPrefix(pb.MetricsIngestService_UpsertUserMetrics_FullMethodName, "/"), strings.TrimPrefix(pb.MetricsIngestService_MarkRecalculating_FullMethodName, "/")}, DefaultTimeout: 30 * time.Second, DialOptions: opts.AnalyticsDialOptions})
 	if err != nil {
 		return fail(err)
 	}
 	closeAll = func() { _ = conn.Close(); pool.Close() }
+	mark, err := outbox.GRPCDelivery(conn, a.Tokens, pb.MetricsIngestService_MarkRecalculating_FullMethodName, func() proto.Message { return &pb.MarkRecalculatingRequest{} }, func() proto.Message { return &pb.MarkRecalculatingResponse{} })
+	if err != nil {
+		return fail(err)
+	}
+	a.Markers, err = marking.New(postgres.NewMarkers(a.DB), func(ctx context.Context, user string, version int32) error {
+		payload, err := proto.Marshal(&pb.MarkRecalculatingRequest{UserId: user, CalcVersion: version})
+		if err != nil {
+			return err
+		}
+		return mark(ctx, outbox.Event{Payload: payload})
+	}, now)
+	if err != nil {
+		return fail(err)
+	}
 	events, err := outbox.NewPublisher(a.DB, now)
 	if err != nil {
 		return fail(err)
@@ -128,5 +143,13 @@ func wireRecalculations(ctx context.Context, a *App, reg prometheus.Registerer, 
 		}
 	}}
 	a.Recalculations = service
-	return []worker.Job{job, {Name: "metrics-outbox", Run: dispatcher.Run}}, closeAll, nil
+	markerClock := opts.MarkerClock
+	if markerClock == nil {
+		markerClock = worker.SystemClock{}
+	}
+	markers, err := worker.Every("recalculating-delivery", time.Second, a.Log, markerClock, a.Markers.Tick)
+	if err != nil {
+		return fail(err)
+	}
+	return []worker.Job{job, {Name: "metrics-outbox", Run: dispatcher.Run}, markers}, closeAll, nil
 }

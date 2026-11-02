@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"time"
 
@@ -25,7 +26,20 @@ func (r *Operations) Enqueue(ctx context.Context, user string, now time.Time) er
 	if _, err := r.transaction(ctx); err != nil {
 		return err
 	}
-	return r.schedule(ctx, user, nil, now)
+	if err := r.schedule(ctx, user, nil, now); err != nil {
+		return err
+	}
+	// A retained regular-payment identity can be changed after the final upload
+	// was removed. Wake the normal pipeline to publish its genuine no-data state.
+	// This queue key does not create coverage or any financial period.
+	_, err := r.db.Writer(ctx).Exec(ctx, `INSERT INTO recalc_queue(user_id,month,enqueued_at,next_attempt_at)
+ SELECT user_id,date_trunc('month',$2::timestamptz AT TIME ZONE timezone)::date,$2,$2
+ FROM user_state WHERE user_id=$1
+ AND EXISTS(SELECT 1 FROM regular_payment WHERE user_id=$1)
+ AND NOT EXISTS(SELECT 1 FROM recalc_queue WHERE user_id=$1)
+ AND NOT EXISTS(SELECT 1 FROM tombstone_users WHERE user_id=$1)
+ ON CONFLICT(user_id,month) DO NOTHING`, user, now)
+	return importError(ctx, err)
 }
 
 // Metadata gets global bounds by an aggregate, independently from the requested window.
@@ -174,25 +188,51 @@ func (r *Operations) Changed(ctx context.Context, user string, now time.Time) er
 }
 
 // SetDismissed changes only the caller's durable identity and reports idempotent retries.
-func (r *Operations) SetDismissed(ctx context.Context, user, id string, dismiss bool, now time.Time) (bool, error) {
+func (r *Operations) SetDismissed(ctx context.Context, user, id string, dismiss bool, now time.Time) (operations.Assignment, error) {
+	var out operations.Assignment
 	if _, err := r.transaction(ctx); err != nil {
-		return false, err
+		return out, err
+	}
+	var version int32
+	if err := r.db.Writer(ctx).QueryRow(ctx, `SELECT calc_version FROM user_state WHERE user_id=$1 FOR NO KEY UPDATE`, user).Scan(&version); err != nil {
+		return out, importError(ctx, err)
 	}
 	var current bool
-	err := r.db.Writer(ctx).QueryRow(ctx, `SELECT dismissed_at IS NOT NULL FROM regular_payment WHERE user_id=$1 AND id=$2::uuid FOR UPDATE`, user, id).Scan(&current)
+	var saved *int32
+	err := r.db.Writer(ctx).QueryRow(ctx, `SELECT dismissed_at IS NOT NULL,dismissal_calc_version FROM regular_payment WHERE user_id=$1 AND id=$2::uuid FOR UPDATE`, user, id).Scan(&current, &saved)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return false, operations.ErrNotFound
+		return out, operations.ErrNotFound
 	}
 	if err != nil {
-		return false, importError(ctx, err)
+		return out, importError(ctx, err)
 	}
-	if current == dismiss {
-		return false, nil
+	if saved != nil && (*saved <= 0 || !current) {
+		return out, errImportStorage
 	}
+	if current == dismiss && (!dismiss || saved != nil) {
+		if saved != nil {
+			out.Version = *saved
+		}
+		return out, nil
+	}
+	if version < 0 || version > math.MaxInt32-3 {
+		return out, errImportStorage
+	}
+	out.Changed = current != dismiss
+	out.Bootstrap = current && dismiss && saved == nil
 	var at *time.Time
+	var target *int32
 	if dismiss {
 		at = &now
+		out.Version = version + 1
+		target = &out.Version
 	}
-	_, err = r.db.Writer(ctx).Exec(ctx, `UPDATE regular_payment SET dismissed_at=$3 WHERE user_id=$1 AND id=$2::uuid`, user, id, at)
-	return err == nil, importError(ctx, err)
+	_, err = r.db.Writer(ctx).Exec(ctx, `UPDATE regular_payment SET dismissed_at=CASE WHEN $5 THEN dismissed_at ELSE $3 END,dismissal_calc_version=$4 WHERE user_id=$1 AND id=$2::uuid`, user, id, at, target, out.Bootstrap)
+	if err != nil {
+		return out, importError(ctx, err)
+	}
+	if dismiss {
+		_, err = r.db.Writer(ctx).Exec(ctx, `INSERT INTO recalculating_delivery(user_id,calc_version,created_at,next_attempt_at) VALUES($1,$2,$3,$3) ON CONFLICT(user_id,calc_version) DO NOTHING`, user, out.Version, now)
+	}
+	return out, importError(ctx, err)
 }

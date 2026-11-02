@@ -94,7 +94,7 @@ func TestIntegrationOperationLedgerSelectionsEditsAndReferences(t *testing.T) {
 	}
 	pay := result.Periods[0].Metrics["insights.regular_payments"].Payments[0].ID
 	for range 2 {
-		if err = s.Dismiss(ctx, apiUser, pay, true); err != nil {
+		if _, err = s.Dismiss(ctx, apiUser, pay, true); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -108,14 +108,14 @@ func TestIntegrationOperationLedgerSelectionsEditsAndReferences(t *testing.T) {
 		}
 	}
 	for range 2 {
-		if err = s.Dismiss(ctx, apiUser, pay, false); err != nil {
+		if _, err = s.Dismiss(ctx, apiUser, pay, false); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err = s.Dismiss(ctx, apiOther, pay, true); !errors.Is(err, operations.ErrNotFound) {
+	if _, err = s.Dismiss(ctx, apiOther, pay, true); !errors.Is(err, operations.ErrNotFound) {
 		t.Fatal("foreign dismissal", err)
 	}
-	if err = s.Dismiss(ctx, apiUser, uuid.NewString(), false); !errors.Is(err, operations.ErrNotFound) {
+	if _, err = s.Dismiss(ctx, apiUser, uuid.NewString(), false); !errors.Is(err, operations.ErrNotFound) {
 		t.Fatal("missing restore", err)
 	}
 	if _, err = s.Search(ctx, apiUser, operations.Filter{Selection: "s_regular_" + uuid.NewString()}, true); !errors.Is(err, operations.ErrSelection) {
@@ -127,7 +127,7 @@ func TestIntegrationOperationLedgerSelectionsEditsAndReferences(t *testing.T) {
 	if _, err = s.Change(ctx, apiUser, item.ID, "cat_taxi", item.At); !errors.Is(err, importing.ErrDeleted) {
 		t.Fatal("late edit resurrected user", err)
 	}
-	if err = s.Dismiss(ctx, apiUser, pay, true); !errors.Is(err, importing.ErrDeleted) {
+	if _, err = s.Dismiss(ctx, apiUser, pay, true); !errors.Is(err, importing.ErrDeleted) {
 		t.Fatal("late dismissal resurrected user", err)
 	}
 }

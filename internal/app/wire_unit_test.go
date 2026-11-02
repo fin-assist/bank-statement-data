@@ -197,7 +197,7 @@ func TestUnitImportAssemblyDoesNotOwnInjectedHTTPTransport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if transport.requests != 4 || a.Imports == nil || len(a.Jobs) != 6 {
+	if transport.requests != 4 || a.Imports == nil || len(a.Jobs) != 7 {
 		t.Fatal("incomplete import assembly")
 	}
 	a.Close()

@@ -33,7 +33,7 @@ func componentTools(t *testing.T, f *importPG, db *postgres.DB) (*operations.Too
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc, err := operations.New(db, postgres.NewOperations(db, testconfig.DefaultDailyRecalculationOffset(t)), dead, func() time.Time { return f.now }, func() (string, error) { v, e := uuid.NewV7(); return v.String(), e })
+	svc, err := operations.New(db, postgres.NewOperations(db, testconfig.DefaultDailyRecalculationOffset(t)), dead, func() time.Time { return f.now }, func() (string, error) { v, e := uuid.NewV7(); return v.String(), e }, unusedMarker{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,6 +43,10 @@ func componentTools(t *testing.T, f *importPG, db *postgres.DB) (*operations.Too
 	}
 	return tools, svc
 }
+
+type unusedMarker struct{}
+
+func (unusedMarker) Notify(context.Context, string, int32) {}
 
 // Source fixtures pass through the real staging, accounting and completion
 // transaction. No application assembly or public application API is involved.

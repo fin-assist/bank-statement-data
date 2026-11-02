@@ -26,7 +26,7 @@ type UseCases interface {
 	Get(context.Context, string, string, time.Time) (usecase.Operation, string, error)
 	Change(context.Context, string, string, string, time.Time) (usecase.Change, error)
 	Categories(context.Context, string) ([]usecase.Category, error)
-	Dismiss(context.Context, string, string, bool) error
+	Dismiss(context.Context, string, string, bool) (int32, error)
 }
 
 type handler struct {
@@ -227,29 +227,37 @@ func (h *handler) ListCategories(ctx context.Context, _ *statementv1.ListCategor
 	return out, nil
 }
 
-func (h *handler) dismissal(ctx context.Context, raw string, dismiss bool) error {
+func (h *handler) dismissal(ctx context.Context, raw string, dismiss bool) (int32, error) {
 	user, err := actor(ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	id, err := requestID(raw, "regular_payment_id")
 	if err != nil {
-		return err
+		return 0, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	return contractError(h.svc.Dismiss(ctx, user, id, dismiss))
+	version, err := h.svc.Dismiss(ctx, user, id, dismiss)
+	if err != nil {
+		return 0, contractError(err)
+	}
+	if dismiss && version <= 0 {
+		return 0, errProjection
+	}
+	return version, nil
 }
 
 func (h *handler) DismissRegularPayment(ctx context.Context, r *statementv1.DismissRegularPaymentRequest) (*statementv1.DismissRegularPaymentResponse, error) {
-	if err := h.dismissal(ctx, r.GetRegularPaymentId(), true); err != nil {
+	version, err := h.dismissal(ctx, r.GetRegularPaymentId(), true)
+	if err != nil {
 		return nil, err
 	}
-	return &statementv1.DismissRegularPaymentResponse{}, nil
+	return &statementv1.DismissRegularPaymentResponse{CalcVersion: version}, nil
 }
 
 func (h *handler) RestoreRegularPayment(ctx context.Context, r *statementv1.RestoreRegularPaymentRequest) (*statementv1.RestoreRegularPaymentResponse, error) {
-	if err := h.dismissal(ctx, r.GetRegularPaymentId(), false); err != nil {
+	if _, err := h.dismissal(ctx, r.GetRegularPaymentId(), false); err != nil {
 		return nil, err
 	}
 	return &statementv1.RestoreRegularPaymentResponse{}, nil

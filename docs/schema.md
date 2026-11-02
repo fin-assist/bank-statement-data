@@ -373,3 +373,9 @@ metadata прежнего состояния до Complete. Проверки и 
 | Каждая метрика несёт захваченную положительную версию определения; оба режима периода заменяются одним запросом | `calculating`, `metricswire` и прежний outbox | unit definitions/wire, API historical replacement |
 
 Инструкция выпуска, перезапуска, повтора и ограничения отката — [docs/recalculation.md](recalculation.md).
+
+## Цели исключения и доставка признака (000010, FIN-416)
+
+`regular_payment.dismissal_calc_version` — nullable исходная положительная цель текущего dismissed-присваивания; restore очищает её. Значение без `dismissed_at` недопустимо. Прежние dismissed-строки получают цель при первом повторе под user lock, без изменения ревизии категорий. Счётчик `user_state.calc_version` при этом не увеличивается.
+
+`recalculating_delivery` имеет PK `(user_id, calc_version)`, каскадный FK к `user_state`, `created_at`, `next_attempt_at`, `attempts` и индекс готовности. Код проверяет canonical non-nil UUID, положительную цель, attempts 0..16; один user/target может объединять несколько изменений до начала пересчёта. ACK удаляет точный ключ, retry только обновляет существующий. Нет финансового payload, CHECK, триггеров или зарезервированных номеров; инварианты и сериализация принадлежат сервису.

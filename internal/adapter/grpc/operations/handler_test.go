@@ -59,7 +59,9 @@ func (f fake) Change(c context.Context, u, id, cat string, at time.Time) (usecas
 func (f fake) Categories(c context.Context, u string) ([]usecase.Category, error) {
 	return f.categories(c, u)
 }
-func (f fake) Dismiss(c context.Context, u, id string, d bool) error { return f.dismiss(c, u, id, d) }
+func (f fake) Dismiss(c context.Context, u, id string, d bool) (int32, error) {
+	return 1, f.dismiss(c, u, id, d)
+}
 func admitted(t *testing.T, c context.Context, u string) {
 	t.Helper()
 	deadline, ok := c.Deadline()

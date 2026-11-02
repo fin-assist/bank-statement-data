@@ -23,7 +23,7 @@ type Repository interface {
 	LockUser(context.Context, string, bool) (string, error)
 	SaveRules(context.Context, string, []importing.Operation, time.Time) error
 	Changed(context.Context, string, time.Time) error
-	SetDismissed(context.Context, string, string, bool, time.Time) (bool, error)
+	SetDismissed(context.Context, string, string, bool, time.Time) (Assignment, error)
 	Stream(context.Context, string, StreamOptions, func(Row) error) error
 	SelectionKey(context.Context, string, string, string) (string, error)
 	Enqueue(context.Context, string, time.Time) error
@@ -42,14 +42,26 @@ type Service struct {
 	deleted importing.Tombstones
 	now     func() time.Time
 	newID   func() (string, error)
+	markers Notifier
+}
+
+// Notifier makes a bounded delivery attempt after the assignment transaction commits.
+type Notifier interface {
+	Notify(context.Context, string, int32)
+}
+
+// Assignment separates a new source edit from initialization of a pre-version dismissal.
+type Assignment struct {
+	Changed, Bootstrap bool
+	Version            int32
 }
 
 // New requires explicit transaction, storage, deletion and clock boundaries.
-func New(tx Transactions, repo Repository, deleted importing.Tombstones, now func() time.Time, newID func() (string, error)) (*Service, error) {
-	if tx == nil || repo == nil || deleted == nil || now == nil || newID == nil {
+func New(tx Transactions, repo Repository, deleted importing.Tombstones, now func() time.Time, newID func() (string, error), markers Notifier) (*Service, error) {
+	if tx == nil || repo == nil || deleted == nil || now == nil || newID == nil || markers == nil {
 		return nil, errors.New("invalid operation dependencies")
 	}
-	return &Service{tx, repo, deleted, now, newID}, nil
+	return &Service{tx, repo, deleted, now, newID, markers}, nil
 }
 
 func (s *Service) write(ctx context.Context, user string, fn func(context.Context) error) error {
@@ -107,17 +119,30 @@ func (s *Service) Get(ctx context.Context, user, id string, at time.Time) (out O
 }
 
 // Dismiss durably assigns the exclusion and enqueues every dependent month once.
-func (s *Service) Dismiss(ctx context.Context, user, id string, dismiss bool) error {
-	return s.write(ctx, user, func(ctx context.Context) error {
-		changed, err := s.repo.SetDismissed(ctx, user, id, dismiss, s.now())
-		if err != nil || !changed {
+func (s *Service) Dismiss(ctx context.Context, user, id string, dismiss bool) (int32, error) {
+	var assignment Assignment
+	now := s.now()
+	err := s.write(ctx, user, func(ctx context.Context) error {
+		var err error
+		assignment, err = s.repo.SetDismissed(ctx, user, id, dismiss, now)
+		if err != nil || !assignment.Changed && !assignment.Bootstrap {
 			return err
 		}
-		if err = s.repo.Enqueue(ctx, user, s.now()); err != nil {
+		if err = s.repo.Enqueue(ctx, user, now); err != nil {
 			return err
 		}
-		return s.repo.Changed(ctx, user, s.now())
+		if assignment.Changed {
+			return s.repo.Changed(ctx, user, now)
+		}
+		return nil
 	})
+	if err != nil {
+		return 0, err
+	}
+	if dismiss {
+		s.markers.Notify(ctx, user, assignment.Version)
+	}
+	return assignment.Version, nil
 }
 
 // Change reapplies the same complete-history rules as import while holding the user lock.

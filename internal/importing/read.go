@@ -13,7 +13,11 @@ import (
 
 // Config builds browser links and the suggested calendar range from one coherent snapshot.
 // It never requests the bank endpoint or handles a browser session.
-func (s *Service) Config(ctx context.Context, user string) (Config, error) {
+func (s *Service) Config(ctx context.Context, user string, dates *ConfigDates) (Config, error) {
+	requested, err := parseConfigDates(dates)
+	if err != nil {
+		return Config{}, err
+	}
 	state, zone, err := s.readSnapshot(ctx, user)
 	if err != nil {
 		return Config{}, err
@@ -36,7 +40,13 @@ func (s *Service) Config(ctx context.Context, user string) (Config, error) {
 		from = startDay(loaded.Last, zone)
 	}
 	to := accounting.AddDays(today, 1)
-	if !readTime(from) || !readTime(to) || !from.Before(to) {
+	if requested != nil {
+		from, to, err = requested.bounds(zone, today)
+		if err != nil {
+			return Config{}, err
+		}
+	}
+	if from.UTC().Year() < 1 || from.UTC().Year() > 9999 || to.UTC().Year() < 1 || to.UTC().Year() > 9999 || !from.Before(to) {
 		return Config{}, errAccounting
 	}
 	query := url.Values{"appName": {"supreme"}, "appVersion": {"0.0.1"}, "origin": {"web,ib5,platform"}, "start": {strconv.FormatInt(from.UnixMilli(), 10)}, "end": {strconv.FormatInt(to.UnixMilli(), 10)}, "format": {"ofx"}}
