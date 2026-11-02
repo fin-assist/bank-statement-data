@@ -41,6 +41,9 @@ func (s *Service) assign(ctx context.Context, user, id string, dismiss bool, now
 	if a.Changed {
 		err = s.repo.Changed(ctx, user, now)
 	}
+	if err == nil && dismiss {
+		err = s.markers.Publish(ctx, id, a.Version)
+	}
 	return a, err
 }
 
@@ -78,7 +81,7 @@ func (s *Service) Dismiss(ctx context.Context, user, id string, params calculati
 	if err != nil {
 		return Dismissal{}, err
 	}
-	s.markers.Notify(ctx, user, out.Version)
+	s.markers.Notify(ctx, id, out.Version)
 	return out, nil
 }
 

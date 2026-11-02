@@ -11,7 +11,7 @@ import (
 
 func TestIntegrationRestoreEmptyHistoryQueuesSourceMonthAndPreservesPredicates(t *testing.T) {
 	now := func() time.Time { return time.Date(2026, 11, 1, 1, 0, 0, 0, time.UTC) }
-	env, peer, _, clock := markerEnvAt(t, now)
+	env, peer, clock := markerEnvAt(t, now)
 	a := env.App
 	importCalculationBody(t, a, apiUser, calculationRuleOFX())
 	if err := a.Imports.SetTimezone(t.Context(), apiUser, "America/Los_Angeles", 1); err != nil {

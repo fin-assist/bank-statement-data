@@ -19,7 +19,7 @@ func (c dismissalCoverage) Recover(ctx context.Context, _ string) (bool, error) 
 }
 
 func TestIntegrationDismissalBetweenStartAndBuildKeepsVersionSequence(t *testing.T) {
-	env, peer, _, _ := markerEnv(t)
+	env, peer, _ := markerEnv(t)
 	operationsAPIImport(t, env, calculationRuleOFX())
 	a := env.App
 	var id string

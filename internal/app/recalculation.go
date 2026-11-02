@@ -19,10 +19,12 @@ import (
 	"github.com/fin-assist/bank-statement-data/internal/adapter/ofx"
 	"github.com/fin-assist/bank-statement-data/internal/adapter/postgres"
 	"github.com/fin-assist/bank-statement-data/internal/covering"
+	"github.com/fin-assist/bank-statement-data/internal/domain"
 	"github.com/fin-assist/bank-statement-data/internal/importing"
-	"github.com/fin-assist/bank-statement-data/internal/marking"
 	"github.com/fin-assist/bank-statement-data/internal/recalculating"
 )
+
+const markerTarget = "analytics-recalculating"
 
 func wireRecalculations(ctx context.Context, a *App, reg prometheus.Registerer, opts Options, now func() time.Time, objects importing.ObjectStore) ([]worker.Job, func(), error) {
 	target := a.Cfg.Peers["analytics"]
@@ -30,14 +32,14 @@ func wireRecalculations(ctx context.Context, a *App, reg prometheus.Registerer, 
 		return nil, nil, errors.New("PEER_ANALYTICS_ADDR is required")
 	}
 	// The source pool already passed startup Ping. Dispatcher connections are
-	// isolated for LISTEN, claim, fanout and observation, reserving four slots.
+	// isolated for two independent target lanes, fanout, LISTEN and observation.
 	// Financial payload/receipt queries below deliberately share a.DB with source
 	// transactions; their bounded dispatcher deadline turns contention into retries.
 	cfg, err := pgxpool.ParseConfig(a.Cfg.DB.PrimaryDSN)
 	if err != nil {
 		return nil, nil, errors.New("invalid outbox database configuration")
 	}
-	cfg.MaxConns = 4
+	cfg.MaxConns = 5
 	cfg.MinConns = 0
 	cfg.ConnConfig.RuntimeParams["application_name"] = a.Cfg.Service + "-metrics-outbox"
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
@@ -55,17 +57,11 @@ func wireRecalculations(ctx context.Context, a *App, reg prometheus.Registerer, 
 	if err != nil {
 		return fail(err)
 	}
-	a.Markers, err = marking.New(postgres.NewMarkers(a.DB), func(ctx context.Context, user string, version int32) error {
-		payload, err := proto.Marshal(&pb.MarkRecalculatingRequest{UserId: user, CalcVersion: version})
-		if err != nil {
-			return err
-		}
-		return mark(ctx, outbox.Event{Payload: payload})
-	}, now)
+	events, err := outbox.NewPublisher(a.DB, now)
 	if err != nil {
 		return fail(err)
 	}
-	events, err := outbox.NewPublisher(a.DB, now)
+	a.Markers, err = metricswire.NewMarkers(events, postgres.NewMarkers(a.DB), mark)
 	if err != nil {
 		return fail(err)
 	}
@@ -94,7 +90,7 @@ func wireRecalculations(ctx context.Context, a *App, reg prometheus.Registerer, 
 	if err != nil {
 		return fail(err)
 	}
-	dispatcher, err := outbox.NewDispatcher(outbox.Options{Pool: pool, Routes: outbox.Routes{recalculating.Topic: {"analytics": delivery}}, Now: now, Logger: a.Log, Registerer: reg, PollInterval: 3 * time.Second})
+	dispatcher, err := outbox.NewDispatcher(outbox.Options{Pool: pool, Routes: outbox.Routes{recalculating.Topic: {"analytics": delivery}, domain.RecalculationRequestedTopic: {markerTarget: a.Markers.Delivery}}, Now: now, Logger: a.Log, Registerer: reg, PollInterval: 3 * time.Second})
 	if err != nil {
 		return fail(err)
 	}
@@ -143,13 +139,5 @@ func wireRecalculations(ctx context.Context, a *App, reg prometheus.Registerer, 
 		}
 	}}
 	a.Recalculations = service
-	markerClock := opts.MarkerClock
-	if markerClock == nil {
-		markerClock = worker.SystemClock{}
-	}
-	markers, err := worker.Every("recalculating-delivery", time.Second, a.Log, markerClock, a.Markers.Tick)
-	if err != nil {
-		return fail(err)
-	}
-	return []worker.Job{job, {Name: "metrics-outbox", Run: dispatcher.Run}, markers}, closeAll, nil
+	return []worker.Job{job, {Name: "metrics-outbox", Run: dispatcher.Run}}, closeAll, nil
 }

@@ -50,8 +50,9 @@ type Service struct {
 	validateProjection func(calculating.RegularProjection) error
 }
 
-// Notifier makes a bounded delivery attempt after the assignment transaction commits.
+// Notifier atomically publishes a payment's target and attempts delivery after commit.
 type Notifier interface {
+	Publish(context.Context, string, int32) error
 	Notify(context.Context, string, int32)
 }
 

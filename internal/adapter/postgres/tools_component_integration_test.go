@@ -48,7 +48,8 @@ func componentTools(t *testing.T, f *importPG, db *postgres.DB) (*operations.Too
 
 type unusedMarker struct{}
 
-func (unusedMarker) Notify(context.Context, string, int32) {}
+func (unusedMarker) Publish(context.Context, string, int32) error { return nil }
+func (unusedMarker) Notify(context.Context, string, int32)        {}
 
 // Source fixtures pass through the real staging, accounting and completion
 // transaction. No application assembly or public application API is involved.

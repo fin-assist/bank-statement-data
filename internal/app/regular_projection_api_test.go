@@ -17,6 +17,7 @@ import (
 
 	"github.com/fin-assist/bank-statement-data/internal/adapter/metricswire"
 	"github.com/fin-assist/bank-statement-data/internal/app/apitest"
+	"github.com/fin-assist/bank-statement-data/internal/domain"
 )
 
 type dismissalStored struct {
@@ -32,9 +33,9 @@ func dismissalStoredState(t *testing.T, env *apitest.Env, id string) dismissalSt
 	t.Helper()
 	var out dismissalStored
 	err := env.App.DB.Primary().QueryRow(t.Context(), `SELECT p.dismissed_at,p.dismissal_calc_version,u.calc_version,u.categories_revision,
- (SELECT count(*) FROM regular_payment WHERE user_id=$1),(SELECT count(*) FROM recalculating_delivery WHERE user_id=$1),
+ (SELECT count(*) FROM regular_payment WHERE user_id=$1),(SELECT count(*) FROM outbox_events WHERE topic=$3 AND event_key=$2::uuid::text),
  COALESCE((SELECT string_agg(month::text||':'||generation::text||':'||enqueued_at::text,',' ORDER BY month) FROM recalc_queue WHERE user_id=$1),'')
- FROM regular_payment p JOIN user_state u USING(user_id) WHERE p.user_id=$1 AND p.id=$2`, apiUser, id).Scan(&out.Dismissed, &out.Target, &out.Version, &out.Revision, &out.References, &out.Jobs, &out.Queue)
+ FROM regular_payment p JOIN user_state u USING(user_id) WHERE p.user_id=$1 AND p.id=$2`, apiUser, id, domain.RecalculationRequestedTopic).Scan(&out.Dismissed, &out.Target, &out.Version, &out.Revision, &out.References, &out.Jobs, &out.Queue)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +43,7 @@ func dismissalStoredState(t *testing.T, env *apitest.Env, id string) dismissalSt
 }
 
 func TestAPIDismissalProjectionFreshRetryAndCategoryChange(t *testing.T) {
-	env, _, _, _ := markerEnv(t)
+	env, _, _ := markerEnv(t)
 	operationsAPIImport(t, env, calculationRuleOFX())
 	var id string
 	if err := env.App.DB.Primary().QueryRow(t.Context(), `SELECT id::text FROM regular_payment WHERE user_id=$1 AND description='Cloud'`, apiUser).Scan(&id); err != nil {
@@ -109,7 +110,7 @@ func TestAPIDismissalProjectionFreshRetryAndCategoryChange(t *testing.T) {
 func TestAPIDismissalProjectionFailuresRollbackBeforeCommit(t *testing.T) {
 	for _, fault := range []string{"calculation", "size", "counter"} {
 		t.Run(fault, func(t *testing.T) {
-			env, peer, _, _ := markerEnv(t)
+			env, peer, _ := markerEnv(t)
 			operationsAPIImport(t, env, calculationRuleOFX())
 			var id string
 			if err := env.App.DB.Primary().QueryRow(t.Context(), `SELECT id::text FROM regular_payment WHERE user_id=$1 AND description='Cloud'`, apiUser).Scan(&id); err != nil {
@@ -150,7 +151,7 @@ func TestAPIDismissalProjectionFailuresRollbackBeforeCommit(t *testing.T) {
 }
 
 func TestAPIDismissalRequiredParamsAndUnavailableMonthHaveNoEffect(t *testing.T) {
-	env, _, _, _ := markerEnv(t)
+	env, _, _ := markerEnv(t)
 	operationsAPIImport(t, env, calculationRuleOFX())
 	var id string
 	if err := env.App.DB.Primary().QueryRow(t.Context(), `SELECT id::text FROM regular_payment WHERE user_id=$1 ORDER BY id LIMIT 1`, apiUser).Scan(&id); err != nil {

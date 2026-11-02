@@ -231,8 +231,5 @@ func (r *Operations) SetDismissed(ctx context.Context, user, id string, dismiss 
 	if err != nil {
 		return out, importError(ctx, err)
 	}
-	if dismiss {
-		_, err = r.db.Writer(ctx).Exec(ctx, `INSERT INTO recalculating_delivery(user_id,calc_version,created_at,next_attempt_at) VALUES($1,$2,$3,$3) ON CONFLICT(user_id,calc_version) DO NOTHING`, user, out.Version, now)
-	}
 	return out, importError(ctx, err)
 }

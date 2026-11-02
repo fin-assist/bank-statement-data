@@ -21,11 +21,11 @@ import (
 	"github.com/fin-assist/go-grpc/server"
 	"github.com/fin-assist/go-worker"
 
+	"github.com/fin-assist/bank-statement-data/internal/adapter/metricswire"
 	"github.com/fin-assist/bank-statement-data/internal/adapter/postgres"
 	"github.com/fin-assist/bank-statement-data/internal/calculating"
 	"github.com/fin-assist/bank-statement-data/internal/config"
 	"github.com/fin-assist/bank-statement-data/internal/importing"
-	"github.com/fin-assist/bank-statement-data/internal/marking"
 	"github.com/fin-assist/bank-statement-data/internal/operations"
 	"github.com/fin-assist/bank-statement-data/internal/recalculating"
 )
@@ -43,7 +43,7 @@ type App struct {
 	Calculations   *calculating.Service
 	Operations     *operations.Service
 	Recalculations *recalculating.Service
-	Markers        *marking.Service
+	Markers        *metricswire.Markers
 
 	closers []func()
 }
@@ -56,8 +56,6 @@ type Options struct {
 	AnalyticsDialOptions []grpc.DialOption
 	// RecalculationClock supplies scheduler timers; business instants still use Now.
 	RecalculationClock worker.Clock
-	// MarkerClock controls durable true-marker retries independently of calculation ticks.
-	MarkerClock worker.Clock
 	// PartitionClock supplies timers for hourly operation partition maintenance.
 	PartitionClock worker.Clock
 }

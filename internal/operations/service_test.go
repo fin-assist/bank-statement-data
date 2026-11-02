@@ -263,7 +263,8 @@ func (m *memory) SetDismissed(_ context.Context, _, _ string, d bool, _ time.Tim
 	}
 	return Assignment{Changed: changed, Version: version}, nil
 }
-func (m *memory) Notify(context.Context, string, int32) {}
+func (m *memory) Publish(context.Context, string, int32) error { return nil }
+func (m *memory) Notify(context.Context, string, int32)        {}
 func fixture() *memory {
 	cats := []Category{
 		{Category: importing.Category{ID: importing.OwnTransferCategory, Name: "Между своими счетами", Icon: "transfer", Expense: true, Income: true}, Assignable: true, System: true},
