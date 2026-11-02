@@ -30,11 +30,11 @@ func TestAPIStageVerifyAssemblyServes(t *testing.T) {
 	if env.App.Cfg.Env != config.EnvStage || env.App.Cfg.Auth.Mode != config.AuthVerify {
 		t.Fatalf("assembly configuration %s/%s", env.App.Cfg.Env, env.App.Cfg.Auth.Mode)
 	}
-	jobs := map[string]bool{}
+	jobs := map[string]int{}
 	for _, j := range env.App.Jobs {
-		jobs[j.Name] = true
+		jobs[j.Name]++
 	}
-	if !jobs["identity-keys"] || !jobs["recalculating-delivery"] || len(env.App.Jobs) != 8 {
+	if jobs["identity-keys"] != 1 || jobs["metrics-outbox"] != 1 || jobs["recalculating-delivery"] != 0 || len(env.App.Jobs) != 7 {
 		t.Fatalf("jobs %v: the user key refresh must run with the service", jobs)
 	}
 	token, err := env.App.Tokens.Token(t.Context())
