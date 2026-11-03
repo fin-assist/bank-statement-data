@@ -43,7 +43,7 @@ FIN-193: задание `operation-partitions` проверяет годовые
 cmd/bank-statement-data/           main: serve and migrate commands, listeners, shutdown
 internal/app/                      assembly: identity, pools, server, wire() (handlers, clients, jobs), access table, migration sources
 internal/app/apitest/              the whole service in-process for API tests
-internal/domain/                   entities and invariants, no infrastructure imports
+internal/domain/                   entities, invariants and cross-layer constants (values only), no infrastructure imports
 internal/<feature>/                usecases; interfaces of repositories and clients they need
 go-grpc/{server,client,reqctx}     shared transport, token and request context; service assembly in internal/app
 internal/adapter/grpc/<feature>/   gRPC handlers: messages <-> usecases
@@ -198,3 +198,12 @@ FIN-395: обязательный `TBANK_LOGIN_URL` задаёт HTTPS-адре�
 Compose и `make run` не подставляют свой адрес по умолчанию. Образец значения — в `.env.example`; Compose читает `.env`, а для `make run` переменная должна быть экспортирована в окружение. Пустая или отсутствующая переменная останавливает запуск.
 
 FIN-411: фактическая аналитика rolling_year/rolling_quarter от покрытия выписок, точные краевые суммы и calculation_range; контракт gen/go/v0.9.0. Сначала выкатываются совместимые analytics/BFF, затем producer; подробности — docs/calculations.md и docs/recalculation.md.
+
+## Профильное ревью (FIN-421)
+
+Перед ревью применяются [профильные навыки](docs/review-skills/README.md) из проверяемой ревизии.
+Обязательные требования, выбор и ограничения — в `AGENTS.md`, раздел `Code Review Rules`.
+
+FIN-421: доменный уровень владеет также межслойными константами, включая технические значения;
+это только значения, без переноса внешнего поведения или инфраструктурных импортов в `internal/domain`.
+Незатронутый Go-код по этому правилу массово не перерабатывается; комментарии пакета уточняются вместе с фактическим переносом констант.
