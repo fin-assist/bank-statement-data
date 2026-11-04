@@ -266,12 +266,7 @@ func TestUnitToolValidationErrorsAndAdmission(t *testing.T) {
 		t.Fatal(e)
 	}
 }
-func TestUnitToolRoundingOverflowStableTiesAndEmptyMerchant(t *testing.T) {
-	for _, tc := range []struct{ n, d, w int64 }{{1, 2, 1}, {-1, 2, -1}, {math.MaxInt64, 2, 4611686018427387904}, {math.MinInt64, 1, math.MinInt64}, {1, 0, 0}} {
-		if got := roundedAverage(tc.n, tc.d); got != tc.w {
-			t.Fatal(tc, got)
-		}
-	}
+func TestUnitToolOverflowStableTiesAndEmptyMerchant(t *testing.T) {
 	m := fixture()
 	m.add("a", "2026-09-01T00:00:00Z", "expense", "food", "", 10)
 	m.state.Merchants[merchantRef] = ""

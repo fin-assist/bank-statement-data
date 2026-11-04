@@ -29,6 +29,7 @@ type Period struct {
 	// RawFrom/RawTo retain source instants before projection into profile days.
 	RawFrom, RawTo *time.Time
 	// Source distinguishes explicit tag coverage from operation fallback.
+	// Empty means legacy provenance is unknown and cannot prove unread recovery.
 	Source string
 }
 

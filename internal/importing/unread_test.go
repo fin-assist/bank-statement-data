@@ -7,9 +7,11 @@ import (
 	"time"
 )
 
+const closureTagSource = "tags"
+
 func closureDay(day int) time.Time { return time.Date(2026, 9, day, 0, 0, 0, 0, time.UTC) }
 func closureUpload(id string, day int) Upload {
-	return Upload{ID: id, Status: "done", UploadedAt: closureDay(day), AccountIDs: []int64{1}, Period: &Period{From: closureDay(1), To: closureDay(30)}}
+	return Upload{ID: id, Status: "done", UploadedAt: closureDay(day), AccountIDs: []int64{1}, Period: &Period{From: closureDay(1), To: closureDay(30), Source: closureTagSource}}
 }
 func closureLine(upload, fitid string, day int) Unread {
 	account := int64(1)
@@ -77,7 +79,7 @@ func TestUnitUnreadRepeatedBrokenFileReplacesAndDeleteReopens(t *testing.T) {
 func TestUnitUnreadDateCoverageIsCalendarDayAndAccountScoped(t *testing.T) {
 	zone := time.FixedZone("profile", 3*3600)
 	a, b := closureUpload("a", 1), closureUpload("b", 2)
-	b.Period = &Period{From: closureDay(5), To: closureDay(5)}
+	b.Period = &Period{From: closureDay(5), To: closureDay(5), Source: closureTagSource}
 	line := closureLine("a", "", 5)
 	// 21:30 UTC belongs to September 5 in the selected profile zone.
 	at := closureDay(4).Add(21*time.Hour + 30*time.Minute)
@@ -107,12 +109,12 @@ func TestUnitUnreadDateCoverageIsCalendarDayAndAccountScoped(t *testing.T) {
 func TestUnitUnreadNoDateRequiresWholeCommonUploadRange(t *testing.T) {
 	a, b := closureUpload("a", 1), closureUpload("b", 2)
 	line := closureLine("a", "", 0)
-	b.Period = &Period{From: closureDay(2), To: closureDay(30)}
+	b.Period = &Period{From: closureDay(2), To: closureDay(30), Source: closureTagSource}
 	got, err := ResolveUnread(t.Context(), []Upload{a, b}, []Unread{line}, nil, time.UTC)
 	if err != nil || got[0].Resolution != "" {
 		t.Fatal("partial period closed no-date row", got, err)
 	}
-	b.Period = &Period{From: closureDay(1), To: closureDay(30)}
+	b.Period = &Period{From: closureDay(1), To: closureDay(30), Source: closureTagSource}
 	got, err = ResolveUnread(t.Context(), []Upload{a, b}, []Unread{line}, nil, time.UTC)
 	if err != nil || got[0].Resolution != "read" {
 		t.Fatal(got, err)
