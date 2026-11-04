@@ -351,7 +351,9 @@ func (s *Tools) Aggregate(ctx context.Context, user string, f Filter, all bool, 
 		}
 		g := acc.group
 		g.Amount = acc.amount.Int64()
-		g.Average = roundedAverage(g.Amount, g.Count)
+		// Every group contains at least one operation. calc.md 1 requires
+		// division by operation count to truncate toward zero, including refunds.
+		g.Average = g.Amount / g.Count
 		out.Groups = append(out.Groups, g)
 	}
 	sort.Slice(out.Groups, func(i, j int) bool {
@@ -381,18 +383,4 @@ func groupIdentity(g AggregateGroup) string {
 		}
 	}
 	return strings.Join(keys, "\x00")
-}
-func roundedAverage(amount, count int64) int64 {
-	if count == 0 {
-		return 0
-	}
-	n := big.NewInt(amount)
-	sign := n.Sign()
-	n.Abs(n)
-	n.Add(n, big.NewInt(count/2))
-	n.Quo(n, big.NewInt(count))
-	if sign < 0 {
-		n.Neg(n)
-	}
-	return n.Int64()
 }
