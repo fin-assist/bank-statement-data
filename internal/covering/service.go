@@ -28,6 +28,8 @@ type Repository interface {
 	PendingCoverage(context.Context, string, int) ([]Upload, error)
 	LockUser(context.Context, string, bool) (string, error)
 	SaveCoverage(context.Context, Upload, *importing.Period, string) (bool, error)
+	UnreadSnapshot(context.Context, string) (importing.Snapshot, error)
+	SaveUnread(context.Context, string, []importing.Unread) error
 }
 
 // Objects supplies only original bytes; metadata recovery never writes object data.
@@ -36,7 +38,8 @@ type Objects interface {
 }
 
 // Service repairs up to sixteen files per attempt with durable progress per file.
-// It does not rewrite operations, categories, unread rows, import results or rules.
+// It refreshes unread closures atomically with changed coverage evidence, without
+// rewriting operations, categories, import results or accounting rules.
 type Service struct {
 	tx      importing.Transactions
 	repo    Repository
@@ -83,14 +86,33 @@ func (s *Service) Recover(ctx context.Context, user string) (bool, error) {
 			if err != nil {
 				return err
 			}
-			_, err = s.repo.SaveCoverage(ctx, upload, period, zone)
-			return err
+			saved, err := s.repo.SaveCoverage(ctx, upload, period, zone)
+			if err != nil || !saved {
+				return err
+			}
+			return s.refreshUnread(ctx, user, zone)
 		}); err != nil {
 			return false, err
 		}
 	}
 	remaining, err := s.repo.PendingCoverage(ctx, user, 1)
 	return len(remaining) == 0, err
+}
+
+func (s *Service) refreshUnread(ctx context.Context, user, zoneName string) error {
+	state, err := s.repo.UnreadSnapshot(ctx, user)
+	if err != nil {
+		return err
+	}
+	zone, err := time.LoadLocation(zoneName)
+	if err != nil {
+		return ErrCoverage
+	}
+	lines, err := importing.ResolveUnread(ctx, state.Uploads, state.Unread, state.Sources, zone)
+	if err != nil {
+		return err
+	}
+	return s.repo.SaveUnread(ctx, user, lines)
 }
 
 func (s *Service) read(ctx context.Context, upload Upload) (period *importing.Period, resultErr error) {

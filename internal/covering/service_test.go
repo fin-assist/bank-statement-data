@@ -30,17 +30,26 @@ type repoFake struct {
 	saved                        int
 	failAt                       int
 	casMiss                      bool
+	state                        importing.Snapshot
+	snapshotErr, unreadErr       error
+	snapshots, unreadWrites      int
+	zone                         string
 }
 
 func (r *repoFake) PendingCoverage(_ context.Context, _ string, limit int) ([]Upload, error) {
 	return append([]Upload{}, r.uploads[:min(limit, len(r.uploads))]...), r.pendingErr
 }
-func (r *repoFake) LockUser(context.Context, string, bool) (string, error) { return "UTC", r.lockErr }
+func (r *repoFake) LockUser(context.Context, string, bool) (string, error) {
+	if r.zone != "" {
+		return r.zone, r.lockErr
+	}
+	return "UTC", r.lockErr
+}
 func (r *repoFake) SaveCoverage(_ context.Context, u Upload, p *importing.Period, _ string) (bool, error) {
 	if r.saveErr != nil && (r.failAt == 0 || r.saved+1 == r.failAt) {
 		return false, r.saveErr
 	}
-	if p != nil && (p.RawFrom == nil || p.Source != "tags") {
+	if p != nil && (p.RawFrom == nil || p.Source != "tags" && p.Source != "operations") {
 		panic("source metadata lost")
 	}
 	if r.casMiss {
@@ -53,7 +62,26 @@ func (r *repoFake) SaveCoverage(_ context.Context, u Upload, p *importing.Period
 		}
 	}
 	r.saved++
+	for i := range r.state.Uploads {
+		if r.state.Uploads[i].ID == u.ID {
+			r.state.Uploads[i].Period = p
+		}
+	}
 	return true, nil
+}
+
+func (r *repoFake) UnreadSnapshot(context.Context, string) (importing.Snapshot, error) {
+	r.snapshots++
+	return r.state, r.snapshotErr
+}
+
+func (r *repoFake) SaveUnread(_ context.Context, _ string, lines []importing.Unread) error {
+	r.unreadWrites++
+	if r.unreadErr != nil {
+		return r.unreadErr
+	}
+	r.state.Unread = lines
+	return nil
 }
 
 type guardFake struct {
@@ -90,9 +118,10 @@ func (o *objectFake) Open(context.Context, string) (io.ReadCloser, error) {
 }
 
 type parserFake struct {
-	err     error
-	empty   bool
-	readErr bool
+	err        error
+	empty      bool
+	readErr    bool
+	operations bool
 }
 
 func (parserFake) Validate(io.Reader) error { return nil }
@@ -104,6 +133,10 @@ func (p parserFake) Parse(_ context.Context, r io.Reader) (importing.Document, e
 	doc := importing.Document{Periods: []importing.Period{{From: at, To: at}}}
 	if p.empty {
 		doc.Periods = nil
+	}
+	if p.operations {
+		doc.Periods = nil
+		doc.Lines = []importing.Line{{OccurredAt: &at}}
 	}
 	return doc, p.err
 }
@@ -185,6 +218,9 @@ func TestUnitMetadataRecoveryFailureDoesNotGuessOrRewriteData(t *testing.T) {
 			if kind != "close" && r.saved != 0 {
 				t.Fatal("failed input wrote metadata")
 			}
+			if r.snapshots != 0 || r.unreadWrites != 0 {
+				t.Fatal("failed/no-op metadata CAS refreshed closures")
+			}
 			if (kind == "object" || kind == "close" || kind == "parser") && e != nil && strings.Contains(e.Error(), "private provider") {
 				t.Fatal("provider details leaked")
 			}
@@ -195,7 +231,7 @@ func TestUnitMetadataRecoveryDeletionDuringReadDoesNotResurrect(t *testing.T) {
 	s, r, o, g := fixture(t)
 	o.before = func() { g.live = false; r.uploads = nil }
 	ready, e := s.Recover(t.Context(), "u")
-	if e != nil || !ready || r.saved != 0 {
+	if e != nil || !ready || r.saved != 0 || r.snapshots != 0 || r.unreadWrites != 0 {
 		t.Fatal("late IO recreated erased upload", ready, e, r.saved)
 	}
 }

@@ -86,3 +86,13 @@ func (r *Recalculations) Snapshot(ctx context.Context, user string) (importing.S
 	}
 	return r.Imports.Snapshot(ctx, user)
 }
+
+// UnreadSnapshot reads closure evidence after one file's coverage CAS. Other
+// legacy files may remain, so this snapshot must not require global readiness.
+func (r *Recalculations) UnreadSnapshot(ctx context.Context, user string) (importing.Snapshot, error) {
+	if _, err := r.transaction(ctx); err != nil {
+		return importing.Snapshot{}, err
+	}
+	empty := time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC)
+	return r.snapshot(ctx, user, &empty, &empty, true)
+}
