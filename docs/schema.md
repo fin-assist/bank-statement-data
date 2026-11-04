@@ -78,6 +78,10 @@ ORDER BY c.sort_order NULLS LAST, u.first_record
 
 - **Правило 2** (строка без `FITID`, с датой): строку счёта A закрывает более поздняя загрузка, у которой счёт A есть в `account_ids` (`account_id = ANY(u.account_ids)`) и период `statement_from..statement_to` покрывает день строки: день строки — в поясе профиля, границы периода — даты из файла, `statement_to` покрыт целиком.
 - **Правило 3** (без даты и без `FITID`): новая загрузка со счётом A, чей период покрывает весь период старой загрузки.
+- FIN-424: в правилах 2–3 доказательством исходного периода служит только `statement_range_source=tags`.
+  Диапазон `operations` подходит для истории/полноты, но не закрывает строки без FITID; в правиле 3
+  подтверждённые теги требуются также у старой загрузки. Репозиторий читает существующий
+  `statement_range_source` вместе с границами, не приписывает `tags` прежним DATE-only строкам.
 - Загрузки берутся по префиксу первичного ключа `upload (user_id, …)` — их у пользователя десятки, поэтому ни отдельный индекс, ни GIN по `account_ids` не нужны.
 - **Отклонение от формулировки api.md 3.6** («период выписки по тому же счёту»): сравнивается период файла. Пока периоды счетов в файле совпадают, результат тот же.
 
@@ -251,6 +255,7 @@ FIN-356: ручные изменения и dismiss/restore выполняютс
 | `unread_line` | `reason`, `resolution` | `reason` ∈ {`bad_amount`, `bad_date`, `no_date`, `truncated`}; `resolution` ∈ {`read`, `replaced`} | перечисления домена |
 | `unread_line` | `external_id` | 1–255 символов или пусто; задан только вместе с `account_id` | адаптер: FITID берётся только в блоке со счётом |
 | `unread_line` | закрытие | `resolved_by_upload_id` и `resolution` оба или ни одного; `resolved_by_upload_id ≠ upload_id` | шаг закрытия строк (api.md 3.6) — одна функция под блокировкой пользователя |
+| `unread_line` | закрытие без FITID (FIN-424) | период новой загрузки подтверждён `statement_range_source=tags`; без даты также подтверждён период старой загрузки; `operations` и неизвестное происхождение не доказывают дочитывание | `ResolveUnread`; `TestUnitUnreadDateClosureRequiresExplicitSourceCoverage`, `TestIntegrationUnreadClosureRetainsSourceRangeProvenance`, `TestAPIUnreadClosureRequiresExplicitSourceRange` |
 | `unread_line` | `occurred_at` | пусто при `reason` ∈ {`no_date`, `bad_date`} | адаптер: дата пишется только прочитанная |
 | `regular_payment` | `periodicity` | ∈ {`monthly`} (другие — FIN-127) | перечисление домена |
 | `regular_payment` | `description` | 1–1000 символов (операции без описания не распознаются, FIN-67) | распознавание регулярных платежей (`docs/calc.md` 5) |

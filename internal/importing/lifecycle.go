@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/fin-assist/bank-statement-data/internal/domain"
 )
 
 // Process recovers one admitted job; source I/O and parsing happen before the
@@ -487,7 +489,7 @@ func ownedObjectKey(user, key string) bool {
 
 func statementPeriod(document Document, zone *time.Location) *Period {
 	var from, to time.Time
-	source := "tags"
+	source := domain.StatementRangeSourceTags
 	for _, period := range document.Periods {
 		if from.IsZero() || period.From.Before(from) {
 			from = period.From
@@ -497,7 +499,7 @@ func statementPeriod(document Document, zone *time.Location) *Period {
 		}
 	}
 	if from.IsZero() {
-		source = "operations"
+		source = domain.StatementRangeSourceOperations
 		for _, line := range document.Lines {
 			if line.Reason != "" || line.OccurredAt == nil {
 				continue

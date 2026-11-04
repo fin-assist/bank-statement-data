@@ -33,7 +33,7 @@ func (row importScanRow) Scan(dest ...any) error {
 	return nil
 }
 func projectionRow() []any {
-	return []any{"b7a17bfd-cf78-44a3-95f7-09941c59e996", "73ef1f95-14d5-453c-80ec-d0e2ac8c854d", "exact/имя", "private-key", int64(8), make([]byte, 32), "processing", "", 0, time.Now().UTC(), nil, nil, int64(0), []int64{}, nil, nil, nil, nil, nil}
+	return []any{"b7a17bfd-cf78-44a3-95f7-09941c59e996", "73ef1f95-14d5-453c-80ec-d0e2ac8c854d", "exact/имя", "private-key", int64(8), make([]byte, 32), "processing", "", 0, time.Now().UTC(), nil, nil, int64(0), []int64{}, nil, nil, nil, nil, nil, ""}
 }
 func TestUnitStoredUploadProjectionRejectsCorruptFacts(t *testing.T) {
 	zone, _ := time.LoadLocation("Europe/Berlin")
@@ -141,5 +141,22 @@ func TestUnitStoredUploadProjectsOriginalBoundsInCurrentTimezone(t *testing.T) {
 	row[18] = &earlier
 	if _, err = scanUpload(importScanRow{values: row}, zone); err == nil {
 		t.Fatal("reversed original range accepted")
+	}
+}
+
+func TestUnitStoredUploadRetainsRangeProvenance(t *testing.T) {
+	for _, original := range []bool{false, true} {
+		for _, source := range []string{"", "tags", "operations"} {
+			row := projectionRow()
+			from, to := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC)
+			row[14], row[15], row[19] = &from, &to, source
+			if original {
+				row[17], row[18] = &from, &to
+			}
+			got, err := scanUpload(importScanRow{values: row}, time.UTC)
+			if err != nil || got.Period == nil || got.Period.Source != source {
+				t.Fatal("source proof was invented or lost", original, source, got, err)
+			}
+		}
 	}
 }

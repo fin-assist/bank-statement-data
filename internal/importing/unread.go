@@ -4,6 +4,8 @@ import (
 	"context"
 	"sort"
 	"time"
+
+	"github.com/fin-assist/bank-statement-data/internal/domain"
 )
 
 type sourceIdentity struct {
@@ -128,7 +130,7 @@ func resolveLine(line Unread, old Upload, candidate *closureFacts, zone *time.Lo
 		return ""
 	}
 	period := candidate.upload.Period
-	if period == nil {
+	if period == nil || period.Source != domain.StatementRangeSourceTags {
 		return ""
 	}
 	from, to := startDay(period.From, zone), startDay(period.To, zone)
@@ -142,7 +144,7 @@ func resolveLine(line Unread, old Upload, candidate *closureFacts, zone *time.Lo
 		}
 		return "read"
 	}
-	if old.Period == nil {
+	if old.Period == nil || old.Period.Source != domain.StatementRangeSourceTags {
 		return ""
 	}
 	oldFrom, oldTo := startDay(old.Period.From, zone), startDay(old.Period.To, zone)
